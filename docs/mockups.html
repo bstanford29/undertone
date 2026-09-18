@@ -1,0 +1,422 @@
+<title>Undertone Mockups</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#F2F4F7; --surface:#FFFFFF; --ink:#141A22; --muted:#5A6572; --line:#D2D8E0; --code-bg:#E6EAF0;
+  --accent:#2F6F8F; --accent-ink:#1E4C63; --accent-soft:#DCE9F0;
+  --good:#2E7D4F; --warn:#B5541C; --good-soft:#DDEEE3; --warn-soft:#F6E3D6;
+  /* macOS window tokens (follow page theme) */
+  --win:#F6F6F6; --win-2:#ECECEC; --win-line:#D6D6D6; --win-ink:#1D1D1F; --win-muted:#6E6E73; --win-sel:#DCE9F0; --field:#FFFFFF;
+  --desk:#2B3A4A;
+  --pill:#1C1C1E; --pill-ink:#F5F5F7; --pill-muted:#A1A1A6; --wave:#6FB3D2;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0F1419; --surface:#171D24; --ink:#E4E9EF; --muted:#94A0AE; --line:#2A333D; --code-bg:#1F2730;
+  --accent:#6FB3D2; --accent-ink:#A9D3E6; --accent-soft:#213541;
+  --good:#6CC493; --warn:#E5915B; --good-soft:#1F3328; --warn-soft:#3C2A1F;
+  --win:#2B2B2D; --win-2:#232325; --win-line:#3E3E42; --win-ink:#F2F2F4; --win-muted:#9A9AA0; --win-sel:#2C4A5C; --field:#1E1E20;
+  --desk:#101820;
+}}
+:root[data-theme="dark"]{
+  --bg:#0F1419; --surface:#171D24; --ink:#E4E9EF; --muted:#94A0AE; --line:#2A333D; --code-bg:#1F2730;
+  --accent:#6FB3D2; --accent-ink:#A9D3E6; --accent-soft:#213541;
+  --good:#6CC493; --warn:#E5915B; --good-soft:#1F3328; --warn-soft:#3C2A1F;
+  --win:#2B2B2D; --win-2:#232325; --win-line:#3E3E42; --win-ink:#F2F2F4; --win-muted:#9A9AA0; --win-sel:#2C4A5C; --field:#1E1E20;
+  --desk:#101820;
+}
+*{box-sizing:border-box}
+body{margin:0;background-color:var(--bg);background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:32px 32px;background-position:-1px -1px;color:var(--ink);font-family:"IBM Plex Sans",-apple-system,"Helvetica Neue",Arial,sans-serif;font-size:16px;line-height:1.5;padding-block:0 80px;padding-inline:20px}
+.wrap{max-width:1100px;margin:0 auto}
+header{padding-block:44px 8px}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+h1{font-weight:600;font-size:clamp(30px,4vw,40px);line-height:1.1;margin:8px 0 10px;letter-spacing:-.02em;text-wrap:balance}
+.lede{color:var(--muted);margin:0 0 8px;max-width:64ch}
+h2{font-weight:600;font-size:22px;margin:56px 0 4px;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:0 0 18px;max-width:70ch}
+p{margin:0 0 12px}
+code{font-family:"IBM Plex Mono",monospace;font-size:.88em;background:var(--code-bg);padding:1px 5px;border-radius:3px}
+kbd{font-family:"IBM Plex Mono",monospace;font-size:12px;border:1px solid var(--win-line);border-bottom-width:2px;border-radius:4px;padding:0 5px;background:var(--win-2);color:var(--win-ink)}
+.mac{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;color:var(--win-ink);-webkit-font-smoothing:antialiased}
+.note{font-size:14px;color:var(--muted);margin:8px 0 0}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px}
+.stage{position:relative;background:var(--desk);border-radius:10px;border:1px solid var(--line);overflow:hidden;min-height:340px}
+.stage .desk{position:absolute;inset:0;background:radial-gradient(1200px 500px at 50% -10%,rgba(111,179,210,.25),transparent 60%),var(--desk)}
+/* generic mac window */
+.win{background:var(--win);border:1px solid var(--win-line);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.28);overflow:hidden;font-size:13px}
+.tb{display:flex;align-items:center;gap:8px;height:34px;padding:0 12px;background:var(--win-2);border-bottom:1px solid var(--win-line)}
+.dots{display:flex;gap:6px}.dots i{width:11px;height:11px;border-radius:50%;background:#C8C8CC;display:block}
+.dots i:nth-child(1){background:#FF5F57}.dots i:nth-child(2){background:#FEBC2E}.dots i:nth-child(3){background:#28C840}
+.tb .ttl{flex:1;text-align:center;color:var(--win-muted);font-size:12px;font-weight:500}
+/* --- 1. Pill demo --- */
+.demo{position:relative;height:420px}
+.demo .appwin{position:absolute;left:8%;right:8%;top:28px;height:250px}
+.demo .field{margin:14px;height:160px;background:var(--field);border:1px solid var(--win-line);border-radius:6px;padding:12px 14px;font-size:14px;line-height:1.5;color:var(--win-ink);white-space:pre-wrap;overflow:hidden}
+.caret{display:inline-block;width:1px;height:1.1em;background:var(--win-ink);vertical-align:-2px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.sel{background:var(--win-sel)}
+.pill{position:absolute;left:50%;bottom:26px;transform:translate(-50%,40px);opacity:0;display:flex;align-items:center;gap:10px;height:44px;padding:0 16px 0 14px;border-radius:22px;background:var(--pill);color:var(--pill-ink);box-shadow:0 10px 30px rgba(0,0,0,.45);font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;font-size:13px;font-weight:500;white-space:nowrap;transition:transform .28s cubic-bezier(.2,.9,.3,1.2),opacity .2s,width .3s}
+.pill.on{transform:translate(-50%,0);opacity:1}
+.pill .lbl{color:var(--pill-muted);font-weight:400}
+.pill .ms{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--pill-muted)}
+.wave{display:flex;align-items:center;gap:3px;height:22px;width:74px}
+.wave i{display:block;width:3px;height:4px;border-radius:2px;background:var(--wave);transition:height .09s}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid rgba(255,255,255,.2);border-top-color:var(--wave);animation:rot .8s linear infinite}
+@keyframes rot{to{transform:rotate(360deg)}}
+.chk{width:18px;height:18px;border-radius:50%;background:var(--good);display:grid;place-items:center}
+.chk svg{width:11px;height:11px}
+.dot-rec{width:10px;height:10px;border-radius:50%;background:#FF453A;box-shadow:0 0 0 0 rgba(255,69,58,.6);animation:pulse 1.2s ease-out infinite}
+@keyframes pulse{to{box-shadow:0 0 0 8px rgba(255,69,58,0)}}
+.keycap{position:absolute;left:50%;bottom:90px;transform:translateX(-50%);font-family:"IBM Plex Mono",monospace;font-size:11px;color:#C9D3DC;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.2);border-bottom-width:3px;border-radius:6px;padding:4px 10px;transition:transform .08s,border-bottom-width .08s;opacity:.9}
+.keycap.down{transform:translateX(-50%) translateY(2px);border-bottom-width:1px;background:rgba(111,179,210,.35)}
+.ctrl{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:12px 0 0}
+button.b{font:inherit;font-size:13px;font-weight:500;padding:6px 12px;border-radius:6px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer}
+button.b:hover{border-color:var(--accent)}
+button.b:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button.b.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.step{font-family:"IBM Plex Mono",monospace;font-size:12px;color:var(--muted);margin-left:auto}
+/* state strip */
+.states{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:16px}
+.state{background:var(--desk);border-radius:8px;padding:22px 12px 12px;display:flex;flex-direction:column;align-items:center;gap:14px;border:1px solid var(--line)}
+.state .pill{position:static;transform:none;opacity:1}
+.state .cap{font-size:12px;color:#C9D3DC;text-align:center;line-height:1.35}
+.state .cap b{display:block;color:#fff;font-weight:600;font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px}
+/* --- 2. Menu bar --- */
+.menubar{position:absolute;top:0;left:0;right:0;height:26px;background:rgba(255,255,255,.14);backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:flex-end;gap:16px;padding:0 14px;font-size:12px;color:#fff}
+.mbi{display:flex;align-items:center;gap:6px}
+.mbi.active{background:rgba(255,255,255,.22);border-radius:4px;padding:2px 6px;margin:0 -6px}
+.ut-icon{width:14px;height:14px;display:block}
+.menu{position:absolute;top:30px;right:14px;width:262px;background:var(--win);border:1px solid var(--win-line);border-radius:10px;box-shadow:0 14px 40px rgba(0,0,0,.4);padding:6px;font-size:13px}
+.mi{display:flex;align-items:center;gap:8px;padding:6px 10px;border-radius:5px}
+.mi:hover{background:var(--accent);color:#fff}
+.mi .k{margin-left:auto;font-family:-apple-system,sans-serif;font-size:12px;color:var(--win-muted)}
+.mi:hover .k{color:#fff}
+.mi.hd{color:var(--win-muted);font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;padding-top:8px}
+.mi.hd:hover{background:none;color:var(--win-muted)}
+.sep{height:1px;background:var(--win-line);margin:5px 4px}
+.seg{display:flex;background:var(--win-2);border-radius:6px;padding:2px;margin:2px 10px 6px}
+.seg span{flex:1;text-align:center;font-size:12px;padding:3px 0;border-radius:4px;color:var(--win-muted)}
+.seg span.on{background:var(--win);color:var(--win-ink);box-shadow:0 1px 2px rgba(0,0,0,.2);font-weight:500}
+.status{display:flex;align-items:center;gap:8px;padding:8px 10px 4px;font-size:12px;color:var(--win-muted)}
+.status i{width:8px;height:8px;border-radius:50%;background:var(--good);display:block}
+/* --- 3. History window --- */
+.hist{display:grid;grid-template-columns:300px 1fr;height:360px}
+@media (max-width:700px){.hist{grid-template-columns:1fr;height:auto}.hist .detail{display:none}}
+.hist .list{border-right:1px solid var(--win-line);overflow:auto;background:var(--win-2)}
+.srch{margin:8px;height:26px;border-radius:6px;background:var(--field);border:1px solid var(--win-line);display:flex;align-items:center;padding:0 8px;gap:6px;color:var(--win-muted);font-size:12px}
+.row{display:grid;grid-template-columns:22px 1fr auto;gap:8px;padding:8px 10px;border-bottom:1px solid var(--win-line);align-items:start}
+.row.on{background:var(--win-sel)}
+.row .app{width:20px;height:20px;border-radius:5px;display:grid;place-items:center;font-size:10px;font-weight:600;color:#fff}
+.row .app.cx{background:#111}.row .app.cl{background:#D97757}.row .app.gh{background:#2C6E9E}.row .app.ms{background:#34C759}
+.row .t1{font-size:13px;line-height:1.3;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.row .t2{font-size:11px;color:var(--win-muted);margin-top:2px}
+.row .when{font-size:11px;color:var(--win-muted);white-space:nowrap}
+.detail{display:flex;flex-direction:column;padding:12px 14px;gap:10px;min-width:0}
+.tabs{display:flex;gap:2px;background:var(--win-2);border-radius:6px;padding:2px;width:max-content}
+.tabs span{font-size:12px;padding:3px 12px;border-radius:4px;color:var(--win-muted)}
+.tabs span.on{background:var(--win);color:var(--win-ink);box-shadow:0 1px 2px rgba(0,0,0,.2);font-weight:500}
+.txt{flex:1;background:var(--field);border:1px solid var(--win-line);border-radius:6px;padding:10px 12px;font-size:13px;line-height:1.5;overflow:auto}
+.txt del{color:var(--win-muted);text-decoration:line-through;opacity:.7}
+.txt ins{text-decoration:none;background:var(--good-soft);color:var(--win-ink);border-radius:2px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--win-muted)}
+.acts{display:flex;flex-wrap:wrap;gap:6px}
+.mb{font-size:12px;padding:4px 10px;border-radius:6px;border:1px solid var(--win-line);background:var(--win);color:var(--win-ink)}
+.mb.pri{background:var(--accent);border-color:var(--accent);color:#fff}
+.audio{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--win-muted)}
+.audio .bar{flex:1;height:4px;border-radius:2px;background:var(--win-line);position:relative}
+.audio .bar::after{content:"";position:absolute;left:0;top:0;bottom:0;width:38%;background:var(--accent);border-radius:2px}
+.play{width:22px;height:22px;border-radius:50%;background:var(--win-ink);display:grid;place-items:center}
+.play::after{content:"";border-left:8px solid var(--win);border-top:5px solid transparent;border-bottom:5px solid transparent;margin-left:2px}
+/* --- 4. Dictionary --- */
+.dict{display:grid;grid-template-columns:1fr 1fr;gap:0;min-height:300px}
+@media (max-width:700px){.dict{grid-template-columns:1fr}}
+.col{padding:12px 14px;border-right:1px solid var(--win-line)}
+.col:last-child{border-right:0}
+.col h4{margin:0 0 8px;font-size:12px;font-weight:600;color:var(--win-muted);letter-spacing:.06em;text-transform:uppercase}
+.term{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:5px;font-size:13px}
+.term:nth-child(even){background:var(--win-2)}
+.term .n{margin-left:auto;font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--win-muted)}
+.term .src{font-size:10px;padding:1px 6px;border-radius:3px;background:var(--accent-soft);color:var(--accent-ink);font-weight:600}
+.term .src.m{background:var(--win-2);color:var(--win-muted);border:1px solid var(--win-line)}
+.learn{border:1px dashed var(--accent);border-radius:8px;padding:10px 12px;margin-top:10px;background:var(--accent-soft);color:var(--win-ink)}
+.learn .q{font-size:13px;margin-bottom:8px}
+.learn .q b{font-weight:600}
+.learn .acts{gap:6px}
+.rep{display:grid;grid-template-columns:1fr 18px 1.4fr;gap:6px;align-items:center;font-size:13px;padding:5px 8px}
+.rep:nth-child(even){background:var(--win-2)}
+.rep .arrow{color:var(--win-muted);text-align:center}
+.rep .v{font-family:"IBM Plex Mono",monospace;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* --- 5. Meeting --- */
+.meet{display:grid;grid-template-columns:1fr 250px;height:380px}
+@media (max-width:700px){.meet{grid-template-columns:1fr;height:auto}.meet .side{border-left:0;border-top:1px solid var(--win-line)}}
+.tr{padding:12px 14px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.line{display:grid;grid-template-columns:44px 1fr;gap:10px;font-size:13px;line-height:1.45}
+.line .who{font-family:"IBM Plex Mono",monospace;font-size:11px;color:var(--win-muted);padding-top:2px}
+.line .who.me{color:var(--accent)}
+.line .ts{font-family:"IBM Plex Mono",monospace;font-size:10px;color:var(--win-muted);margin-left:6px}
+.line.live .txt-l::after{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent);margin-left:6px;animation:blink 1s steps(1) infinite}
+.side{border-left:1px solid var(--win-line);padding:12px 14px;display:flex;flex-direction:column;gap:12px;background:var(--win-2)}
+.lvl{display:flex;flex-direction:column;gap:6px;font-size:12px;color:var(--win-muted)}
+.lvl .m{display:flex;align-items:center;gap:8px}
+.lvl .m span{width:52px}
+.lvl .bar{flex:1;height:6px;border-radius:3px;background:var(--win-line);overflow:hidden}
+.lvl .bar i{display:block;height:100%;background:var(--accent);width:40%;animation:lvl 1.1s ease-in-out infinite alternate}
+.lvl .bar i.s{animation-duration:1.7s;animation-delay:.3s;width:60%}
+@keyframes lvl{from{transform:scaleX(.4)}to{transform:scaleX(1)}}
+.lvl .bar i{transform-origin:left}
+.timer{font-family:"IBM Plex Mono",monospace;font-size:26px;letter-spacing:.02em}
+.side .mb{width:100%;text-align:center}
+.side .small{font-size:11px;color:var(--win-muted)}
+.side .small b{color:var(--win-ink);font-weight:500}
+/* --- 6. Command mode --- */
+.cmdwin .field{height:150px}
+/* --- 7. Settings --- */
+.set{display:grid;grid-template-columns:150px 1fr;height:330px}
+@media (max-width:700px){.set{grid-template-columns:1fr;height:auto}}
+.sb{background:var(--win-2);border-right:1px solid var(--win-line);padding:8px}
+.sb div{padding:6px 10px;border-radius:5px;font-size:13px}
+.sb div.on{background:var(--accent);color:#fff}
+.pane{padding:14px 18px;display:grid;grid-template-columns:150px 1fr;gap:12px 14px;align-content:start;font-size:13px}
+.pane label{color:var(--win-muted);text-align:right;padding-top:3px}
+.pop{display:inline-flex;align-items:center;gap:8px;background:var(--field);border:1px solid var(--win-line);border-radius:6px;padding:3px 8px;font-size:13px}
+.pop::after{content:"⌃⌄";font-size:9px;color:var(--win-muted);letter-spacing:-6px;margin-right:4px}
+.tone{display:grid;grid-template-columns:1fr auto;gap:4px 10px;font-size:12px}
+.tone .ap{display:flex;align-items:center;gap:6px}
+.sw{width:30px;height:18px;border-radius:9px;background:var(--good);position:relative}
+.sw::after{content:"";position:absolute;top:2px;right:2px;width:14px;height:14px;border-radius:50%;background:#fff}
+.sw.off{background:var(--win-line)}.sw.off::after{right:auto;left:2px}
+footer{margin-top:64px;font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<div class="wrap">
+<header>
+<div class="eyebrow">Mockups · Undertone · 15 Sep 2026</div>
+<h1>What Undertone looks like</h1>
+<p class="lede">Seven surfaces, in the order you meet them. The first one is a working animation of the hold-to-talk loop. Everything follows the Mac's light or dark appearance, so flip this page's theme to see both.</p>
+</header>
+
+<h2>1. The pill</h2>
+<p class="sub">This is 95% of the app. You never open a window. Hold the key, a pill rises from the bottom of the screen with a live level meter. Let go and it turns into a spinner for under a second, then a check with the round-trip time, then it drops away. Press play to run the loop.</p>
+<div class="stage demo" id="demo">
+<div class="desk"></div>
+<div class="win appwin mac">
+<div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">Codex</div></div>
+<div class="field" id="field">Working on the insert path. <span class="caret" id="caret"></span></div>
+</div>
+<div class="keycap" id="keycap">fn  hold</div>
+<div class="pill" id="pill"></div>
+</div>
+<div class="ctrl">
+<button class="b pri" id="play">Play the loop</button>
+<button class="b" id="stepb">Step through</button>
+<span class="step" id="steplbl">idle</span>
+</div>
+<div class="states" aria-label="Pill states">
+<div class="state"><div class="pill on mac"><span class="dot-rec"></span><div class="wave" data-wave></div></div><div class="cap"><b>Listening</b>Rises on key down. Bars follow your voice.</div></div>
+<div class="state"><div class="pill on mac"><span class="spin"></span><span class="lbl">Cleaning up</span></div><div class="cap"><b>Working</b>Key up. Whisper then the model. Usually under 1 s.</div></div>
+<div class="state"><div class="pill on mac"><span class="chk"><svg viewBox="0 0 12 12"><path d="M2 6.5l2.6 2.6L10 3.7" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Inserted</span><span class="ms">957 ms</span></div><div class="cap"><b>Done</b>Shows the round trip, then drops away.</div></div>
+<div class="state"><div class="pill on mac"><span class="chk" style="background:var(--warn)"><svg viewBox="0 0 12 12"><path d="M6 2.5v4.5M6 9v.5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span><span>Kept raw</span><span class="ms">guard</span></div><div class="cap"><b>Guard fired</b>Model dropped text, so the raw transcript went in instead.</div></div>
+</div>
+<p class="note">Sounds: a short low tick on key down, a higher tick on insert. Both off by a setting. The pill never takes focus, so your caret stays where it was.</p>
+
+<h2>2. Command Mode</h2>
+<p class="sub">Select text first, then hold the key and say what to do with it. The pill changes its label so you know it will rewrite instead of insert. The selection is replaced in place.</p>
+<div class="stage demo cmdwin" style="height:330px">
+<div class="desk"></div>
+<div class="win appwin mac" style="top:22px">
+<div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">Mail</div></div>
+<div class="field">Hi Priya,
+
+<span class="sel">I wanted to reach out and touch base regarding the sprint plan that we walked through yesterday because I believe the version that was shared might not be the most recent one that we have on our side.</span></div>
+</div>
+<div class="pill on mac" style="bottom:22px"><span class="dot-rec"></span><div class="wave" data-wave></div><span class="lbl">Rewrite selection · "make this shorter"</span></div>
+</div>
+
+<h2>3. Menu bar</h2>
+<p class="sub">The only permanent presence. One icon. The menu shows whether the models are warm, the cleanup level, and the things you asked for: last transcript back, undo the AI edit, history, dictionary, meetings.</p>
+<div class="stage" style="min-height:480px">
+<div class="desk"></div>
+<div class="menubar mac">
+<span class="mbi active"><svg class="ut-icon" viewBox="0 0 14 14"><rect x="1" y="5" width="2" height="4" rx="1" fill="#fff"/><rect x="4" y="2" width="2" height="10" rx="1" fill="#fff"/><rect x="7" y="4" width="2" height="6" rx="1" fill="#fff"/><rect x="10" y="6" width="2" height="2" rx="1" fill="#fff"/></svg></span>
+<span class="mbi">Tue 15 Sep  3:41 PM</span>
+</div>
+<div class="menu mac">
+<div class="status"><i></i>Whisper and qwen3.5 warm · ready</div>
+<div class="mi hd">Cleanup</div>
+<div class="seg"><span>None</span><span>Light</span><span class="on">Medium</span><span>High</span></div>
+<div class="sep"></div>
+<div class="mi">Insert last transcript again<span class="k">⌥⇧V</span></div>
+<div class="mi">Undo AI edit, keep raw<span class="k">⌥⇧Z</span></div>
+<div class="mi">Copy last transcript<span class="k">⌥⇧C</span></div>
+<div class="sep"></div>
+<div class="mi">History…<span class="k">⌥⇧H</span></div>
+<div class="mi">Dictionary…</div>
+<div class="mi">Start meeting notes<span class="k">⌥⇧M</span></div>
+<div class="sep"></div>
+<div class="mi">Settings…<span class="k">⌘,</span></div>
+<div class="mi">Quit Undertone<span class="k">⌘Q</span></div>
+</div>
+</div>
+<p class="note">Copy last transcript is the one action that writes to the clipboard, and only because you asked for a copy. Dictation itself never does.</p>
+
+<h2>4. History</h2>
+<p class="sub">Every dictation, kept. Search by words, filter by app and date. Each row opens with the raw and cleaned text side by side, the audio, and the buttons you'd expect. Rows shown here are sample data.</p>
+<div class="win mac">
+<div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">History · 312 dictations</div></div>
+<div class="hist">
+<div class="list">
+<div class="srch">⌕ Search history<span style="margin-left:auto">All apps ▾</span></div>
+<div class="row on"><span class="app cx">C</span><div><div class="t1">Hey, can you send me the report by Wednesday? I'm out of the office Tuesday, so just send it to my work email.</div><div class="t2">15 s · 957 ms · Codex</div></div><span class="when">3:39 PM</span></div>
+<div class="row"><span class="app cl">A</span><div><div class="t1">One of the best features I love about this thing is that it doesn't take over my clipboard.</div><div class="t2">9 s · 640 ms · Claude</div></div><span class="when">12:27 PM</span></div>
+<div class="row"><span class="app cx">C</span><div><div class="t1">Okay, can you tell me what you fixed, because I just see a lot here right now?</div><div class="t2">4 s · 349 ms · Codex</div></div><span class="when">11:52 AM</span></div>
+<div class="row"><span class="app gh">G</span><div><div class="t1">git commit dash m tidy the release notes</div><div class="t2">3 s · 0 ms · Ghostty · raw</div></div><span class="when">11:40 AM</span></div>
+<div class="row"><span class="app ms">M</span><div><div class="t1">Tell Jordan the pickup is at three, not four.</div><div class="t2">3 s · 410 ms · Messages</div></div><span class="when">Yesterday</span></div>
+</div>
+<div class="detail">
+<div class="tabs"><span>Raw</span><span class="on">Cleaned</span><span>Diff</span></div>
+<div class="txt"><del>Um so hey</del> Hey, can you <del>uh</del> send me <del>the</del> the report by <del>Tuesday no wait</del> Wednesday<ins>?</ins> <del>actually because um</del> I'm out of the office Tuesday<ins>, so</ins> <del>and uh yeah just</del> just send it to my work email. <del>And also</del> <ins>Also,</ins> the plan is Northwind pulls from the Obsidian Vault and then we run it through Ollama locally<ins>,</ins> <del>Probably</del> <ins>probably</ins> the Qwen model.</div>
+<div class="audio"><span class="play"></span><span>0:06</span><span class="bar"></span><span>0:15</span></div>
+<div class="meta"><span>stt 174 ms</span><span>llm 783 ms</span><span>insert 30 ms</span><span>qwen3.5 · medium</span><span>ax insert</span></div>
+<div class="acts"><span class="mb pri">Insert again</span><span class="mb">Copy cleaned</span><span class="mb">Copy raw</span><span class="mb">Add words to dictionary</span><span class="mb">Delete</span></div>
+</div>
+</div>
+</div>
+<p class="note">The Diff tab is shown here. Struck words are what the cleaner removed. Green is what it added. This is also how you see whether a cleanup level is too aggressive.</p>
+
+<h2>5. Dictionary</h2>
+<p class="sub">Two lists and an inbox. Terms are words whisper should spell right. Replacements turn a spoken phrase into stored text, which is also how snippets work. The inbox is where learned words wait for a yes.</p>
+<div class="win mac">
+<div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">Dictionary</div></div>
+<div class="dict">
+<div class="col">
+<h4>Terms · 31</h4>
+<div class="term">Northwind<span class="src m">manual</span><span class="n">used 14</span></div>
+<div class="term">Jordan<span class="src">learned</span><span class="n">used 9</span></div>
+<div class="term">Priya<span class="src">learned</span><span class="n">used 6</span></div>
+<div class="term">Obsidian<span class="src m">manual</span><span class="n">used 5</span></div>
+<div class="term">Sam<span class="src m">manual</span><span class="n">used 4</span></div>
+<div class="term">Ollama<span class="src m">manual</span><span class="n">used 3</span></div>
+<div class="term">Whisper<span class="src m">manual</span><span class="n">used 2</span></div>
+<div class="learn">
+<div class="q">You changed <b>"Quinn"</b> to <b>"Qwen"</b> after dictating in Codex. Add Qwen to terms?</div>
+<div class="acts"><span class="mb pri">Add</span><span class="mb">Ignore</span><span class="mb">Never ask for this</span></div>
+</div>
+</div>
+<div class="col">
+<h4>Replacements · 6</h4>
+<div class="rep"><span>btw</span><span class="arrow">→</span><span class="v">by the way</span></div>
+<div class="rep"><span>gh</span><span class="arrow">→</span><span class="v">GitHub</span></div>
+<div class="rep"><span>otw</span><span class="arrow">→</span><span class="v">on the way</span></div>
+<div class="rep"><span>my work email</span><span class="arrow">→</span><span class="v">avery@…</span></div>
+<div class="rep"><span>organize thoughts prompt</span><span class="arrow">→</span><span class="v">Organize these unstructured thoughts into…</span></div>
+<div class="rep"><span>sign off</span><span class="arrow">→</span><span class="v">Thanks, Avery</span></div>
+<p class="note" style="margin-top:12px">Both lists feed whisper's vocabulary prompt and the cleaner's system prompt. Replacements run after cleanup as plain text substitution, so they never depend on the model.</p>
+</div>
+</div>
+</div>
+
+<h2>6. Meeting notes</h2>
+<p class="sub">Start from the menu or the hotkey. No bot joins. The Mac's own audio and your mic are recorded as two channels, which gives "Me" and "Others" for free. Transcript grows live. End it and a summary lands in Obsidian.</p>
+<div class="win mac">
+<div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">Meeting · Sprint plan review</div></div>
+<div class="meet">
+<div class="tr">
+<div class="line"><span class="who">Others</span><span>And then, to your point, we can make all the changes that we agree on based on these discussions. We can make them all at the end, but I just want to make sure they have the latest version.<span class="ts">00:00</span></span></div>
+<div class="line"><span class="who me">Me</span><span>Yeah, agree. It will not take much time once we clarify all the points and whatever changes we need to do.<span class="ts">00:24</span></span></div>
+<div class="line"><span class="who">Others</span><span>So yesterday, as we were going through the sprint plan, it looked like they don't have the most up-to-date versions.<span class="ts">00:41</span></span></div>
+<div class="line live"><span class="who me">Me</span><span class="txt-l">Right, so let's send them the v4 before the next call and</span></div>
+</div>
+<div class="side">
+<div class="timer">12:38</div>
+<div class="lvl"><div class="m"><span>Mic</span><span class="bar"><i></i></span></div><div class="m"><span>System</span><span class="bar"><i class="s"></i></span></div></div>
+<div class="small">Chunks every ~10 s · whisper local · <b>0 uploaded</b></div>
+<span class="mb pri">End and summarize</span>
+<span class="mb">Pause</span>
+<div class="small">On end: summary, decisions, and to-dos written to <b>Obsidian › Meetings › 2026-09-15 Process flows review.md</b> with the transcript folded below.</div>
+</div>
+</div>
+</div>
+
+<h2>7. Settings</h2>
+<p class="sub">Short on purpose. Hold key, models, tone per app, sounds. That's it.</p>
+<div class="win mac">
+<div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">Undertone Settings</div></div>
+<div class="set">
+<div class="sb"><div class="on">General</div><div>Models</div><div>Tone by app</div><div>Sounds</div><div>Permissions</div></div>
+<div class="pane">
+<label>Hold key</label><div><span class="pop"><kbd>fn</kbd></span> <span style="color:var(--win-muted);font-size:12px;margin-left:8px">Tap twice to lock on for long dictation</span></div>
+<label>Cleanup</label><div class="seg" style="margin:0;width:260px"><span>None</span><span>Light</span><span class="on">Medium</span><span>High</span></div>
+<label>Speech model</label><div><span class="pop">whisper-large-v3-turbo</span></div>
+<label>Cleanup model</label><div><span class="pop">qwen3.5 · fast</span> <span style="color:var(--win-muted);font-size:12px;margin-left:8px">High uses gemma4:31b</span></div>
+<label>Tone by app</label><div class="tone">
+<span class="ap"><span class="app cx" style="width:16px;height:16px;border-radius:4px;background:#111;display:inline-block"></span>Codex, Claude, Ghostty</span><span>Neutral</span>
+<span class="ap"><span style="width:16px;height:16px;border-radius:4px;background:#34C759;display:inline-block"></span>Messages</span><span>Casual</span>
+<span class="ap"><span style="width:16px;height:16px;border-radius:4px;background:#2C6E9E;display:inline-block"></span>Mail</span><span>Formal</span>
+</div>
+<label>Sounds</label><div style="display:flex;align-items:center;gap:8px"><span class="sw"></span><span>Tick on start and insert</span></div>
+<label>Keep models warm</label><div style="display:flex;align-items:center;gap:8px"><span class="sw"></span><span>Ollama keep-alive on</span></div>
+<label>Paste fallback</label><div style="display:flex;align-items:center;gap:8px"><span class="sw off"></span><span style="color:var(--win-muted)">Off. Dictation never writes the clipboard.</span></div>
+</div>
+</div>
+</div>
+
+<footer>Undertone mockups · not a running app yet · text in the windows is sample data</footer>
+</div>
+
+<script>
+(function(){
+  var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // animated level meters for every wave element
+  var waves = document.querySelectorAll('[data-wave]');
+  waves.forEach(function(w){ for(var i=0;i<14;i++){ w.appendChild(document.createElement('i')); } });
+  function jiggle(){
+    waves.forEach(function(w){
+      var bars = w.children; var t = Date.now()/1000;
+      for(var i=0;i<bars.length;i++){
+        var env = 0.55 + 0.45*Math.sin(t*2.1 + i*0.6);
+        var h = 4 + Math.random()*16*env;
+        bars[i].style.height = h.toFixed(0)+'px';
+      }
+    });
+  }
+  if(!reduce) setInterval(jiggle, 90); else jiggle();
+
+  // pill demo state machine
+  var pill = document.getElementById('pill'), key = document.getElementById('keycap'),
+      field = document.getElementById('field'), caret = document.getElementById('caret'),
+      lbl = document.getElementById('steplbl');
+  var baseText = 'Working on the insert path. ';
+  var cleaned = 'Hey, can you send me the report by Wednesday? I’m out of the office Tuesday, so just send it to my work email.';
+  var states = {
+    idle: function(){ pill.className='pill mac'; key.classList.remove('down'); field.innerHTML=''; field.appendChild(document.createTextNode(baseText)); field.appendChild(caret); lbl.textContent='idle'; },
+    listening: function(){ pill.innerHTML='<span class="dot-rec"></span><div class="wave" data-wave></div>'; var w=pill.querySelector('[data-wave]'); for(var i=0;i<14;i++) w.appendChild(document.createElement('i')); waves=document.querySelectorAll('[data-wave]'); pill.className='pill mac on'; key.classList.add('down'); lbl.textContent='key down · listening'; },
+    working: function(){ key.classList.remove('down'); pill.innerHTML='<span class="spin"></span><span class="lbl">Cleaning up</span>'; lbl.textContent='key up · whisper 174 ms · model 783 ms'; },
+    inserted: function(){ pill.innerHTML='<span class="chk"><svg viewBox="0 0 12 12"><path d="M2 6.5l2.6 2.6L10 3.7" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Inserted</span><span class="ms">957 ms</span>'; typeIn(cleaned); lbl.textContent='inserted · clipboard untouched'; },
+    gone: function(){ pill.className='pill mac'; lbl.textContent='pill dropped away'; }
+  };
+  var order = ['idle','listening','working','inserted','gone'];
+  var durations = {idle:600, listening:2600, working:950, inserted:1800, gone:900};
+  var timer=null, idx=0, running=false;
+  function typeIn(text){
+    field.innerHTML=''; field.appendChild(document.createTextNode(baseText));
+    var span=document.createElement('span'); field.appendChild(span); field.appendChild(caret);
+    if(reduce){ span.textContent=text; return; }
+    var i=0; var iv=setInterval(function(){ span.textContent=text.slice(0,i+=3); if(i>=text.length) clearInterval(iv); }, 16);
+  }
+  function go(i){ idx=i; states[order[idx]](); }
+  function run(){
+    if(!running) return;
+    go(idx);
+    timer=setTimeout(function(){ idx=(idx+1)%order.length; run(); }, durations[order[idx]]);
+  }
+  document.getElementById('play').addEventListener('click', function(){
+    var b=this; if(running){ running=false; clearTimeout(timer); b.textContent='Play the loop'; return; }
+    running=true; idx=0; b.textContent='Stop'; run();
+  });
+  document.getElementById('stepb').addEventListener('click', function(){
+    running=false; clearTimeout(timer); document.getElementById('play').textContent='Play the loop';
+    go((idx+1)%order.length);
+  });
+  go(0);
+})();
+</script>

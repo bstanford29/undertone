@@ -1,0 +1,1341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Undertone · Flow Bar v2</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#F2F4F7; --surface:#FFFFFF; --ink:#141A22; --muted:#5A6572; --line:#D2D8E0; --code-bg:#E6EAF0;
+  --accent:#2F6F8F; --good:#2E7D4F; --warn:#B5541C;
+  --win:#F6F6F6; --win-2:#ECECEC; --win-line:#D6D6D6; --win-ink:#1D1D1F; --win-muted:#6E6E73;
+  --bubble:#1C1C1E; --bubble-hi:#3A3A3C; --glyph:#F5F5F7; --amber:#F2B950;
+  --sys:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+  --e-out:cubic-bezier(.2,.9,.3,1.15);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",-apple-system,sans-serif;font-size:16px;line-height:1.5;padding:0 20px 90px}
+.wrap{max-width:1080px;margin:0 auto}
+header{padding:44px 0 8px}
+.eyebrow{font-family:"IBM Plex Mono",monospace;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+h1{font-weight:600;font-size:clamp(28px,4vw,40px);line-height:1.1;margin:8px 0 10px;letter-spacing:-.02em}
+h2{font-weight:600;font-size:22px;margin:52px 0 6px;letter-spacing:-.01em}
+h2 .num{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--accent);margin-right:8px;vertical-align:2px}
+h3{font-size:15px;margin:22px 0 6px}
+.lede,.sub{color:var(--muted);margin:0 0 12px;max-width:74ch}
+p{color:var(--ink);margin:0 0 12px;max-width:74ch}
+.sub{margin-bottom:18px}
+.note{font-size:14px;color:var(--muted)}
+code{font-family:"IBM Plex Mono",monospace;font-size:.88em;background:var(--code-bg);padding:1px 5px;border-radius:3px}
+a{color:var(--accent)}
+
+/* ---------- controls above the desk ---------- */
+.rowset{display:flex;flex-direction:column;gap:8px;margin:14px 0 14px}
+.row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.row > .rk{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.09em;text-transform:uppercase;color:var(--muted);width:78px;flex:none}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{font-size:12px;font-weight:500;padding:5px 10px;border-radius:999px;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;font-family:inherit}
+.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.tog{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+
+/* ---------- desk ---------- */
+.desk{position:relative;height:620px;border-radius:12px;overflow:hidden;border:1px solid var(--line)}
+.desk[data-wall="light"]{background:radial-gradient(760px 420px at 62% -12%,#FAFBFC,#E9ECEF 58%,#DFE4E9)}
+.desk[data-wall="dark"]{background:radial-gradient(760px 420px at 62% -12%,#28313C,#1B2129 58%,#141A21)}
+.desk[data-wall="photo"]{background:radial-gradient(900px 380px at 50% -20%,rgba(111,179,210,.28),transparent 58%),linear-gradient(180deg,#3a4d60,#243342)}
+
+.app{
+  position:absolute;left:9%;width:50%;top:34px;height:214px;background:var(--win);
+  border:1px solid var(--win-line);border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.28);
+  font:13px/1.45 var(--sys);color:var(--win-ink);overflow:hidden;z-index:2
+}
+.app.back{
+  top:22px;left:7%;width:48%;height:168px;opacity:.78;transform:scale(.97);transform-origin:top left;
+  z-index:1;filter:saturate(.75)
+}
+.desk[data-edge="left"] .app{left:auto;right:9%}
+.desk[data-edge="left"] .app.back{left:auto;right:7%;transform-origin:top right}
+.desk[data-scene="siri"] .app.back,.desk[data-scene="none"] .app.back{display:none}
+.mic-pill{
+  display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;color:#fff;
+  background:#2E7D4F;border-radius:999px;padding:2px 7px;margin-left:8px;vertical-align:2px
+}
+.mic-pill i{width:6px;height:6px;border-radius:50%;background:#fff;display:block}
+.tb{display:flex;align-items:center;height:34px;padding:0 12px;background:var(--win-2);border-bottom:1px solid var(--win-line);gap:8px;flex:none}
+.dots{display:flex;gap:6px}
+.dots i{width:11px;height:11px;border-radius:50%;background:#C8C8CC;display:block}
+.dots i:nth-child(1){background:#FF5F57}.dots i:nth-child(2){background:#FEBC2E}.dots i:nth-child(3){background:#28C840}
+.tb .ttl{flex:1;text-align:center;color:var(--win-muted);font-size:12px;font-weight:500}
+.field{padding:14px 16px;color:var(--win-muted)}
+.hint{
+  position:absolute;left:12px;bottom:12px;z-index:9;font-size:12px;border-radius:8px;padding:6px 10px;
+  pointer-events:none;max-width:44ch;font-family:"IBM Plex Mono",monospace
+}
+.desk[data-wall="light"] .hint{color:#3C4652;background:rgba(255,255,255,.72);border:1px solid rgba(20,26,34,.14)}
+.desk[data-wall="dark"] .hint,.desk[data-wall="photo"] .hint{color:#D7E0E8;background:rgba(0,0,0,.32);border:1px solid rgba(255,255,255,.16)}
+.desk[data-edge="bottom"] .hint{left:auto;right:12px;bottom:auto;top:12px}
+
+/* ---------- dock skeleton ---------- */
+.dock{position:absolute;inset:0;z-index:8;pointer-events:none}
+.desk[data-edge="right"] .dock,.desk[data-edge="left"] .dock{--nub-w:8px;--nub-h:48px;--nub-sx:1;--nub-sy:.6;--nub-t:translateY(-50%)}
+.desk[data-edge="bottom"] .dock{--nub-w:48px;--nub-h:8px;--nub-sx:.6;--nub-sy:1;--nub-t:translateX(-50%)}
+.desk[data-wall="light"] .dock{--nub-fill:rgba(142,142,147,.95)}
+.desk[data-wall="dark"] .dock,.desk[data-wall="photo"] .dock{--nub-fill:rgba(161,161,166,.95)}
+.desk[data-wall="dark"] .dock,.desk[data-wall="photo"] .dock{--rim:inset 0 0 0 1px rgba(255,255,255,.14)}
+.desk[data-wall="light"] .dock{--rim:inset 0 0 0 0 rgba(255,255,255,0)}
+
+.nub{
+  position:absolute;width:var(--nub-w);height:var(--nub-h);border-radius:4px;background:var(--nub-fill);
+  box-shadow:inset 0 .5px 0 rgba(255,255,255,.45),0 4px 12px rgba(0,0,0,.22);
+  transform:var(--nub-t);transition:opacity .14s ease,scale .14s ease
+}
+.desk[data-edge="right"] .nub{right:6px;top:50%}
+.desk[data-edge="left"] .nub{left:6px;top:50%}
+.desk[data-edge="bottom"] .nub{bottom:6px;left:50%}
+.dock.open .nub,
+.desk[data-state="dictating"] .nub,.desk[data-state="working"] .nub,
+.desk[data-state="inserted"] .nub,.desk[data-state="guarded"] .nub,
+.desk[data-state="error"] .nub,.desk[data-state="holdkey"] .nub,
+.desk[data-state="recording"] .nub{opacity:0;scale:var(--nub-sx) var(--nub-sy)}
+
+.zone{position:absolute;pointer-events:none;z-index:4}
+.desk[data-edge="right"] .zone{right:0;top:50%;transform:translateY(-50%);width:300px;height:220px}
+.desk[data-edge="left"] .zone{left:0;top:50%;transform:translateY(-50%);width:300px;height:220px}
+.desk[data-edge="bottom"] .zone{bottom:0;left:50%;transform:translateX(-50%);width:340px;height:150px}
+.dock.open .zone{pointer-events:auto}
+.hot{position:absolute;pointer-events:auto;z-index:5}
+.dock.open .hot,.desk[data-state="recording"] .hot{z-index:1}
+.desk[data-edge="right"] .hot{right:0;top:50%;transform:translateY(-50%);width:44px;height:48px}
+.desk[data-edge="left"] .hot{left:0;top:50%;transform:translateY(-50%);width:44px;height:48px}
+.desk[data-edge="bottom"] .hot{bottom:0;left:50%;transform:translateX(-50%);width:48px;height:44px}
+.desk.hit .hot{outline:1px dashed #6FB3D2;outline-offset:-1px}
+.desk.hit .ctl::after{content:"";position:absolute;inset:-4px;border:1px dashed #6FB3D2;border-radius:26px;pointer-events:none}
+
+/* ---------- the three controls ---------- */
+.stack{position:absolute;display:flex;gap:8px;z-index:3;pointer-events:none}
+.desk[data-edge="right"] .stack{right:10px;top:50%;transform:translateY(-50%);flex-direction:column;align-items:flex-end}
+.desk[data-edge="left"] .stack{left:10px;top:50%;transform:translateY(-50%);flex-direction:column;align-items:flex-start}
+.desk[data-edge="bottom"] .stack{bottom:10px;left:50%;transform:translateX(-50%);flex-direction:row;align-items:flex-end}
+.ctl{
+  position:relative;border:0;padding:0;margin:0;cursor:pointer;
+  background:rgba(28,28,30,.98);color:var(--glyph);display:grid;place-items:center;font:inherit;
+  box-shadow:0 10px 24px rgba(0,0,0,.35),var(--rim);
+  opacity:0;translate:var(--fx,0) var(--fy,0);scale:.6;
+  visibility:hidden;pointer-events:none;
+  transition:opacity .16s ease,translate .16s ease,scale .16s ease,width .18s var(--e-out),height .18s var(--e-out),background-color .12s linear,visibility 0s linear .16s
+}
+.dock.open .ctl,.desk[data-state="recording"] .ctl{
+  opacity:1;translate:0 0;scale:1;
+  visibility:visible;pointer-events:auto;
+  transition:opacity .26s var(--e-out),translate .26s var(--e-out),scale .26s var(--e-out),width .18s var(--e-out),height .18s var(--e-out),background-color .12s linear,visibility 0s linear 0s
+}
+.desk[data-state="recording"] .ctl.mic,.desk[data-state="recording"] .ctl.pad{display:none}
+.dock.open .ctl.mic{transition-delay:0s,0s,0s,0s,0s,0s,0s}
+.dock.open .ctl.rec{transition-delay:.045s,.045s,.045s,0s,0s,0s,0s}
+.dock.open .ctl.pad{transition-delay:.09s,.09s,.09s,0s,0s,0s,0s}
+.ctl.mic{width:40px;height:64px;border-radius:20px}
+.ctl.rec,.ctl.pad{width:40px;height:40px;border-radius:20px}
+.desk[data-edge="bottom"] .ctl.mic{width:64px;height:40px}
+.ctl:hover{background:rgba(58,58,60,.98)}
+.ctl svg{width:16px;height:16px;display:block}
+.ctl.pad svg{stroke-width:1.8}
+.desk[data-edge="right"] .ctl.mic{--fx:20px;--fy:48px}
+.desk[data-edge="right"] .ctl.rec{--fx:20px;--fy:-12px}
+.desk[data-edge="right"] .ctl.pad{--fx:20px;--fy:-60px}
+.desk[data-edge="left"] .ctl.mic{--fx:-20px;--fy:48px}
+.desk[data-edge="left"] .ctl.rec{--fx:-20px;--fy:-12px}
+.desk[data-edge="left"] .ctl.pad{--fx:-20px;--fy:-60px}
+.desk[data-edge="bottom"] .ctl.mic{--fx:48px;--fy:20px}
+.desk[data-edge="bottom"] .ctl.rec{--fx:-12px;--fy:20px}
+.desk[data-edge="bottom"] .ctl.pad{--fx:-60px;--fy:20px}
+
+/* New note: ring pinned toward the edge so the capsule grows inward */
+.gw{position:absolute;display:grid;place-items:center;width:16px;height:16px}
+.desk[data-edge="right"] .gw{right:12px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="left"] .gw{left:12px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="bottom"] .gw{bottom:12px;left:50%;transform:translateX(-50%)}
+.ring{width:16px;height:16px;border-radius:50%;border:2px solid var(--glyph);display:grid;place-items:center}
+.ring::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--glyph)}
+.desk[data-edge="right"] .ctl.rec:hover,.desk[data-edge="left"] .ctl.rec:hover{width:76px}
+.desk[data-edge="bottom"] .ctl.rec:hover{height:76px}
+.chev{position:absolute;font:500 13px/1 var(--sys);color:var(--glyph);opacity:0;transition:opacity .14s ease;pointer-events:none}
+.desk[data-edge="right"] .chev{left:12px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="left"] .chev{right:12px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="bottom"] .chev{top:12px;left:50%;transform:translateX(-50%)}
+.desk[data-edge="right"] .chev::before{content:"\2039"}
+.desk[data-edge="left"] .chev::before{content:"\203A"}
+.desk[data-edge="bottom"] .chev::before{content:"\5E"}
+.ctl.rec:hover .chev{opacity:.9}
+.desk[data-state="recording"] .chev{display:none}
+
+/* Recording: the ring becomes a filled pulsing dot */
+.desk[data-state="recording"] .ring{width:14px;height:14px;border-color:transparent;background:#fff;animation:pulse 1.2s ease-in-out infinite}
+.desk[data-state="recording"] .ring::after{display:none}
+@keyframes pulse{0%,100%{opacity:1;scale:1}50%{opacity:.55;scale:.82}}
+
+/* ---------- label capsules ---------- */
+.lab{
+  position:absolute;height:46px;border-radius:23px;padding:0 22px;background:rgba(17,17,17,.98);color:#fff;
+  display:flex;align-items:center;white-space:nowrap;font:500 17px/1 var(--sys);
+  box-shadow:0 10px 24px rgba(0,0,0,.35),var(--rim);opacity:0;pointer-events:none;
+  transition:opacity .14s ease,translate .14s ease
+}
+.lab b{font-weight:700;margin-left:8px}
+.desk[data-edge="right"] .lab{right:calc(100% + 12px);top:50%;transform:translateY(-50%);translate:8px 0}
+.desk[data-edge="left"] .lab{left:calc(100% + 12px);top:50%;transform:translateY(-50%);translate:-8px 0}
+.desk[data-edge="bottom"] .lab{bottom:calc(100% + 12px);left:50%;transform:translateX(-50%);translate:0 8px}
+.ctl:hover .lab{opacity:1;translate:0 0}
+.lab{z-index:2}
+.ctl.rec .lab.recl{display:none}
+.desk[data-state="recording"] .ctl.rec .lab.recl{display:flex}
+.desk[data-state="recording"] .ctl.rec .lab.idl{display:none}
+.desk[data-state="recording"] .ctl.rec:hover .lab.recl{opacity:1;translate:0 0}
+
+/* ---------- recording timer ---------- */
+.timer{
+  position:absolute;height:28px;border-radius:14px;padding:0 10px;display:flex;align-items:center;
+  background:rgba(17,17,17,.98);color:#fff;font:500 12px/1 "IBM Plex Mono",monospace;white-space:nowrap;
+  box-shadow:0 8px 20px rgba(0,0,0,.32),var(--rim);opacity:0;pointer-events:none;transition:opacity .14s ease
+}
+.desk[data-edge="right"] .timer{right:calc(100% + 12px);top:50%;transform:translateY(-50%)}
+.desk[data-edge="left"] .timer{left:calc(100% + 12px);top:50%;transform:translateY(-50%)}
+.desk[data-edge="bottom"] .timer{bottom:calc(100% + 12px);left:50%;transform:translateX(-50%)}
+.desk[data-state="recording"] .timer{opacity:1}
+.desk[data-state="recording"] .ctl.rec:hover .timer{opacity:0}
+
+/* ---------- state capsule ---------- */
+.cap{
+  position:absolute;z-index:3;background:rgba(28,28,30,.98);color:#fff;
+  box-shadow:0 10px 24px rgba(0,0,0,.35),var(--rim);
+  opacity:0;pointer-events:none;transition:opacity .16s ease,scale .16s ease;scale:.9;display:none
+}
+.cap.on{display:flex;opacity:1;scale:1}
+.desk[data-edge="right"] .cap{right:10px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="left"] .cap{left:10px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="bottom"] .cap{bottom:10px;left:50%;transform:translateX(-50%)}
+.cap.level,.cap.spin{width:40px;height:120px;border-radius:20px;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+.desk[data-edge="bottom"] .cap.level,.desk[data-edge="bottom"] .cap.spin{width:120px;height:40px;flex-direction:row}
+.cap.text{height:40px;border-radius:20px;padding:0 16px;align-items:center;gap:8px;white-space:nowrap;font:500 13px/1 var(--sys)}
+.cap .ms{font-family:"IBM Plex Mono",monospace;font-size:12px;color:rgba(255,255,255,.7)}
+.cap .dot{width:6px;height:6px;border-radius:50%;background:#fff;flex:none}
+.cap .wave{display:flex;align-items:center;gap:3px;height:16px}
+.cap .wave b{display:block;width:2px;border-radius:2px;background:rgba(255,255,255,.85);height:6px}
+.desk[data-edge="right"] .cap .wave,.desk[data-edge="left"] .cap .wave{transform:rotate(90deg)}
+.spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin .8s linear infinite}
+@keyframes spin{to{rotate:360deg}}
+.cap .glyph{width:16px;height:16px;display:block;flex:none}
+.cap .amber{color:var(--amber)}
+
+/* ---------- meeting-detected nudge ---------- */
+.nudge{
+  position:absolute;z-index:6;width:300px;background:#111;color:#fff;border-radius:12px;padding:12px 14px 14px;
+  font:13px/1.4 var(--sys);box-shadow:0 14px 32px rgba(0,0,0,.4),var(--rim);display:none;pointer-events:auto;overflow:hidden
+}
+.nudge.on{display:block}
+.desk[data-edge="right"] .nudge{right:26px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="left"] .nudge{left:26px;top:50%;transform:translateY(-50%)}
+.desk[data-edge="bottom"] .nudge{bottom:26px;left:50%;transform:translateX(-50%)}
+.nhead{display:flex;gap:10px;align-items:flex-start}
+.nbadge{
+  position:relative;flex:none;width:28px;height:28px;border-radius:7px;display:grid;place-items:center;
+  box-shadow:inset 0 .5px 0 rgba(255,255,255,.3)
+}
+.nbadge svg{width:16px;height:16px;display:block}
+.nbadge.meet::after,.nbadge.browser::after{
+  content:"";position:absolute;right:-3px;bottom:-3px;width:12px;height:12px;border-radius:50%;
+  box-shadow:0 0 0 1.5px #111
+}
+.nbadge.meet::after{background:conic-gradient(#EA4335 0 90deg,#FBBC04 90deg 180deg,#34A853 180deg 270deg,#4285F4 270deg 360deg)}
+.nbadge.browser::after{background:#1E8E3E}
+.toast{
+  position:absolute;z-index:12;display:none;align-items:center;gap:10px;padding:10px 12px;
+  background:#111;color:#fff;border-radius:12px;font:13px/1.3 var(--sys);
+  box-shadow:0 14px 32px rgba(0,0,0,.4),var(--rim);pointer-events:auto;min-width:240px
+}
+.toast.on{display:flex}
+.desk[data-edge="right"] .toast,.desk[data-edge="left"] .toast,.desk[data-edge="bottom"] .toast{
+  right:16px;left:auto;top:auto;bottom:16px;transform:none
+}
+.desk[data-edge="left"] .toast{left:16px;right:auto}
+.toast strong{display:block;font-size:13px}
+.toast span{display:block;color:#c8c8cc;font-size:12px}
+.toast button{margin-left:auto;border:0;border-radius:7px;padding:7px 10px;background:#f5f5f7;color:#111;font:600 12px/1 var(--sys);cursor:pointer}
+.badges{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin:12px 0 18px}
+.badge-card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px;display:flex;gap:10px;align-items:center}
+.badge-card .nbadge{width:32px;height:32px}
+.badge-card b{display:block;font-size:13px}
+.badge-card span{display:block;font-size:12px;color:var(--muted)}
+.ntext{min-width:0}
+.ntext strong{display:block;font-size:13px;font-weight:600;margin-bottom:2px}
+.ntext p{margin:0;color:#c8c8cc;font-size:12px;max-width:none}
+.nsub{margin:8px 0 0;color:#8a8a90;font-size:11px;max-width:none}
+.nudge .acts{display:flex;gap:8px;margin-top:10px}
+.nudge .acts button{flex:1;padding:7px 0;border-radius:7px;font:600 12px/1 var(--sys);border:0;cursor:pointer}
+.nudge .go{background:#f5f5f7;color:#111}
+.nudge .no{background:#2a2a2c;color:#ddd}
+.ndrain{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(255,255,255,.14);overflow:hidden}
+.ndrain i{display:block;height:100%;width:100%;background:#fff;transform-origin:right center;animation:ndrain 20s linear forwards}
+.nudge:hover .ndrain i{animation-play-state:paused}
+@keyframes ndrain{to{transform:scaleX(0)}}
+
+/* ---------- meeting notes window ---------- */
+.mwin{
+  width:420px;height:520px;background:#2B2B2D;color:#f2f2f4;border-radius:10px;border:1px solid #3E3E42;
+  box-shadow:0 22px 50px rgba(0,0,0,.45);display:flex;flex-direction:column;overflow:hidden;font:13px/1.45 var(--sys)
+}
+.mwin .tb{background:#232325;border-bottom:1px solid #3E3E42}
+.mwin .tb .ttl{color:#f2f2f4}
+.mhd{padding:10px 14px 8px;border-bottom:1px solid rgba(255,255,255,.08);flex:none}
+.mtitle{
+  width:100%;background:transparent;border:0;color:#fff;font:600 15px/1.3 var(--sys);padding:2px 0;outline:0
+}
+.mtitle::placeholder{color:#7b7b82}
+.mmeta{color:#9a9aa0;font-size:11px;margin-top:3px;display:flex;align-items:center;gap:6px}
+.live{display:inline-block;width:6px;height:6px;border-radius:50%;background:#f5f5f7;flex:none;animation:pulse 1.2s ease-in-out infinite}
+.live.off{background:#6b6b72;animation:none}
+.tabs{display:flex;gap:4px;padding:8px 10px 0;flex:none}
+.tab{flex:1;text-align:center;padding:7px 0;border-radius:8px;color:#9a9aa0;cursor:pointer;font:500 12px/1.2 var(--sys);background:transparent;border:0}
+.tab.on{background:rgba(255,255,255,.08);color:#fff}
+.mbody{flex:1;min-height:0;overflow:auto;padding:12px 14px}
+.mbody p{color:#c8c8cc;max-width:none;margin:0 0 10px}
+.line{margin:0 0 10px}
+.line .who{font-size:11px;color:#8ad0a8;font-weight:600}
+.line.other .who{color:#8bb8d4}
+.line .txt{color:#e8e8ea}
+.sum h4{margin:12px 0 4px;font-size:11px;color:#9a9aa0;text-transform:uppercase;letter-spacing:.06em}
+.sum h4:first-child{margin-top:0}
+.sum ul{margin:0;padding-left:18px;color:#e8e8ea}
+.mmeters{padding:0 14px 10px;display:flex;flex-direction:column;gap:8px;flex:none}
+.meter{display:flex;align-items:center;gap:8px;font-size:11px;color:#c8c8cc}
+.meter span.nm{width:48px;flex:none}
+.meter .track{flex:1;height:6px;background:rgba(255,255,255,.12);border-radius:3px;overflow:hidden}
+.meter .fill{display:block;height:100%;width:46%;background:#8ad0a8;border-radius:3px;transform-origin:left;animation:lvl 1.1s ease-in-out infinite alternate}
+.meter .fill.oth{width:62%;background:#8bb8d4;animation-duration:1.6s}
+.mwin[data-rec="0"] .meter .fill{animation:none;width:5%;background:#5a5a60}
+@keyframes lvl{from{scale:.45 1}to{scale:1 1}}
+.mfoot{display:flex;gap:8px;padding:10px 14px;border-top:1px solid rgba(255,255,255,.08);flex:none}
+.mfoot button{flex:1;padding:8px 0;border-radius:8px;border:0;cursor:pointer;font:600 12px/1 var(--sys)}
+.mfoot .stop{background:#f5f5f7;color:#111}
+.mfoot .open{background:#3A3A3C;color:#f2f2f4}
+
+/* windows inside the desk */
+.deskwin{position:absolute;z-index:5;display:none}
+.deskwin.on{display:block}
+#deskMeeting{left:50%;transform:translateX(-50%);top:40px}
+.desk[data-edge="bottom"] #deskMeeting{top:30px}
+.scratch{
+  position:absolute;z-index:5;left:24px;top:300px;width:300px;height:210px;background:#2B2B2D;color:#f2f2f4;
+  border-radius:10px;border:1px solid #3E3E42;box-shadow:0 22px 50px rgba(0,0,0,.45);display:none;
+  flex-direction:column;overflow:hidden;font:13px/1.45 var(--sys)
+}
+.scratch.on{display:flex}
+.desk[data-edge="left"] .scratch{left:auto;right:24px}
+.scratch .tb{background:#232325;border-bottom:1px solid #3E3E42}
+.scratch .tb .ttl{color:#f2f2f4}
+.scratch .sbody{flex:1;padding:14px;color:#c8c8cc}
+
+/* ---------- page furniture ---------- */
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}
+.legend span{font-size:12px;color:var(--muted)}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.photos{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0 8px}
+.photos figure{margin:0}
+.photos figcaption{font-size:12px;color:var(--muted);margin-top:6px}
+img.shot{width:100%;border-radius:10px;border:1px solid var(--line);box-shadow:0 10px 28px rgba(0,0,0,.12);display:block;background:#111}
+.tableWrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0 6px}
+table{width:100%;min-width:640px;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;vertical-align:top;padding:9px 10px;border-bottom:1px solid var(--line)}
+th{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:.07em;text-transform:uppercase;color:var(--accent);font-weight:500;white-space:nowrap}
+tbody tr:nth-child(odd){background:rgba(255,255,255,.55)}
+td b{font-weight:600}
+.spec{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:10px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card h3{margin:0 0 8px;font-size:13px;font-family:"IBM Plex Mono",monospace;letter-spacing:.07em;text-transform:uppercase;color:var(--accent)}
+.card dl{margin:0;font-size:13px}
+.card dt{font-weight:600;margin-top:8px}
+.card dt:first-child{margin-top:0}
+.card dd{margin:2px 0 0;color:var(--muted)}
+ul.tight,ol.tight{margin:8px 0 0;padding-left:18px;color:var(--ink);font-size:14px}
+ul.tight li,ol.tight li{margin:0 0 9px}
+ul.tight li b,ol.tight li b{font-weight:600}
+.arch{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;align-items:stretch;margin:14px 0 18px}
+.arch .node{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:12px 12px 14px}
+.arch .node b{display:block;font-size:13px}
+.arch .node span{display:block;font-size:12px;color:var(--muted);margin-top:4px}
+.arch .pipe{display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:22px}
+.specstage{background:#1A2027;border:1px solid var(--line);border-radius:12px;padding:26px;display:flex;justify-content:center}
+.flag{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:10px;letter-spacing:.08em;text-transform:uppercase;padding:2px 6px;border-radius:4px;background:var(--code-bg);color:var(--muted);margin-left:6px;vertical-align:1px}
+.flag.prop{background:#FBF0E4;color:var(--warn)}
+.flag.check{background:#E6EAF0;color:var(--accent)}
+
+@media (max-width:900px){
+  .photos{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:760px){
+  #deskMeeting{left:16px;right:16px;top:26px;width:auto;transform:none}
+  #deskMeeting .mwin{width:auto;height:400px}
+  .scratch{left:16px;right:16px;top:auto;bottom:86px;width:auto}
+  .desk[data-edge="left"] .scratch{left:16px;right:16px}
+  .specstage{padding:16px}
+  .specstage .mwin{width:100%;max-width:420px}
+  .arch{grid-template-columns:1fr}
+  .arch .pipe{display:none}
+}
+@media (max-width:620px){
+  body{padding:0 14px 70px}
+  .row{align-items:flex-start}
+  .row > .rk{width:100%}
+  .desk{height:520px}
+  .lab{height:38px;border-radius:19px;padding:0 14px;font-size:14px}
+  .desk[data-edge="right"] .zone,.desk[data-edge="left"] .zone{width:min(300px,86vw)}
+  .desk[data-edge="bottom"] .zone{width:min(340px,92vw)}
+  #deskMeeting .mwin{height:360px}
+  .nudge{width:min(300px,calc(100vw - 92px))}
+  .specstage{padding:12px}
+  table{font-size:12px}
+  th,td{padding:7px 6px}
+}
+@media (prefers-reduced-motion:reduce){
+  .nub,.ctl,.lab,.cap,.timer,.nudge{
+    transition:opacity .12s linear!important;transition-delay:0s!important;translate:none!important;scale:none!important
+  }
+  .ring,.live,.spinner,.meter .fill,.ndrain i{animation:none!important}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="eyebrow">Mockup · edge dock · v2</div>
+  <h1>One overlay on the edge. A nub at rest, three controls on hover, one capsule for every other state.</h1>
+  <p class="lede">v1 proved the shape. v2 is the build spec: real sizes, both walls, all three edges, every pill state, and meeting detection covered by the detection issue. Teams is not Zoom. A buried call still counts. Dictation and the dock are one overlay.</p>
+</header>
+
+<h2><span class="num">01</span>The dock, at real size</h2>
+<p class="sub">1pt equals 1 CSS pixel here, so what you see is what the panel should measure. Pick an edge, a wall, and a state. Hover the nub to open it. Click Dictate, New note, or Quick note.</p>
+
+<div class="rowset">
+  <div class="row"><span class="rk">Edge</span><div class="chips" id="edgeChips">
+    <button class="chip" data-edge="bottom" type="button">Bottom</button>
+    <button class="chip on" data-edge="right" type="button">Right</button>
+    <button class="chip" data-edge="left" type="button">Left</button>
+  </div></div>
+  <div class="row"><span class="rk">Wall</span><div class="chips" id="wallChips">
+    <button class="chip on" data-wall="light" type="button">Light</button>
+    <button class="chip" data-wall="dark" type="button">Dark</button>
+    <button class="chip" data-wall="photo" type="button">Photo</button>
+  </div></div>
+  <div class="row"><span class="rk">State</span><div class="chips" id="stateChips">
+    <button class="chip on" data-state="idle" type="button">Idle</button>
+    <button class="chip" data-state="hover" type="button">Hover</button>
+    <button class="chip" data-state="dictating" type="button">Dictating</button>
+    <button class="chip" data-state="working" type="button">Working</button>
+    <button class="chip" data-state="inserted" type="button">Inserted</button>
+    <button class="chip" data-state="guarded" type="button">Kept raw</button>
+    <button class="chip" data-state="error" type="button">Error</button>
+    <button class="chip" data-state="recording" type="button">Recording</button>
+    <button class="chip" data-state="detected" type="button">Meeting detected</button>
+    <button class="chip" data-state="holdkey" type="button">Release fn</button>
+  </div></div>
+  <div class="row"><span class="rk">Platform</span><div class="chips" id="platformChips">
+    <button class="chip on" data-platform="zoom" type="button">Zoom</button>
+    <button class="chip" data-platform="teams" type="button">Teams</button>
+    <button class="chip" data-platform="meet" type="button">Meet in Chrome</button>
+    <button class="chip" data-platform="facetime" type="button">FaceTime</button>
+    <button class="chip" data-platform="webex" type="button">Webex</button>
+    <button class="chip" data-platform="slack" type="button">Slack huddle</button>
+    <button class="chip" data-platform="unknown" type="button">Unknown</button>
+    <button class="chip" id="switchChip" data-switch type="button">Switch?</button>
+  </div></div>
+  <div class="row"><span class="rk">Proof</span><div class="chips" id="sceneChips">
+    <button class="chip on" data-scene="buried" type="button">Call buried</button>
+    <button class="chip" data-scene="front" type="button">Call in front</button>
+    <button class="chip" data-scene="siri" type="button">Siri / dictation</button>
+    <button class="chip" data-scene="left" type="button">Left the call</button>
+  </div></div>
+  <div class="row"><span class="rk">Detect</span>
+    <label class="tog"><input type="checkbox" id="detectBox" checked> Detect calls automatically</label>
+  </div>
+  <div class="row"><span class="rk">Debug</span>
+    <label class="tog"><input type="checkbox" id="hitBox"> Show hit areas</label>
+  </div>
+</div>
+
+<div class="desk" id="desk" data-edge="right" data-wall="light" data-state="idle" data-scene="buried">
+  <div class="app back" id="callWin">
+    <div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl" id="callTtl">Zoom · Process flows review <span class="mic-pill"><i></i>mic</span></div></div>
+    <div class="field" id="callCopy">The call is live in the background. Remote audio is going to AirPods. Gmail is in front, so frontmost-app detection would miss this.</div>
+  </div>
+  <div class="app" id="frontWin">
+    <div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl" id="frontTtl">Gmail</div></div>
+    <div class="field" id="frontCopy">Chrome is in front. Issue 21 watches who holds the microphone, so the dock still knows this is Zoom, not Gmail.</div>
+  </div>
+
+  <div class="deskwin" id="deskMeeting"></div>
+
+  <div class="scratch" id="scratch">
+    <div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">Quick note</div></div>
+    <div class="sbody">Typed notes, not a call. In Undertone this saves into the open meeting's Notes tab, or today's Obsidian daily note if nothing is recording.</div>
+  </div>
+
+  <div class="hint" id="hint">Hover the nub on the edge</div>
+
+  <div class="dock" id="dock">
+    <div class="nub" aria-hidden="true"></div>
+
+    <div class="cap" id="cap" aria-hidden="true"></div>
+
+    <div class="nudge" id="nudge" role="dialog" aria-label="Meeting detected">
+      <div class="nhead">
+        <span class="nbadge" id="nudgeBadge" aria-hidden="true"></span>
+        <div class="ntext">
+          <strong id="nudgeTitle">Meeting detected</strong>
+          <p id="nudgeReason">Zoom is using the microphone.</p>
+        </div>
+      </div>
+      <p class="nsub" id="nudgeSub">No bot joins. Recording stays on this Mac.</p>
+      <div class="acts">
+        <button class="no" type="button" id="nudgeNo">Ignore</button>
+        <button class="go" type="button" id="nudgeGo">Start note</button>
+      </div>
+      <div class="ndrain" aria-hidden="true"><i></i></div>
+    </div>
+
+    <div class="toast" id="toast" role="status">
+      <div>
+        <strong id="toastTitle">Teams call ended</strong>
+        <span>Recording stopped. Mute would not have done this.</span>
+      </div>
+      <button type="button" id="toastGo">Resume</button>
+    </div>
+
+    <div class="zone" id="zone">
+      <div class="hot" id="hot"></div>
+      <div class="stack" id="stack">
+        <button class="ctl mic" id="cMic" type="button" aria-label="Dictate, fn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M7 11a5 5 0 0010 0M12 16v3M9 20h6"/></svg>
+          <span class="lab">Dictate <b>fn</b></span>
+        </button>
+        <button class="ctl rec" id="cRec" type="button" aria-label="New note, Option M">
+          <span class="chev" aria-hidden="true"></span>
+          <span class="gw" aria-hidden="true"><span class="ring"></span></span>
+          <span class="lab idl">New note <b>Opt+M</b></span>
+          <span class="lab recl">Stop <b>Opt+M</b></span>
+          <span class="timer" id="timer">12:04</span>
+        </button>
+        <button class="ctl pad" id="cPad" type="button" aria-label="Quick note, Option S">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M7 4h7l4 4v12H7z"/><path d="M14 4v4h4M9 12h6M9 16h4"/></svg>
+          <span class="lab">Quick note</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="legend">
+  <span><i style="background:#8E8E93"></i>Idle nub, 48 by 8, the only thing on screen at rest</span>
+  <span><i style="background:#1C1C1E"></i>Three controls on hover, fanned out of the nub</span>
+  <span><i style="background:#3A3A3C"></i>Hovered control lightens and, for New note, widens</span>
+  <span><i style="background:#F2B950"></i>Amber is the only accent, and only for Kept raw</span>
+</div>
+
+<h2><span class="num">02</span>State map</h2>
+<p class="sub">One component, ten states. The last column is what Undertone renders today, read from <code>PillPanel.swift</code>, <code>PillPlacement.swift</code>, and <code>AppModel.swift</code>.</p>
+<div class="tableWrap"><table>
+  <thead><tr><th>State</th><th>What the dock shows</th><th>Trigger</th><th>Leaves after</th><th>Swift today</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><b>Idle</b><br><code>.idle</code></td>
+      <td>Nub only, 48 by 8, 6px from the edge.</td>
+      <td>Rest.</td>
+      <td>Never, it is the rest state.</td>
+      <td><code>IdlePillIndicatorView</code> draws 44 by 8, black at 0.55 with a white 0.35 inner capsule, 12px inset. Proposed: 48 by 8, gray fill, 6px inset.</td>
+    </tr>
+    <tr>
+      <td><b>Hover</b></td>
+      <td>Three controls fan out of the nub. Hovered one lightens and shows its label.</td>
+      <td>Pointer in the 48 by 44 hit area for 120ms.</td>
+      <td>400ms after the pointer leaves the dock, or Escape.</td>
+      <td>Hover on the persistent idle pill reveals one 36pt white disc next to a 92 by 36 bubble (<code>FlowBarRecordPlacement</code>, gap 6, margin 8). No mic control, no Quick note, no label capsules, tooltip text only. Animation easeOut 0.16.</td>
+    </tr>
+    <tr>
+      <td><b>Dictating</b><br><code>.listening(level:)</code></td>
+      <td>Mic capsule alone at the nub position, grown to 40 by 120 along the edge. Seven level bars and a dot. No text.</td>
+      <td>Hold fn, or click Dictate.</td>
+      <td>Key release or click, then Working.</td>
+      <td>A separate 240 by 44 pill (44 by 240 on the sides) with a 9pt dot and <code>FlowingWaveform</code>, plus a lock glyph when <code>dictationLocked</code> and a "Command" label in command mode. It sits 26pt from the edge, not on the dock.</td>
+    </tr>
+    <tr>
+      <td><b>Working</b><br><code>.working</code></td>
+      <td>Same capsule, 14px ring spinner, nothing else.</td>
+      <td>Dictation ended, engine is cleaning up.</td>
+      <td>When the insert returns.</td>
+      <td>Same 240 by 44 pill with a small <code>ProgressView</code> plus text: "Cleaning up", "Rewriting selection", and "slower on battery" when <code>slowerOnBattery</code>.</td>
+    </tr>
+    <tr>
+      <td><b>Inserted</b><br><code>.inserted(totalMS:)</code></td>
+      <td>Capsule with a check and <code>742 ms</code> in 12px mono, then collapses to the nub.</td>
+      <td>Text landed in the app.</td>
+      <td>900ms.</td>
+      <td>Green check circle, the word "Inserted", and "<i>n</i> ms" in the 240 by 44 pill. Held 1800ms by <code>showTransientState</code>. Proposed: drop the word, cut the hold to 900ms.</td>
+    </tr>
+    <tr>
+      <td><b>Kept raw</b><br><code>.guarded(totalMS:)</code></td>
+      <td>Capsule with an amber warning triangle and "Kept raw".</td>
+      <td>Cleanup guard fired, raw transcript used.</td>
+      <td>1800ms.</td>
+      <td>Orange triangle, "Kept raw", and a dimmed "guard" word. Held 1800ms. Same hold, one less word.</td>
+    </tr>
+    <tr>
+      <td><b>Error</b><br><code>.error(String)</code></td>
+      <td>Capsule with the message, for example "Insertion failed: app changed".</td>
+      <td>Insert or engine failure.</td>
+      <td>1800ms.</td>
+      <td>Red x circle plus the message in the 240 by 44 pill. <code>showTransientError</code> holds 1800ms, and the engine-failure path passes 2200ms.</td>
+    </tr>
+    <tr>
+      <td><b>Release fn</b></td>
+      <td>Capsule reading "Release fn to insert".</td>
+      <td>Hold-to-talk key still down when the text is ready.</td>
+      <td>On key release.</td>
+      <td>Not its own state. <code>AppModel</code> sets <code>workingNote = "Release fn to insert"</code> inside <code>.working</code>, so it renders as the Working pill with different text.</td>
+    </tr>
+    <tr>
+      <td><b>Recording</b></td>
+      <td>New note control alone, ring becomes a filled white dot pulsing at 1.2s, timer capsule "12:04" toward the interior. Hover shows "Stop Opt+M".</td>
+      <td>Click New note, or Opt+M.</td>
+      <td>Click again, so Stop. Then Idle and the window shows Summary.</td>
+      <td>No pill state for it. <code>meetings.state.isBusy</code> hides the record control entirely (<code>MeetingRecordControlPolicy</code>), so while capture runs the dock shows nothing about it. There is no Opt+M binding in <code>HotkeyMonitor</code> today. Proposed: <code>PillState.recording(elapsed:)</code>.</td>
+    </tr>
+    <tr>
+      <td><b>Meeting detected</b></td>
+      <td>Nub, plus a 300px nudge card 12px away from it. Badge color and glyph match the platform: Teams people on purple, Zoom camcorder on blue, Meet green with a Chrome pip. Reason line names the app. Start note fills the title as platform plus window.</td>
+      <td>Another app took the microphone.</td>
+      <td>Ignore, Start note, or the mic is released.</td>
+      <td><code>MeetingAppDetector</code> classifies the frontmost app and sets <code>detected</code>, which only changes the record control's accessibility label and tooltip. No card, and a call behind another window is invisible.</td>
+    </tr>
+  </tbody>
+</table></div>
+
+<h2><span class="num">03</span>Meeting notes window</h2>
+<p class="sub">New note opens this as its own window, the same way the shipped Meetings screen is its own window. Tabs use Undertone's words: Notes, Transcript, Summary. Not "Thoughts".</p>
+<div class="rowset">
+  <div class="row"><span class="rk">Window</span><div class="chips" id="winChips">
+    <button class="chip on" data-rec="1" type="button">While recording</button>
+    <button class="chip" data-rec="0" type="button">After stop</button>
+  </div></div>
+</div>
+<div class="specstage"><div id="specMeeting"></div></div>
+<div class="spec">
+  <div class="card">
+    <h3>Title</h3>
+    <p class="note">An editable field, not a label. Placeholder "Untitled note". On stop it fills with the auto title, and typing at any point wins over it.</p>
+  </div>
+  <div class="card">
+    <h3>Meta</h3>
+    <p class="note">A pulsing dot and "Recording · 12:04" while live. The dot goes flat and the line reads "Stopped · 12:41" after.</p>
+  </div>
+  <div class="card">
+    <h3>Meters</h3>
+    <p class="note">Me is the microphone. Others is the system tap, which is how AirPods work without a bot. Flat Others means the system-audio grant is off.</p>
+  </div>
+  <div class="card">
+    <h3>Summary</h3>
+    <p class="note">While recording it says it waits. After stop it shows Key points, Decisions, and Action items.</p>
+  </div>
+</div>
+
+<h2><span class="num">04</span>Issue 21: know which call is on, show it with an icon, start and stop from the dock</h2>
+<p class="sub">The bar: if a Teams meeting is open, it should look like Teams. Zoom should look like Zoom. A call behind Gmail should still count. Use the Platform and Proof chips on the desk above. This is the visual spec for the detection issue.</p>
+
+<h3>The badge is the product</h3>
+<p class="note">Native apps use the app color plus a distinct glyph. Browser Meet is green with a Chrome pip. Unknown stays gray and does not auto-nudge. Siri is unknown-and-ignored.</p>
+<div class="badges" aria-hidden="true">
+  <div class="badge-card"><span class="nbadge" style="background:#2D8CFF"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6.5" width="13" height="11" rx="2.2"/><path d="M15.5 10l6-3.2v10.4l-6-3.2z"/></svg></span><div><b>Zoom</b><span>Blue camcorder. Native <code>us.zoom.xos</code>.</span></div></div>
+  <div class="badge-card"><span class="nbadge" style="background:#5B5FC7"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="2.4"/><circle cx="15.5" cy="9" r="1.8"/><path d="M4.5 17.5c.4-2.4 2.2-3.8 4.5-3.8s4.1 1.4 4.5 3.8"/><path d="M14 13.8c1.7 0 3.2 1 3.6 2.8"/></svg></span><div><b>Teams</b><span>Purple people. <code>teams2</code> or classic <code>teams</code>.</span></div></div>
+  <div class="badge-card"><span class="nbadge meet" style="background:#1E8E3E"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="12" height="12" rx="2"/><path d="M15 10l6-2.5v9L15 14z"/></svg></span><div><b>Meet in Chrome</b><span>Green camera, Chrome pip. Title token Meet.</span></div></div>
+  <div class="badge-card"><span class="nbadge" style="background:#34C759"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="12" height="10" rx="2"/><path d="M15 10.2l6-3.4v10.4l-6-3.4z"/></svg></span><div><b>FaceTime</b><span>Green camera, no Chrome pip.</span></div></div>
+  <div class="badge-card"><span class="nbadge" style="background:#00A0D2"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="12" height="10" rx="2"/><path d="M15 10.2l6-3.4v10.4l-6-3.4z"/></svg></span><div><b>Webex</b><span>Teal. Native meeting app.</span></div></div>
+  <div class="badge-card"><span class="nbadge" style="background:#611F69"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M8 14.5A2.5 2.5 0 105.5 12H8zM9.5 8A2.5 2.5 0 1012 5.5V8zM16 9.5A2.5 2.5 0 1018.5 12H16zM14.5 16A2.5 2.5 0 1012 18.5V16z"/></svg></span><div><b>Slack huddle</b><span>Purple hash. Mic-owner, not calendar.</span></div></div>
+</div>
+
+<h3>Two channels, no bot</h3>
+<div class="arch" aria-hidden="true">
+  <div class="node"><b>Zoom / Teams / Meet</b><span>The call app you are already in.</span></div>
+  <div class="pipe">&rarr;</div>
+  <div class="node"><b>macOS output mix</b><span>The call app hands its audio to the system.</span></div>
+  <div class="pipe">&rarr;</div>
+  <div class="node"><b>Two channels</b><span>Me = microphone, Others = system audio tap.</span></div>
+</div>
+<div class="spec">
+  <div class="card">
+    <h3>Your voice</h3>
+    <p class="note">The microphone. Undertone already has this permission for dictation. It carries you and the room.</p>
+  </div>
+  <div class="card">
+    <h3>Everyone else</h3>
+    <p class="note">A Core Audio process tap copies the audio the call app sends to your output device. Headphones or speakers does not matter, the samples are the same. Permission is "System Audio Recording Only" (macOS 14.4+). Without it, Others is silent with headphones in.</p>
+  </div>
+  <div class="card">
+    <h3>Nothing joins the call</h3>
+    <p class="note">No bot, no Teams or Zoom SDK, nothing in the participant list. The call app and everyone on it never knows Undertone is recording.</p>
+  </div>
+</div>
+
+<h3>What Undertone does today</h3>
+<p>Frontmost app only: native Zoom, Teams, FaceTime count; a browser counts only when the focused window title contains Meet, Zoom, or Teams. A call behind another window is invisible. The dock never auto-starts. No card. (Source: <code>MeetingAppDetector.swift</code>.)</p>
+
+<h3>The plan for Undertone</h3>
+<ol class="tight">
+  <li><b>Mic-owner watch.</b> Core Audio process objects answer "which process is recording input" with a public HAL query, no new permission. Verified on a current macOS build: during playback the list named the player with output running, and it also showed <code>com.apple.CoreSpeech</code> holding the microphone in the background. So the watcher must map bundle IDs to known call apps and ignore system daemons, never treat "any mic user" as a call.</li>
+  <li><b>Trigger.</b> On macOS 26 the per-process "is running input" listeners register but never fire; a listener on the default input device's "running somewhere" property does fire, then the per-process flags are read at that moment. Fall back to a 2 s poll while a call app is running.</li>
+  <li><b>Identify the platform.</b> Native bundle IDs: <code>us.zoom.xos</code> Zoom, <code>com.microsoft.teams2</code> and <code>com.microsoft.teams</code> Teams, <code>com.apple.FaceTime</code> FaceTime, <code>com.webex.meetingmanager</code> Webex, <code>com.tinyspeck.slackmacgap</code> Slack huddle. Browsers holding the mic: scan that browser's window titles through Accessibility (already granted) for Meet, Zoom, Teams, Webex tokens; Chrome's Meet tabs are titled "Meet" plus the meeting code.</li>
+  <li><b>Icon.</b> Native apps: the app's own icon from the bundle (<code>NSWorkspace.icon(forFile:)</code>). Browser calls: the browser's icon with the platform glyph in the corner. Unknown mic owner in a known browser: generic video badge.</li>
+  <li><b>The card.</b> Once per call, never while that call is being recorded, auto-dismiss 20 s with hover pause, Ignore remembers that call until the mic is released. Start note uses the platform name plus the window title as the meeting title.</li>
+  <li><b>Auto-stop.</b> When the owning process releases the mic for more than 8 s, stop and offer Resume. Mute is not release: Zoom and Teams keep the input open while muted.</li>
+  <li><b>Out of scope for this pass:</b> calendar Join + Start, named speakers, Automation permission for background tabs.</li>
+</ol>
+
+<h3>Proof that closes it</h3>
+<ul class="tight">
+  <li>Zoom or FaceTime call on AirPods with Chrome in front, card appears with the right badge.</li>
+  <li>Start note, Others meter moves.</li>
+  <li>Leave the call, auto-stop toast.</li>
+  <li>Siri or dictation running does not raise a card.</li>
+</ul>
+
+<h2><span class="num">05</span>Motion and hit areas</h2>
+<p class="sub">Everything the build needs, in numbers. Sizes are points on a Mac display, so 1pt equals 1 CSS pixel in the mockup above.</p>
+<div class="spec">
+  <div class="card">
+    <h3>Sizes</h3>
+    <dl>
+      <dt>Nub</dt><dd>48 by 8, radius 4, 6px in from the edge, centered. Fill rgba(142,142,147,.95) on a light wall, rgba(161,161,166,.95) on a dark one, with a 0.5px white inner highlight.</dd>
+      <dt>Nub hit area</dt><dd>48 by 44. The long side runs along the edge.</dd>
+      <dt>Stack</dt><dd>10px in from the edge, gap 8, centered. Mic 40 by 64 radius 20. New note 40 radius 20. Quick note 40 radius 20. Total 160 along the edge.</dd>
+      <dt>Glyphs</dt><dd>New note ring 16px outer with a 2px stroke and a 6px dot. Quick note glyph 16px at 1.8 stroke. Mic 16px at 1.8 stroke. Glyph color #F5F5F7.</dd>
+      <dt>Fills</dt><dd>Control #1C1C1E at 0.98. Hovered #3A3A3C. Shadow 0 10px 24px rgba(0,0,0,.35). On a dark wall add inset 0 0 0 1px rgba(255,255,255,.14).</dd>
+      <dt>Label</dt><dd>Height 46, radius 23, padding 0 22px, fill #111 at 0.98, text 17px at weight 500, shortcut at weight 700, 12px from the control toward the interior.</dd>
+      <dt>New note hover</dt><dd>Width 40 to 76 on the sides, height 40 to 76 on the bottom. Chevron 13px at 0.9 opacity, 12px inset, pointing toward the interior.</dd>
+      <dt>Dictating capsule</dt><dd>40 by 120 on the sides, 120 by 40 on the bottom. Seven bars, 2px wide, 4 to 16px, white at 0.85, plus a 6px white dot.</dd>
+      <dt>Text capsules</dt><dd>Height 40, radius 20, padding 0 16px, 13px text, mono numbers at 12px. They keep horizontal text and grow toward the interior. They do not rotate.</dd>
+      <dt>Timer and nudge</dt><dd>Timer 28 tall, radius 14, 12px mono, 12px from the control. Nudge 300 wide, radius 12, 12px from the nub.</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h3>Timing</h3>
+    <dl>
+      <dt>Hover intent</dt><dd>Open 120ms after the pointer enters the nub hit area.</dd>
+      <dt>Collapse intent</dt><dd>Close 400ms after the pointer leaves the whole dock, so moving to a label never collapses it.</dd>
+      <dt>Nub out</dt><dd>140ms, opacity 1 to 0 and scale 1 to 0.6 along the edge only.</dd>
+      <dt>Controls in</dt><dd>260ms, cubic-bezier(.2,.9,.3,1.15), from the nub center at scale 0.6 and opacity 0. Stagger 45ms in the order mic, New note, Quick note.</dd>
+      <dt>Labels</dt><dd>140ms fade plus an 8px slide from the control side.</dd>
+      <dt>Collapse</dt><dd>160ms, reversed, no stagger.</dd>
+      <dt>Holds</dt><dd>Inserted 900ms. Kept raw 1800ms. Error 1800ms. Recording dot pulse 1.2s.</dd>
+      <dt>Reduced motion</dt><dd><code>prefers-reduced-motion: reduce</code> drops every move and scale. What is left is a 120ms opacity fade and no pulse.</dd>
+    </dl>
+  </div>
+  <div class="card">
+    <h3>Behavior</h3>
+    <dl>
+      <dt>Hit areas</dt><dd>Each control is its drawn size plus 4px. Turn on "Show hit areas" above to see both.</dd>
+      <dt>One region</dt><dd>The expanded stack and its labels are a single hover region. Leaving any one control does not collapse the dock.</dd>
+      <dt>Escape</dt><dd>Escape collapses the dock. It does not stop a recording.</dd>
+      <dt>Focus</dt><dd>The dock never takes keyboard focus. The panel stays non-activating, so the caret in the other app does not move.</dd>
+      <dt>Display</dt><dd>It lives on the display that has the pointer, and keeps the edge it was docked to.</dd>
+      <dt>Screen share</dt><dd>Hide the dock while a system screen-share picker is up. <span class="flag prop">proposal</span></dd>
+    </dl>
+  </div>
+</div>
+
+<h2><span class="num">06</span>What else to change</h2>
+<ul class="tight">
+  <li><b>Give hover an intent delay.</b> 120ms to open and 400ms to close. Without the close delay the dock collapses when the pointer crosses the 8px gap between two controls, and the label sits outside the control it belongs to.</li>
+  <li><b>Make the nub easy to hit.</b> 8px of drawn height is too thin to aim at. Keep the drawing at 48 by 8 and give it a 48 by 44 hit area, the same trick the Dock uses.</li>
+  <li><b>Tint the hovered control.</b> Today every control is the same black, so hover has no feedback until the label appears. #3A3A3C reads instantly and costs nothing.</li>
+  <li><b>Use one overlay, not two.</b> Retire the separate 240 by 44 pill. Dictation should grow out of the same dock the nub lives on, so the eye never has to find a second window. This is the biggest change in v2.</li>
+  <li><b>Add a rim on dark walls.</b> A near-black stack on a #1B2129 desktop has almost no edge. A 1px inset rgba(255,255,255,.14) separates it without turning it into a glass card.</li>
+  <li><b>Quick note does two jobs.</b> When a meeting is recording it appends to that meeting's Notes tab, otherwise it appends to today's Obsidian daily note. Local file either way. That is the Undertone version of a pad, instead of one more window nobody reopens.</li>
+  <li><b>Add a right-click Flow Menu.</b> Microphone device, cleanup level, paste last result, and hide for an hour. Those settings are currently a trip to the main window, and hide-for-an-hour is the honest answer to "get out of my way" instead of quitting the app.</li>
+  <li><b>Surface mic-owner detection as the nudge.</b> The research says Core Audio process objects on macOS 14.2 and later can answer which app holds the microphone, with no extra prompt. Undertone only checks the frontmost app today, so a Zoom call behind a browser is invisible. The nudge card is where that signal should land.</li>
+  <li><b>Let dictation run during a meeting.</b> Today the meeting blocks it. Better: take the mic for the sentence, drop a marker in the transcript, and hand it back. A block teaches people to stop using one of the two features.</li>
+  <li><b>Label it for VoiceOver and give it keys.</b> Every control needs a name and a shortcut: fn to dictate, Opt+M for New note, Opt+S for Quick note. Neither Opt+M nor Opt+S exists in <code>HotkeyMonitor</code> today.</li>
+  <li><b>Respect reduced motion.</b> The fan-out is the one place this dock shows off. Under <code>prefers-reduced-motion</code> it should become a plain fade, not a slower fan.</li>
+</ul>
+
+<h2><span class="num">07</span>Implementation map</h2>
+<p class="sub">Only what the code shows. Guesses are marked.</p>
+<div class="tableWrap"><table>
+  <thead><tr><th>File</th><th>Change</th><th>Notes</th></tr></thead>
+  <tbody>
+    <tr>
+      <td><code>PillPanel.swift</code></td>
+      <td>Replace the <code>RecordPillView</code> cluster and <code>IdlePillIndicatorView</code> with the three-control dock. Keep the panel itself non-activating and keep the drag behavior.</td>
+      <td>Today: <code>activeHorizontalSize</code> 240 by 44, <code>idleHorizontalSize</code> 44 by 8, <code>activeInset</code> 26, <code>idleInset</code> 12, <code>animationDuration</code> 0.18.</td>
+    </tr>
+    <tr>
+      <td><code>PillPlacement.swift</code></td>
+      <td>Retire <code>FlowBarRecordPlacement</code>'s bubble and disc math, keep <code>PillPlacement</code> drag and dock snapping. Add stack metrics: inset 10, gap 8, mic 40 by 64, controls 40.</td>
+      <td>Today: bubbleLong 92, bubbleShort 36, disc 36, gap 6, margin 8, and <code>isDiscClick</code> hit testing that assumes one disc.</td>
+    </tr>
+    <tr>
+      <td><code>Models.swift</code></td>
+      <td><code>PillState</code> gains <code>.recording(elapsed:)</code> and <code>.meetingDetected(app:)</code>.</td>
+      <td>Today the enum is <code>idle, listening(level:), working, inserted(totalMS:), guarded(totalMS:), error(String)</code>. It is <code>Equatable</code>, and <code>schedulePillReset</code> compares states, so new cases must stay cheap to compare.</td>
+    </tr>
+    <tr>
+      <td><code>AppModel.swift</code></td>
+      <td>Hover intent timers, the 900ms Inserted hold, and the Opt+M and Opt+S bindings. Route <code>recordDetectedMeeting()</code> through the dock's recording state instead of hiding the control.</td>
+      <td>Today: <code>showTransientState</code> holds 1800ms, <code>showTransientError</code> 1800ms or 2200ms, and <code>workingNote</code> carries "Release fn to insert".</td>
+    </tr>
+    <tr>
+      <td><code>HotkeyMonitor.swift</code></td>
+      <td>Add the Opt+M and Opt+S global shortcuts.</td>
+      <td>The only Option path today is an Option plus Shift shortcut inside <code>shortcut(for:flags:autorepeat:)</code>. No meeting key exists.</td>
+    </tr>
+    <tr>
+      <td><code>MeetingAppDetector.swift</code></td>
+      <td>Add <code>MicOwnerWatcher</code> (Core Audio process objects, device running listener plus 2 s poll), a <code>MeetingPlatform</code> enum with bundle map and badge, browser window-title scan for the service, and the nudge model. <code>classify</code> keeps its shape and gains <code>micOwner:</code>.</td>
+      <td>Today it classifies the frontmost bundle ID and the focused window title. <code>classify</code> and <code>titleLooksLikeCall</code> are already <code>nonisolated</code> and testable.</td>
+    </tr>
+    <tr>
+      <td><code>MeetingView.swift</code></td>
+      <td>Nothing structural. The mockup follows the shipped sections.</td>
+      <td>Section titles in the code are already "Notes", "Summary", and "Transcript".</td>
+    </tr>
+  </tbody>
+</table></div>
+<p class="note">Detection issue.</p>
+
+</div>
+
+<script>
+(function(){
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var desk = document.getElementById('desk');
+  var dock = document.getElementById('dock');
+  var zone = document.getElementById('zone');
+  var hot = document.getElementById('hot');
+  var cap = document.getElementById('cap');
+  var nudge = document.getElementById('nudge');
+  var hint = document.getElementById('hint');
+  var timer = document.getElementById('timer');
+  var cMic = document.getElementById('cMic');
+  var cRec = document.getElementById('cRec');
+  var cPad = document.getElementById('cPad');
+  var scratch = document.getElementById('scratch');
+  var hitBox = document.getElementById('hitBox');
+  var deskMeeting = document.getElementById('deskMeeting');
+  var specMeeting = document.getElementById('specMeeting');
+
+  /* ---------- meeting notes window ---------- */
+  function meetingHTML(){
+    return '' +
+    '<div class="mwin" data-rec="1">' +
+      '<div class="tb"><div class="dots"><i></i><i></i><i></i></div><div class="ttl">Meeting notes</div></div>' +
+      '<div class="mhd">' +
+        '<input class="mtitle js-title" type="text" placeholder="Untitled note" aria-label="Note title">' +
+        '<div class="mmeta"><span class="live js-dot"></span><span class="js-meta">Recording · 12:04</span></div>' +
+      '</div>' +
+      '<div class="tabs">' +
+        '<button class="tab js-tab" data-tab="notes" type="button">Notes</button>' +
+        '<button class="tab js-tab on" data-tab="transcript" type="button">Transcript</button>' +
+        '<button class="tab js-tab" data-tab="summary" type="button">Summary</button>' +
+      '</div>' +
+      '<div class="mbody js-body"></div>' +
+      '<div class="mmeters">' +
+        '<div class="meter"><span class="nm">Me</span><span class="track"><i class="fill"></i></span></div>' +
+        '<div class="meter"><span class="nm">Others</span><span class="track"><i class="fill oth"></i></span></div>' +
+      '</div>' +
+      '<div class="mfoot">' +
+        '<button class="stop js-stop" type="button">Stop</button>' +
+        '<button class="open" type="button">Open in Undertone</button>' +
+      '</div>' +
+    '</div>';
+  }
+
+  function mountMeeting(host, onStop){
+    host.innerHTML = meetingHTML();
+    var win = host.querySelector('.mwin');
+    var titleEl = win.querySelector('.js-title');
+    var metaEl = win.querySelector('.js-meta');
+    var dotEl = win.querySelector('.js-dot');
+    var bodyEl = win.querySelector('.js-body');
+    var stopEl = win.querySelector('.js-stop');
+    var tabs = win.querySelectorAll('.js-tab');
+    var tab = 'transcript';
+    var rec = true;
+
+    function render(){
+      if (tab === 'notes'){
+        bodyEl.innerHTML = '<p>Typed notes live here, apart from the transcript. A rebuilt summary never overwrites this.</p>' +
+          '<p>Quick note from the dock appends to this tab while a meeting is open.</p>';
+        return;
+      }
+      if (tab === 'summary'){
+        bodyEl.innerHTML = rec
+          ? '<p>Summary waits until you stop. The transcript keeps filling in the meantime.</p>'
+          : '<div class="sum">' +
+              '<h4>Key points</h4><ul><li>Paid ad spend comes down for one quarter.</li><li>Loyalty offer gets a small test, not a full launch.</li></ul>' +
+              '<h4>Decisions</h4><ul><li>Ship v4 of the process flows before the next call.</li></ul>' +
+              '<h4>Action items</h4><ul><li>Sam sends the design brief today.</li><li>Avery reruns the numbers on the loyalty test.</li></ul>' +
+            '</div>';
+        return;
+      }
+      bodyEl.innerHTML =
+        '<div class="line"><div class="who">Me</div><div class="txt">Agreed. It will not take long once we settle the last two points.</div></div>' +
+        '<div class="line other"><div class="who">Others</div><div class="txt">Yesterday, going through the process flows, they did not have the latest versions.</div></div>' +
+        '<div class="line"><div class="who">Me</div><div class="txt">Right, so we send them v4 before the next call.</div></div>' +
+        '<div class="line other"><div class="who">Others</div><div class="txt">That works. I will pull the old copies out of the shared folder.</div></div>';
+    }
+
+    function setTab(next){
+      tab = next;
+      Array.prototype.forEach.call(tabs, function(t){ t.classList.toggle('on', t.getAttribute('data-tab') === tab); });
+      render();
+    }
+
+    function setRec(on){
+      rec = on;
+      win.setAttribute('data-rec', on ? '1' : '0');
+      dotEl.classList.toggle('off', !on);
+      if (on){
+        metaEl.textContent = 'Recording · 12:04';
+        titleEl.value = '';
+        setTab('transcript');
+      } else {
+        metaEl.textContent = 'Stopped · 12:41';
+        if (!titleEl.value) titleEl.value = 'Process flows review';
+        setTab('summary');
+      }
+    }
+
+    Array.prototype.forEach.call(tabs, function(t){
+      t.addEventListener('click', function(){ setTab(t.getAttribute('data-tab')); });
+    });
+    stopEl.addEventListener('click', function(){
+      setRec(false);
+      if (onStop) onStop();
+    });
+
+    setRec(true);
+    return { setRec: setRec, setTab: setTab, setElapsed: function(text){ if (rec) metaEl.textContent = 'Recording · ' + text; } };
+  }
+
+  var deskNote = mountMeeting(deskMeeting, function(){ if (state === 'recording') setState('idle', true); });
+  var specNote = mountMeeting(specMeeting, null);
+
+  /* ---------- state capsule contents ---------- */
+  var CHECK = '<svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12.5l5.2 5.2L20 7"/></svg>';
+  var WARN = '<svg class="glyph amber" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.2v.1"/></svg>';
+  var XMARK = '<svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+  var KEY = '<svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M8 12h8"/></svg>';
+
+  /* ---------- platform-aware nudge ---------- */
+  var CAM = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="12" height="10" rx="2"/><path d="M15 10.2l6-3.4v10.4l-6-3.4z"/></svg>';
+  var ZOOMG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6.5" width="13" height="11" rx="2.2"/><path d="M15.5 10l6-3.2v10.4l-6-3.2z"/></svg>';
+  var TEAMSG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="2.4"/><circle cx="15.5" cy="9" r="1.8"/><path d="M4.5 17.5c.4-2.4 2.2-3.8 4.5-3.8s4.1 1.4 4.5 3.8"/><path d="M14 13.8c1.7 0 3.2 1 3.6 2.8"/></svg>';
+  var MEETG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="12" height="12" rx="2"/><path d="M15 10l6-2.5v9L15 14z"/></svg>';
+  var SLACKG = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><path d="M8 14.5A2.5 2.5 0 105.5 12H8zM9.5 8A2.5 2.5 0 1012 5.5V8zM16 9.5A2.5 2.5 0 1018.5 12H16zM14.5 16A2.5 2.5 0 1012 18.5V16z"/></svg>';
+  var GENERIC = '<svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M10 9l6 3-6 3z"/></svg>';
+
+  var PLATFORMS = {
+    zoom:     { cls:'zoom',     color:'#2D8CFF', glyph:ZOOMG,  reason:'Zoom is using the microphone.', call:'Zoom · Process flows review', title:'Zoom · Process flows review', front:'Gmail', frontCopy:'Chrome is in front. Issue 21 watches who holds the microphone, so the dock still knows this is Zoom, not Gmail.' },
+    teams:    { cls:'teams',    color:'#5B5FC7', glyph:TEAMSG, reason:'Teams is using the microphone.', call:'Teams · Staffing review', title:'Teams · Staffing review', front:'Gmail', frontCopy:'Chrome is in front. The purple people badge is Teams, not Zoom. Same buried-call case, different icon.' },
+    meet:     { cls:'meet',     color:'#1E8E3E', glyph:MEETG,  reason:'Chrome is using the microphone and a Meet tab is open.', call:'Meet - Weekly sync · abc-defg', title:'Meet · Weekly sync', front:'Meet - Weekly sync', frontCopy:'Browser call: Chrome holds the mic, window title has Meet. Badge is Meet with a Chrome pip in the corner.' },
+    facetime: { cls:'facetime', color:'#34C759', glyph:CAM,    reason:'FaceTime is using the microphone.', call:'FaceTime · Jordan', title:'FaceTime · Jordan', front:'Notes', frontCopy:'Native FaceTime. The green camera badge is FaceTime, not Meet.' },
+    webex:    { cls:'webex',    color:'#00A0D2', glyph:CAM,    reason:'Webex is using the microphone.', call:'Webex · Q3 planning', title:'Webex · Q3 planning', front:'Mail', frontCopy:'Native Webex behind Mail. Same mic-owner path as Teams and Zoom.' },
+    slack:    { cls:'slack',    color:'#611F69', glyph:SLACKG, reason:'Slack is using the microphone.', call:'Slack · design huddle', title:'Slack · design huddle', front:'Slack', frontCopy:'A huddle, not a calendar meeting. Mic-owner still counts it.' },
+    unknown:  { cls:'unknown',  color:'#48484A', glyph:GENERIC,reason:'An app is using the microphone. Take notes anyway?', call:'Unknown call', title:'Untitled note', front:'Notes', frontCopy:'A mic user that is not a known call app. No card unless you start manually. Siri is in this bucket and stays silent.' }
+  };
+
+  var platform = 'zoom';
+  var switchOn = false;
+  var scene = 'buried';
+  var detectOn = true;
+  var nudgeBadge = document.getElementById('nudgeBadge');
+  var nudgeTitle = document.getElementById('nudgeTitle');
+  var nudgeReason = document.getElementById('nudgeReason');
+  var nudgeSub = document.getElementById('nudgeSub');
+  var nudgeNoBtn = document.getElementById('nudgeNo');
+  var nudgeGoBtn = document.getElementById('nudgeGo');
+  var toast = document.getElementById('toast');
+  var toastTitle = document.getElementById('toastTitle');
+  var detectBox = document.getElementById('detectBox');
+  var callTtl = document.getElementById('callTtl');
+  var callCopy = document.getElementById('callCopy');
+  var frontTtl = document.getElementById('frontTtl');
+  var frontCopy = document.getElementById('frontCopy');
+
+  function shortName(){
+    return { zoom:'Zoom', teams:'Teams', meet:'Meet', facetime:'FaceTime', webex:'Webex', slack:'Slack', unknown:'Call' }[platform] || 'Call';
+  }
+
+  function paintScene(){
+    var p = PLATFORMS[platform];
+    desk.setAttribute('data-scene', scene);
+    callTtl.innerHTML = p.call + ' <span class="mic-pill"><i></i>mic</span>';
+    callCopy.textContent = scene === 'front'
+      ? p.call + ' is in front. Mic-owner and frontmost agree.'
+      : 'The call is live in the background. Remote audio is going to AirPods.';
+    if (scene === 'siri'){
+      frontTtl.textContent = 'Notes';
+      frontCopy.textContent = 'Siri / CoreSpeech is using the microphone. Known-call map ignores it, so no card.';
+    } else if (scene === 'left'){
+      frontTtl.textContent = p.front;
+      frontCopy.textContent = shortName() + ' released the mic for more than 8 seconds. Mute would not do this.';
+    } else if (scene === 'front'){
+      frontTtl.textContent = p.call;
+      frontCopy.textContent = p.frontCopy;
+    } else {
+      frontTtl.textContent = p.front;
+      frontCopy.textContent = p.frontCopy;
+    }
+  }
+
+  function renderNudge(){
+    var switching = state === 'recording' && switchOn;
+    if (switching){
+      nudgeBadge.className = 'nbadge';
+      nudgeBadge.style.background = '#48484A';
+      nudgeBadge.innerHTML = GENERIC;
+      nudgeTitle.textContent = 'Looks like a new meeting';
+      nudgeReason.textContent = 'A different call took the microphone.';
+      nudgeSub.style.display = 'none';
+      nudgeNoBtn.textContent = 'Keep recording';
+      nudgeGoBtn.textContent = 'Switch';
+    } else {
+      var p = PLATFORMS[platform];
+      nudgeBadge.className = 'nbadge ' + p.cls;
+      nudgeBadge.style.background = p.color;
+      nudgeBadge.innerHTML = p.glyph;
+      nudgeTitle.textContent = 'Meeting detected';
+      nudgeReason.textContent = p.reason;
+      nudgeSub.style.display = '';
+      nudgeNoBtn.textContent = 'Ignore';
+      nudgeGoBtn.textContent = 'Start note';
+    }
+  }
+
+  function showNudge(){
+    var allow = detectOn && (state === 'detected' || (state === 'recording' && switchOn));
+    if (scene === 'siri' || scene === 'left') allow = false;
+    nudge.classList.toggle('on', allow);
+  }
+
+  function showToast(on){
+    toast.classList.toggle('on', !!on);
+    if (on) toastTitle.textContent = shortName() + ' call ended';
+  }
+
+  function waveHTML(){
+    var out = '<span class="dot"></span><span class="wave">';
+    for (var i = 0; i < 7; i++) out += '<b></b>';
+    return out + '</span>';
+  }
+
+  var CAPS = {
+    dictating: { cls: 'level', html: waveHTML() },
+    working:   { cls: 'spin', html: '<span class="spinner"></span>' },
+    inserted:  { cls: 'text', html: CHECK + '<span class="ms">742 ms</span>' },
+    guarded:   { cls: 'text', html: WARN + '<span>Kept raw</span>' },
+    error:     { cls: 'text', html: XMARK + '<span>Insertion failed: app changed</span>' },
+    holdkey:   { cls: 'text', html: KEY + '<span>Release fn to insert</span>' }
+  };
+
+  var HINTS = {
+    idle: 'Hover the nub on the edge',
+    hover: 'Expanded. Hover one control for its label, click to run it.',
+    dictating: 'Dictating. One capsule, on the dock, no second window.',
+    working: 'Working. Same capsule, spinner, no text.',
+    inserted: 'Inserted. Holds 900ms, then back to the nub.',
+    guarded: 'Kept raw. The cleanup guard fired, so the raw transcript went in.',
+    error: 'Error. Holds 1800ms with the message.',
+    recording: 'Recording. New note is out alone with a timer. Click it to stop, or toggle Switch? to see the other nudge.',
+    detected: 'A call took the microphone. The badge is the platform: Teams people, Zoom camera, Meet plus a Chrome pip.',
+    holdkey: 'The text is ready and fn is still down.'
+  };
+
+  /* ---------- state machine ---------- */
+  var state = 'idle';
+  var hoverOpen = false;
+  var openTimer = null, closeTimer = null, holdTimer = null, recTimer = null;
+  var elapsed = 744;
+
+  function fmt(total){
+    var m = Math.floor(total / 60), s = total % 60;
+    return m + ':' + (s < 10 ? '0' + s : s);
+  }
+
+  function applyOpen(){ dock.classList.toggle('open', hoverOpen); }
+
+  function renderCap(){
+    var spec = CAPS[state];
+    if (!spec){ cap.className = 'cap'; cap.innerHTML = ''; return; }
+    cap.innerHTML = spec.html;
+    cap.className = 'cap on ' + spec.cls;
+  }
+
+  function startRec(){
+    elapsed = 744;
+    timer.textContent = fmt(elapsed);
+    deskNote.setRec(true);
+    var titleEl = deskMeeting.querySelector('.js-title');
+    if (titleEl) titleEl.value = PLATFORMS[platform].title;
+    deskMeeting.classList.add('on');
+    scratch.classList.remove('on');
+    showToast(false);
+    if (recTimer) clearInterval(recTimer);
+    recTimer = setInterval(function(){
+      elapsed += 1;
+      timer.textContent = fmt(elapsed);
+      deskNote.setElapsed(fmt(elapsed));
+    }, 1000);
+  }
+
+  function stopRec(){
+    if (recTimer){ clearInterval(recTimer); recTimer = null; }
+  }
+
+  function setState(next, fromStop){
+    if (holdTimer){ clearTimeout(holdTimer); holdTimer = null; }
+    var wasRecording = state === 'recording';
+    state = next;
+    desk.setAttribute('data-state', state);
+    hoverOpen = (state === 'hover');
+    applyOpen();
+    renderCap();
+    paintScene();
+    renderNudge();
+    showNudge();
+    if (state !== 'idle' || scene !== 'left') showToast(false);
+    hint.textContent = HINTS[state] || '';
+
+    if (state === 'recording'){ startRec(); }
+    else {
+      stopRec();
+      if (wasRecording && !fromStop){ deskNote.setRec(false); }
+      if (!fromStop){
+        deskMeeting.classList.remove('on');
+        scratch.classList.remove('on');
+      }
+    }
+
+    if (state === 'inserted') holdTimer = setTimeout(function(){ setState('idle'); }, 900);
+    if (state === 'guarded' || state === 'error') holdTimer = setTimeout(function(){ setState('idle'); }, 1800);
+
+    Array.prototype.forEach.call(document.querySelectorAll('#stateChips .chip'), function(c){
+      c.classList.toggle('on', c.getAttribute('data-state') === state);
+    });
+  }
+
+  /* ---------- hover intent ---------- */
+  hot.addEventListener('mouseenter', function(){
+    if (state !== 'idle') return;
+    if (closeTimer){ clearTimeout(closeTimer); closeTimer = null; }
+    if (openTimer) clearTimeout(openTimer);
+    openTimer = setTimeout(function(){
+      if (state !== 'idle') return;
+      hoverOpen = true;
+      applyOpen();
+      hint.textContent = HINTS.hover;
+    }, 120);
+  });
+  hot.addEventListener('mouseleave', function(){
+    if (!hoverOpen && openTimer){ clearTimeout(openTimer); openTimer = null; }
+  });
+  zone.addEventListener('mouseenter', function(){
+    if (closeTimer){ clearTimeout(closeTimer); closeTimer = null; }
+  });
+  zone.addEventListener('mouseleave', function(){
+    if (openTimer){ clearTimeout(openTimer); openTimer = null; }
+    if (state !== 'idle' && state !== 'hover') return;
+    if (closeTimer) clearTimeout(closeTimer);
+    closeTimer = setTimeout(function(){
+      hoverOpen = false;
+      applyOpen();
+      if (state === 'hover') setState('idle');
+      else hint.textContent = HINTS.idle;
+    }, 400);
+  });
+
+  /* ---------- clicks ---------- */
+  cMic.addEventListener('click', function(ev){
+    ev.stopPropagation();
+    if (state === 'recording'){
+      hint.textContent = 'Dictation during a meeting leaves a marker. It does not stop the recording.';
+      return;
+    }
+    setState('dictating');
+  });
+
+  cRec.addEventListener('click', function(ev){
+    ev.stopPropagation();
+    if (state === 'recording'){
+      deskNote.setRec(false);
+      setState('idle', true);
+      hint.textContent = 'Stopped. The window jumped to Summary and the dock went back to the nub.';
+      return;
+    }
+    setState('recording');
+  });
+
+  cPad.addEventListener('click', function(ev){
+    ev.stopPropagation();
+    var on = !scratch.classList.contains('on');
+    scratch.classList.toggle('on', on);
+    hint.textContent = on
+      ? 'Quick note. Local typed notes, into the open meeting or today’s daily note.'
+      : HINTS[state] || HINTS.idle;
+  });
+
+  nudgeGoBtn.addEventListener('click', function(){
+    if (state === 'recording' && switchOn){
+      switchOn = false;
+      document.getElementById('switchChip').classList.remove('on');
+      elapsed = 0;
+      timer.textContent = fmt(elapsed);
+      deskNote.setElapsed(fmt(elapsed));
+      renderNudge();
+      nudge.classList.remove('on');
+      hint.textContent = 'Switched. The timer restarted for the new call.';
+      return;
+    }
+    setState('recording');
+  });
+  nudgeNoBtn.addEventListener('click', function(){
+    if (state === 'recording' && switchOn){
+      switchOn = false;
+      document.getElementById('switchChip').classList.remove('on');
+      nudge.classList.remove('on');
+      hint.textContent = HINTS.recording;
+      return;
+    }
+    setState('idle');
+  });
+
+  document.addEventListener('keydown', function(e){
+    if (e.key !== 'Escape') return;
+    if (openTimer){ clearTimeout(openTimer); openTimer = null; }
+    if (closeTimer){ clearTimeout(closeTimer); closeTimer = null; }
+    hoverOpen = false;
+    applyOpen();
+    if (state === 'hover') setState('idle');
+  });
+
+  /* ---------- chip rows ---------- */
+  function wireChips(id, attr, fn){
+    var host = document.getElementById(id);
+    host.addEventListener('click', function(e){
+      var btn = e.target.closest('[data-' + attr + ']');
+      if (!btn) return;
+      Array.prototype.forEach.call(host.querySelectorAll('.chip'), function(c){ c.classList.toggle('on', c === btn); });
+      fn(btn.getAttribute('data-' + attr));
+    });
+  }
+  wireChips('edgeChips', 'edge', function(v){ desk.setAttribute('data-edge', v); });
+  wireChips('wallChips', 'wall', function(v){ desk.setAttribute('data-wall', v); });
+  wireChips('stateChips', 'state', function(v){ setState(v); });
+  wireChips('winChips', 'rec', function(v){ specNote.setRec(v === '1'); });
+
+  document.getElementById('platformChips').addEventListener('click', function(e){
+    var btn = e.target.closest('.chip');
+    if (!btn) return;
+    if (btn.hasAttribute('data-switch')){
+      switchOn = !switchOn;
+      btn.classList.toggle('on', switchOn);
+    } else {
+      platform = btn.getAttribute('data-platform');
+      Array.prototype.forEach.call(document.querySelectorAll('#platformChips [data-platform]'), function(c){
+        c.classList.toggle('on', c === btn);
+      });
+    }
+    nudge.classList.toggle('on', state === 'detected' || (state === 'recording' && switchOn));
+    renderNudge();
+    showNudge();
+    paintScene();
+  });
+
+  hitBox.addEventListener('change', function(){ desk.classList.toggle('hit', hitBox.checked); });
+  detectBox.addEventListener('change', function(){
+    detectOn = detectBox.checked;
+    if (!detectOn && state === 'detected') setState('idle');
+    else { renderNudge(); showNudge(); }
+    hint.textContent = detectOn
+      ? 'Auto-detect is on. A buried Teams or Zoom call still raises the card.'
+      : 'Auto-detect is off. New note still works. The card does not.';
+  });
+
+  document.getElementById('sceneChips').addEventListener('click', function(e){
+    var btn = e.target.closest('[data-scene]');
+    if (!btn) return;
+    scene = btn.getAttribute('data-scene');
+    Array.prototype.forEach.call(document.querySelectorAll('#sceneChips .chip'), function(c){
+      c.classList.toggle('on', c === btn);
+    });
+    if (scene === 'siri'){
+      switchOn = false;
+      document.getElementById('switchChip').classList.remove('on');
+      showToast(false);
+      setState('idle');
+      hint.textContent = 'Siri holds the mic. CoreSpeech is ignored. No card.';
+      paintScene();
+      showNudge();
+      return;
+    }
+    if (scene === 'left'){
+      if (state === 'recording'){
+        deskNote.setRec(false);
+        setState('idle', true);
+      } else {
+        setState('idle');
+        deskMeeting.classList.add('on');
+        deskNote.setRec(false);
+      }
+      showToast(true);
+      hint.textContent = 'Mic released for 8s. Auto-stop toast with Resume. Mute would not do this.';
+      paintScene();
+      return;
+    }
+    showToast(false);
+    if (detectOn) setState('detected');
+    else {
+      paintScene();
+      hint.textContent = 'Call is on, but Detect is off, so no card.';
+    }
+  });
+
+  document.getElementById('toastGo').addEventListener('click', function(){
+    showToast(false);
+    scene = 'buried';
+    Array.prototype.forEach.call(document.querySelectorAll('#sceneChips .chip'), function(c){
+      c.classList.toggle('on', c.getAttribute('data-scene') === 'buried');
+    });
+    setState('recording');
+  });
+
+  /* ---------- level bars ---------- */
+  if (!reduced){
+    setInterval(function(){
+      var bars = document.querySelectorAll('.cap .wave b');
+      var t = Date.now() / 220;
+      Array.prototype.forEach.call(bars, function(b, i){
+        b.style.height = (4 + Math.abs(Math.sin(t + i * 0.55)) * 12).toFixed(0) + 'px';
+      });
+    }, 90);
+  } else {
+    setTimeout(function(){
+      Array.prototype.forEach.call(document.querySelectorAll('.cap .wave b'), function(b, i){
+        b.style.height = (i % 2 ? 12 : 7) + 'px';
+      });
+    }, 50);
+  }
+
+  setState('idle');
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>Undertone</string>
+	<key>CFBundleExecutable</key>
+	<string>Undertone</string>
+	<key>CFBundleIconFile</key>
+	<string>Undertone</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.undertone.app</string>
+	<key>CFBundleName</key>
+	<string>Undertone</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>14</string>
+	<key>LSUIElement</key>
+	<false/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Undertone needs the microphone to transcribe your dictation locally.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Undertone records system audio to transcribe other meeting participants locally on this Mac. No screen or video is recorded.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>On older macOS versions, Undertone uses screen capture access to record meeting audio locally. No video is saved.</string>
+</dict>
+</plist>

@@ -1,0 +1,30 @@
+[project]
+name = "undertone"
+version = "0.1.0"
+description = "Local dictation for macOS: hold a key, talk, get clean text."
+requires-python = ">=3.12"
+license = {text = "MIT"}
+dependencies = [
+  "mlx-whisper>=0.4",
+  "numpy>=1.26",
+  "sounddevice>=0.4",
+  "soundfile>=0.12",
+  "pynput>=1.7",
+  "pyyaml>=6.0",
+  "pyobjc-framework-ApplicationServices>=10.0",
+  "pyobjc-framework-Cocoa>=10.0",
+  "pyobjc-framework-Quartz>=10.0",
+]
+
+[project.scripts]
+undertone = "undertone.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "engine"}
+
+[tool.setuptools.packages.find]
+where = ["engine"]

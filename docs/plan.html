@@ -1,0 +1,255 @@
+<title>Undertone Plan</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#F2F4F7; --surface:#FFFFFF; --ink:#141A22; --muted:#5A6572; --line:#D2D8E0;
+  --accent:#2F6F8F; --accent-ink:#1E4C63; --accent-soft:#DCE9F0;
+  --reference:#B8862B; --reference-soft:#F3EAD5;
+  --good:#2E7D4F; --warn:#B5541C; --good-soft:#DDEEE3; --warn-soft:#F6E3D6;
+  --code-bg:#E6EAF0;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0F1419; --surface:#171D24; --ink:#E4E9EF; --muted:#94A0AE; --line:#2A333D;
+    --accent:#6FB3D2; --accent-ink:#A9D3E6; --accent-soft:#213541;
+    --reference:#D6A94A; --reference-soft:#3A3120;
+    --good:#6CC493; --warn:#E5915B; --good-soft:#1F3328; --warn-soft:#3C2A1F;
+    --code-bg:#1F2730;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0F1419; --surface:#171D24; --ink:#E4E9EF; --muted:#94A0AE; --line:#2A333D;
+  --accent:#6FB3D2; --accent-ink:#A9D3E6; --accent-soft:#213541;
+  --reference:#D6A94A; --reference-soft:#3A3120;
+  --good:#6CC493; --warn:#E5915B; --good-soft:#1F3328; --warn-soft:#3C2A1F;
+  --code-bg:#1F2730;
+}
+*{box-sizing:border-box}
+body{margin:0;background-color:var(--bg);background-image:linear-gradient(var(--line) 1px,transparent 1px),linear-gradient(90deg,var(--line) 1px,transparent 1px);background-size:32px 32px;background-position:-1px -1px;color:var(--ink);font-family:"IBM Plex Sans",-apple-system,"Helvetica Neue",Arial,sans-serif;font-size:16px;line-height:1.55;padding-block:0 80px;padding-inline:20px}
+.wrap{max-width:1080px;margin:0 auto;display:grid;grid-template-columns:200px minmax(0,1fr);gap:48px}
+@media (max-width:820px){.wrap{grid-template-columns:1fr;gap:0}}
+nav.rail{position:sticky;top:0;align-self:start;padding-block:40px 0;font-size:14px}
+@media (max-width:820px){nav.rail{position:static;padding-block:24px 0}}
+nav.rail ol{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+@media (max-width:820px){nav.rail ol{flex-direction:row;flex-wrap:wrap;gap:4px 14px}}
+nav.rail a{color:var(--muted);text-decoration:none;border-left:2px solid transparent;padding-left:10px;display:block}
+nav.rail a:hover,nav.rail a:focus-visible{color:var(--ink);border-left-color:var(--accent);outline:none}
+@media (max-width:820px){nav.rail a{border-left:0;padding-left:0}}
+main{min-width:0;max-width:72ch}
+header{padding-block:48px 8px}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+h1{font-family:"IBM Plex Sans",sans-serif;font-weight:600;font-size:clamp(32px,4.5vw,44px);line-height:1.1;margin:8px 0 14px;text-wrap:balance;letter-spacing:-.02em}
+h1 em{font-style:normal;font-weight:400;color:var(--accent-ink)}
+.lede{font-size:19px;color:var(--muted);margin:0 0 20px;max-width:60ch}
+h2{font-family:"IBM Plex Sans",sans-serif;font-weight:600;font-size:24px;line-height:1.15;margin:56px 0 10px;text-wrap:balance;letter-spacing:-.005em}
+h3{font-size:17px;font-weight:600;margin:28px 0 6px}
+p{margin:0 0 14px}
+ul,ol{margin:0 0 14px;padding-left:22px}
+li{margin-bottom:4px}
+code,.mono{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-size:.88em}
+code{background:var(--code-bg);padding:1px 5px;border-radius:3px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:6px;overflow-x:auto;font-size:14px;line-height:1.5;margin:0 0 16px}
+pre code{background:none;padding:0}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;padding:4px 10px;border-radius:999px;background:var(--surface);border:1px solid var(--line)}
+.chip::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.chip.done::before{background:var(--good)}
+.chip.run::before{background:var(--accent)}
+.chip.todo::before{background:var(--line)}
+.tbl{overflow-x:auto;margin:0 0 18px;border:1px solid var(--line);border-radius:6px;background:var(--surface)}
+table{border-collapse:collapse;width:100%;font-size:15px}
+th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);font-weight:600;background:var(--bg)}
+tr:last-child td{border-bottom:0}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;font-family:"IBM Plex Mono",monospace;font-size:13.5px;white-space:nowrap}
+.tag{display:inline-block;font-size:12px;font-weight:600;padding:1px 7px;border-radius:4px;letter-spacing:.02em;white-space:nowrap}
+.tag.w{background:var(--reference-soft);color:var(--reference)}
+.tag.u{background:var(--accent-soft);color:var(--accent-ink)}
+.tag.g{background:var(--good-soft);color:var(--good)}
+.tag.r{background:var(--warn-soft);color:var(--warn)}
+.callout{border-left:3px solid var(--accent);background:var(--surface);padding:12px 16px;border-radius:0 6px 6px 0;margin:0 0 18px}
+.callout.rule{border-left-color:var(--warn)}
+.callout p:last-child{margin:0}
+figure{margin:0 0 20px}
+figcaption{font-size:13px;color:var(--muted);margin-top:6px}
+.diagram{width:100%;height:auto;display:block;background:var(--surface);border:1px solid var(--line);border-radius:6px}
+.phases{display:grid;gap:10px;margin:0 0 18px}
+.phase{display:grid;grid-template-columns:52px 1fr;gap:12px;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:14px 16px}
+.phase .n{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--accent);padding-top:3px}
+.phase h3{margin:0 0 4px}
+.phase p{margin:0 0 6px;font-size:15.5px}
+.phase .proof{font-size:14px;color:var(--muted)}
+.phase .proof b{color:var(--ink);font-weight:600}
+.kv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:15px;margin:0 0 16px}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0}
+.ladder{display:grid;gap:0;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin:0 0 18px;background:var(--surface)}
+.rung{display:grid;grid-template-columns:34px 1fr;gap:12px;padding:12px 14px;border-bottom:1px solid var(--line);font-size:15.5px}
+.rung:last-child{border-bottom:0}
+.rung .k{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--accent);padding-top:2px}
+.rung.never{color:var(--muted)}
+.rung.never .k{color:var(--warn)}
+footer{margin-top:64px;font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:14px}
+a{color:var(--accent-ink)}
+@media (prefers-reduced-motion:no-preference){nav.rail a{transition:color .15s,border-color .15s}}
+</style>
+
+<div class="wrap">
+<nav class="rail" aria-label="Sections">
+<ol>
+<li><a href="#proved">What we proved</a></li>
+<li><a href="#shape">Shape of the app</a></li>
+<li><a href="#clipboard">The clipboard rule</a></li>
+<li><a href="#features">Feature map</a></li>
+<li><a href="#dictionary">Dictionary</a></li>
+<li><a href="#meetings">Meetings</a></li>
+<li><a href="#eval">Evaluation approach</a></li>
+<li><a href="#phases">Phases</a></li>
+<li><a href="#risks">Risks</a></li>
+</ol>
+</nav>
+
+<main>
+<header>
+<div class="eyebrow">Plan · 15 Sep 2026</div>
+<h1>Undertone: <em>local dictation, kept on the Mac</em></h1>
+<p class="lede">Hold a key, talk, let go. Clean text lands in whatever app has focus. Whisper and a local model do the work. The clipboard is never touched. Meetings get transcribed and summarized into Obsidian.</p>
+<div class="chips">
+<span class="chip done">Bench done</span>
+<span class="chip done">Repository: this project</span>
+<span class="chip run">Engine prototype building</span>
+<span class="chip run">Cleanup eval running</span>
+<span class="chip todo">Menu bar app</span>
+<span class="chip todo">Meetings</span>
+</div>
+</header>
+
+<h2 id="proved">What we proved today</h2>
+<p>Cloud dictation services do this work on a server. This runs entirely on this machine. Speech-to-text is whisper-large-v3-turbo through MLX. Cleanup is an Ollama model. Both were measured on real dictation with the model kept warm, which is how the app will run them.</p>
+<div class="tbl"><table>
+<thead><tr><th>Stage</th><th>Runs on</th><th class="num">Warm time</th><th>Verdict</th></tr></thead>
+<tbody>
+<tr><td>Speech-to-text, 15 s clip</td><td class="mono">whisper-large-v3-turbo, MLX</td><td class="num">0.20 s</td><td>Accurate. Vocabulary prompt fixed "Alima" to Ollama and "Quinn" to Qwen.</td></tr>
+<tr><td>Cleanup, fast tier</td><td class="mono">qwen3.5 (9.7B)</td><td class="num">0.6 to 1.1 s</td><td>Keeps every sentence. Weak at stripping filler. Default candidate.</td></tr>
+<tr><td>Cleanup, quality tier</td><td class="mono">gemma4:31b</td><td class="num">1.5 to 3.4 s</td><td>Best output. Right self-corrections, lists, name repair. Use for "high" cleanup and Command Mode.</td></tr>
+<tr><td>Cleanup, rejected</td><td class="mono">qwen2.5:7b · gemma3:4b · gpt-oss:20b</td><td class="num">0.2 to 3.9 s</td><td>Dropped a sentence, answered a question in the text, or burned the budget on reasoning.</td></tr>
+</tbody></table></div>
+<p>The target end-to-end latency is under one second. Our fast tier lands near <span class="mono">900 ms</span> once whisper and the model are both warm. That is the number to beat in Phase 2.</p>
+
+<h2 id="shape">Shape of the app</h2>
+<p>Two processes. A small Swift menu bar app owns everything that needs the operating system: the hold key, the microphone, the on-screen pill, text insertion, and system audio for meetings. A Python engine owns the models. They talk over a local Unix socket. The prototype being built right now is the engine plus a temporary Python hotkey listener, so the loop can be proven before any Swift is written.</p>
+<figure>
+<svg class="diagram" viewBox="0 0 760 330" role="img" aria-label="Pipeline: hold key, record, whisper, cleanup, insert; side services dictionary, history, meetings">
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--muted)"/></marker></defs>
+<style>.b{fill:var(--bg);stroke:var(--line);rx:6}.t{font-family:"Source Sans 3",sans-serif;font-size:14px;fill:var(--ink)}.s{font-family:"IBM Plex Mono",monospace;font-size:11px;fill:var(--muted)}.l{stroke:var(--muted);stroke-width:1.4;fill:none;marker-end:url(#arr)}.h{fill:var(--accent-soft);stroke:var(--accent);rx:6}.lbl{font-family:"IBM Plex Mono",monospace;font-size:11px;fill:var(--accent);letter-spacing:.08em}</style>
+<text class="lbl" x="24" y="30">SWIFT MENU BAR APP</text>
+<rect class="h" x="24" y="44" width="120" height="58"/><text class="t" x="84" y="68" text-anchor="middle">Hold key</text><text class="s" x="84" y="88" text-anchor="middle">fn or F13</text>
+<rect class="b" x="176" y="44" width="120" height="58"/><text class="t" x="236" y="68" text-anchor="middle">Record</text><text class="s" x="236" y="88" text-anchor="middle">16 kHz mono</text>
+<rect class="b" x="616" y="44" width="120" height="58"/><text class="t" x="676" y="68" text-anchor="middle">Insert</text><text class="s" x="676" y="88" text-anchor="middle">AX, no clipboard</text>
+<text class="lbl" x="24" y="160">PYTHON ENGINE · unix socket</text>
+<rect class="b" x="176" y="174" width="120" height="58"/><text class="t" x="236" y="198" text-anchor="middle">Whisper</text><text class="s" x="236" y="218" text-anchor="middle">MLX · 0.2 s</text>
+<rect class="b" x="328" y="174" width="120" height="58"/><text class="t" x="388" y="198" text-anchor="middle">Cleanup</text><text class="s" x="388" y="218" text-anchor="middle">Ollama · 0.7 s</text>
+<rect class="b" x="480" y="174" width="120" height="58"/><text class="t" x="540" y="198" text-anchor="middle">Guard</text><text class="s" x="540" y="218" text-anchor="middle">no dropped text</text>
+<rect class="b" x="24" y="264" width="150" height="46"/><text class="t" x="99" y="292" text-anchor="middle">Dictionary</text>
+<rect class="b" x="196" y="264" width="150" height="46"/><text class="t" x="271" y="292" text-anchor="middle">History (SQLite)</text>
+<rect class="b" x="368" y="264" width="150" height="46"/><text class="t" x="443" y="292" text-anchor="middle">Meetings</text>
+<rect class="b" x="540" y="264" width="196" height="46"/><text class="t" x="638" y="292" text-anchor="middle">Obsidian notes out</text>
+<path class="l" d="M144 73H176"/>
+<path class="l" d="M236 102V174"/>
+<path class="l" d="M296 203H328"/><path class="l" d="M448 203H480"/>
+<path class="l" d="M600 203H676V102"/>
+<path class="l" d="M99 264V232H176"/>
+<path class="l" d="M99 264V232H328" opacity=".5"/>
+<path class="l" d="M540 232V264" opacity=".6"/>
+</svg>
+<figcaption>Dictionary feeds both whisper (vocabulary prompt) and cleanup (proper nouns). Every dictation is written to history with its timings.</figcaption>
+</figure>
+<dl class="kv">
+<dt>Menu bar app</dt><dd>Swift and SwiftUI. Global key tap, microphone, pill overlay, sound cues, AX insertion, ScreenCaptureKit audio for meetings, settings window.</dd>
+<dt>Engine</dt><dd>Python 3.12 with mlx_whisper in-process, Ollama over HTTP, SQLite history, YAML dictionary. Runs as a launchd agent so models stay warm.</dd>
+<dt>Models</dt><dd>whisper-large-v3-turbo for speech. qwen3.5 as the default cleaner, gemma4:31b for high cleanup, Command Mode, and meeting summaries. Both already installed.</dd>
+<dt>Permissions</dt><dd>Microphone, Accessibility, Input Monitoring. Screen and system audio recording for meetings. Nothing else.</dd>
+</dl>
+
+<h2 id="clipboard">The clipboard rule</h2>
+<div class="callout rule"><p><strong>Undertone never writes to the clipboard during dictation.</strong> Not even save-and-restore. Whatever you copied before you spoke is still there after.</p></div>
+<p>Most dictation apps paste because it is easy. We do not. Insertion climbs this ladder and stops at the first rung that works.</p>
+<div class="ladder">
+<div class="rung"><span class="k">1</span><div><strong>Accessibility API.</strong> Ask macOS for the focused text element and set its selected text to the new string. This inserts at the caret or replaces a selection. Works in native apps and most Electron apps.</div></div>
+<div class="rung"><span class="k">2</span><div><strong>Synthesized keystrokes.</strong> Post Unicode keyboard events in short chunks. Slower for long text, but it works anywhere that takes typing, including terminals like Ghostty.</div></div>
+<div class="rung never"><span class="k">off</span><div><strong>Paste with restore.</strong> Exists in the code behind a config flag for one stubborn app someday. Off by default and logged loudly when used.</div></div>
+</div>
+
+<h2 id="features">Feature map</h2>
+<p>What Undertone does, how it does it locally, and when it lands.</p>
+<div class="tbl"><table>
+<thead><tr><th>Feature</th><th>Undertone approach</th><th>Phase</th></tr></thead>
+<tbody>
+<tr><td>Hold to dictate</td><td>Global key tap on fn (or F13). Down starts the recorder, up runs the pipeline. Tap-to-toggle mode for long dictation.</td><td><span class="tag u">1 · 3</span></td></tr>
+<tr><td>Auto cleanup, four levels</td><td>None (raw), Light (fillers and punctuation, no LLM), Medium (qwen3.5), High (gemma4:31b).</td><td><span class="tag u">1</span></td></tr>
+<tr><td>Never touches the clipboard</td><td>The ladder above.</td><td><span class="tag u">1</span></td></tr>
+<tr><td>Personal dictionary, auto-learned</td><td>YAML terms fed to whisper and the cleaner. Learned from your post-insert edits and from proper nouns visible on screen. See below.</td><td><span class="tag u">1 · 4</span></td></tr>
+<tr><td>Snippets</td><td>Dictionary replacements: a spoken phrase expands to stored text, stored in the same table as the dictionary.</td><td><span class="tag u">1</span></td></tr>
+<tr><td>Tone per app</td><td>System prompt variant keyed by the frontmost bundle id. Casual for Messages, neutral for Codex and Claude, formal for Mail.</td><td><span class="tag u">3</span></td></tr>
+<tr><td>Context awareness</td><td>Read the focused field's text before and after the caret through Accessibility and hand it to the cleaner as context. Local, so no privacy cost.</td><td><span class="tag u">4</span></td></tr>
+<tr><td>Command Mode</td><td>Select text, hold the key, speak an instruction. gemma4:31b rewrites the selection. Same insertion path replaces it.</td><td><span class="tag u">5</span></td></tr>
+<tr><td>History with audio</td><td>Every dictation is kept: raw text, cleaned text, your edits, the app, timings, and the audio clip, in SQLite at <code>~/.undertone/history.sqlite</code>. Already writing in the prototype. Nothing is ever deleted unless you delete it.</td><td><span class="tag g">1 done</span></td></tr>
+<tr><td>Last transcript, re-insert, copy</td><td>Menu item and hotkey to insert the last dictation again (for when a field ate it), plus copy raw or cleaned from any history row. Copy is the one place the clipboard is written, and only because you asked for a copy. Search across all history, filter by app and date, play the audio back.</td><td><span class="tag u">3</span></td></tr>
+<tr><td>Undo AI edit</td><td>Swap the inserted cleaned text for the raw transcript with one key. Uses the same history row.</td><td><span class="tag u">3</span></td></tr>
+<tr><td>Pill overlay and sounds</td><td>A small floating window near the bottom of the screen with a live level meter. Short start and stop tones.</td><td><span class="tag u">3</span></td></tr>
+<tr><td>Notetaker for meetings</td><td>System audio plus mic, chunked whisper, speaker labels, summary and to-dos into Obsidian. See below.</td><td><span class="tag u">6</span></td></tr>
+<tr><td>Whisper mode (quiet voice)</td><td>Input gain boost and a lower VAD threshold. whisper-large-v3-turbo handles quiet speech well already.</td><td><span class="tag u">3</span></td></tr>
+<tr><td>100+ languages</td><td>Whisper auto-detects. Cleanup prompt gets the detected language. Not a priority.</td><td><span class="tag u">later</span></td></tr>
+<tr><td>Team dictionary, sync, sharing</td><td>Skipped. Single machine by design.</td><td><span class="tag r">never</span></td></tr>
+</tbody></table></div>
+
+<h2 id="dictionary">How the dictionary works</h2>
+<p>Each dictation carries context: the window's visible text before insertion, and how far the inserted text was later edited. A well-used dictionary ends up with most of its entries learned rather than typed by hand.</p>
+<h3>Three feeds into one list</h3>
+<ol>
+<li><strong>Manual.</strong> <code>undertone dictionary add "Northwind"</code>, or the settings window. Replacements live here too: "btw" to "by the way", "my email" to the address.</li>
+<li><strong>Edit watching.</strong> After insertion, watch the focused field for about 20 seconds. If you change a word the model produced, and the new word is capitalized or not in a common-word list, propose it. One confirmation adds it.</li>
+<li><strong>Screen harvest.</strong> Before transcribing, read proper nouns from the focused window through Accessibility and add them to the whisper vocabulary prompt for that one dictation. Names of people in a chat thread get spelled right without ever being saved.</li>
+</ol>
+<h3>Where it is applied</h3>
+<p>Whisper takes the terms as its initial prompt, capped near 180 tokens and ordered by recent use. The cleaner gets the same terms in its system prompt. Replacements run as plain string substitution after cleanup, so they never depend on the model.</p>
+
+<h2 id="meetings">Meetings</h2>
+<p>Undertone captures the Mac's audio without a bot joining the call, using ScreenCaptureKit for system audio on macOS 13 and later. The microphone is recorded as a second channel. That split gives speaker labels for free: mic is you, system audio is everyone else. Finer diarization can come later with a local speaker-embedding model.</p>
+<dl class="kv">
+<dt>Capture</dt><dd>Two channels at 16 kHz. Voice activity detection gates chunks so whisper never sees silence, which is where it hallucinates.</dd>
+<dt>Live transcript</dt><dd>Chunks of about 10 seconds. Output as NDJSON lines with <code>id</code>, <code>timestamp</code>, <code>text</code>, <code>speaker</code>.</dd>
+<dt>After the meeting</dt><dd>gemma4:31b writes a summary, decisions, and to-dos. One markdown note lands in the Obsidian vault with the transcript folded below.</dd>
+<dt>Storage</dt><dd>Audio and transcript under <code>~/.undertone/meetings/&lt;id&gt;/</code>. Nothing uploaded.</dd>
+</dl>
+
+<h2 id="eval">Evaluation approach</h2>
+<p>Cleanup quality is graded against a private set of the author's own dictations: raw text, the cleaned result, and later edits. It is not included in this repo; anyone can build their own from their own dictation history. It is what makes the numbers in this plan and in <code>bench/RESULTS.md</code> real rather than synthetic.</p>
+<div class="callout"><p><code>bench/eval_cleanup.py</code> reads pairs from this private set and scores our cleanup output against the earlier reference. The set stays out of version control; only IDs and metrics ever leave it.</p></div>
+
+<h2 id="phases">Phases</h2>
+<p>Each phase ends with a proof you can see, not a claim.</p>
+<div class="phases">
+<div class="phase"><span class="n">0</span><div><h3>Bench and repo <span class="tag g">done</span></h3><p>Model ranking, whisper timing, vocabulary fix, private repo with the bench committed.</p><div class="proof"><b>Proof:</b> bench/FINDINGS.md.</div></div></div>
+<div class="phase"><span class="n">1</span><div><h3>Engine prototype <span class="tag u">building</span></h3><p>CLI hold-to-talk. Whisper warm in-process. Cleanup with the length guard and model fallback. AX insertion, keystroke fallback. History and dictionary files.</p><div class="proof"><b>Proof:</b> <code>undertone once --file bench/dictation.wav</code> prints clean text with timings. Insert test lands text in TextEdit while the clipboard stays unchanged.</div></div></div>
+<div class="phase"><span class="n">2</span><div><h3>Cleanup quality on real dictations</h3><p>Run the 308-clip eval. Tune the prompt and pick the default model. Target: similarity to the reference formatted text at or above 0.9, zero rows with dropped content, median latency under one second.</p><div class="proof"><b>Proof:</b> eval report checked into bench with the numbers.</div></div></div>
+<div class="phase"><span class="n">3</span><div><h3>Menu bar app</h3><p>Swift app with the fn key tap, pill overlay, sounds, per-app tone, snippets, history window, settings. Engine moves to a launchd agent.</p><div class="proof"><b>Proof:</b> Dictate into Codex, Claude, Messages, Ghostty, and Mail. Screen recording of each, clipboard checked before and after.</div></div></div>
+<div class="phase"><span class="n">4</span><div><h3>Dictionary that learns</h3><p>Edit watching, screen harvest, confirmation flow.</p><div class="proof"><b>Proof:</b> Misspell a name once, fix it once, dictate it again and it comes out right.</div></div></div>
+<div class="phase"><span class="n">5</span><div><h3>Command Mode</h3><p>Rewrite a selection from a spoken instruction.</p><div class="proof"><b>Proof:</b> "Make this shorter" on a paragraph in Mail, replaced in place.</div></div></div>
+<div class="phase"><span class="n">6</span><div><h3>Meetings</h3><p>System audio capture, live transcript, summary to Obsidian.</p><div class="proof"><b>Proof:</b> One real call transcribed and summarized, checked against the author's own notes from the same call.</div></div></div>
+<div class="phase"><span class="n">7</span><div><h3>Daily use</h3><p>Two weeks of daily use. Compare history tables.</p><div class="proof"><b>Proof:</b> Undertone's history shows daily use with no fallbacks to paste and no dropped-content guards firing.</div></div></div>
+</div>
+
+<h2 id="risks">Risks and open calls</h2>
+<ul>
+<li><strong>AX insertion in Electron.</strong> Codex and Claude Desktop are Electron. Some Electron fields reject the selected-text write. Phase 1 tests this first. If it fails, keystrokes are the path for those apps and we measure the speed.</li>
+<li><strong>The fn key.</strong> Capturing fn as a hold key needs a low-level event tap and Input Monitoring permission. The prototype uses F13 to avoid this. The Swift app takes fn on.</li>
+<li><strong>GPU contention with other local model servers.</strong> If something else on the Mac already serves a model through MLX, Ollama unloads models after five minutes idle by default. Undertone sets keep-alive so the cleaner stays warm; a machine with enough unified memory leaves room for both.</li>
+<li><strong>Whisper on silence.</strong> Whisper invents text when handed silence. A voice activity gate before transcription, and a minimum recording length, prevent it.</li>
+<li><strong>Speed.</strong> The fast tier is around 900 ms against a target under one second. Two ideas if that feels slow: stream whisper while the key is still held so only cleanup runs on release, and skip the model for very short dictations under six words.</li>
+<li><strong>Diarization.</strong> Mic versus system audio covers most calls. True multi-speaker labels on the far side need a local embedding model and is a later addition.</li>
+</ul>
+
+<footer>Undertone · plan written 15 Sep 2026 · bench numbers from an Apple Silicon Mac, models warm</footer>
+</main>
+</div>
