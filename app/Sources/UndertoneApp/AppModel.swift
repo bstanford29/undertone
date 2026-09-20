@@ -769,7 +769,7 @@ final class AppModel: ObservableObject {
                 pendingLearningActionID = nil
                 let term = pendingLearningTerm ?? "term"
                 pendingLearningTerm = nil
-                showTransientState(.notice("Undid learning \(term)"))
+                showNotice("Undid learning \(term)", hold: FlowBarMetrics.transientHold)
             } catch {
                 statusText = "Learning unavailable: \(error.localizedDescription)"
             }
