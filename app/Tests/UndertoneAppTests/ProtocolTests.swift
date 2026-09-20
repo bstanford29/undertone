@@ -648,6 +648,22 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(EditWatcher.candidate(produced: "quinn", replacement: "Quinn", knownTerms: []))
         let punctuation = EditWatcher.candidate(produced: "Quinn", replacement: "Qwen,", knownTerms: [])
         XCTAssertEqual(punctuation?.replacement, "Qwen")
+        XCTAssertEqual(EditWatcher.alreadyKnownCandidate(produced: "Quinn", replacement: "Qwen", knownTerms: ["qwen"]),
+                       LearningCandidate(produced: "Quinn", replacement: "Qwen", reason: "already_known"))
+    }
+
+    func testCorrectionLearningNoticePolicyUsesExactSafeStatesAndCopy() {
+        XCTAssertTrue(AppModel.canShowLearningNotice(for: .idle))
+        XCTAssertTrue(AppModel.canShowLearningNotice(for: .notice("Saved")))
+        XCTAssertTrue(AppModel.canShowLearningNotice(for: .meetingDetected(PreviewFixtures.detectedMeeting)))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .listening(level: 0.5)))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .working))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .recording(elapsed: 1)))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .error("busy")))
+        let state = PillState.notice(AppModel.learningNotice(for: "Velora"))
+        XCTAssertTrue(AppModel.isLearningNotice(state, term: "Velora"))
+        XCTAssertFalse(AppModel.isLearningNotice(.notice("Saved"), term: "Velora"))
+        XCTAssertFalse(AppModel.isLearningNotice(state, term: "Qwen"))
     }
 
     func testHarvestDropsOversizedUnicodeToken() {

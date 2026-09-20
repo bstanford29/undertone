@@ -181,6 +181,24 @@ final class AppModel: ObservableObject {
         instruction.utf8.count <= 4_096
     }
 
+    nonisolated static func canShowLearningNotice(for state: PillState) -> Bool {
+        switch state {
+        case .idle, .notice, .meetingDetected:
+            return true
+        case .listening, .working, .inserted, .guarded, .error, .recording:
+            return false
+        }
+    }
+
+    nonisolated static func learningNotice(for term: String) -> String {
+        "Learned \(term) · Undo"
+    }
+
+    nonisolated static func isLearningNotice(_ state: PillState, term: String) -> Bool {
+        guard case .notice(let message) = state else { return false }
+        return message == learningNotice(for: term)
+    }
+
     nonisolated static func commandSidecarPayload(selectedText: String, instruction: String) -> [String: String] {
         ["kind": "command", "raw_text": selectedText, "instruction_text": instruction]
     }
@@ -359,6 +377,7 @@ final class AppModel: ObservableObject {
         case .listening, .working, .recording:
             return
         }
+        clearPendingLearning()
         cancelNudge()
         editWatcher.cancel()
         pillResetTask?.cancel()
@@ -686,33 +705,54 @@ final class AppModel: ObservableObject {
                     "row_id": .number(Double(rowID)), "edited_text": .string(editedText)
                 ])
                 guard candidate.reason != "already_known" else { return }
-                if learnFromCorrections {
-                    let response = try await engine.request(op: "learning.auto_learn", fields: [
-                        "enabled": .bool(true), "produced": .string(candidate.produced),
-                        "replacement": .string(candidate.replacement), "row_id": .number(Double(rowID)),
-                        "app_bundle_id": .string(receipt.appBundleID)
-                    ])
-                    if response.status == "learned", let actionID = response.learningActionID {
-                        pendingLearningActionID = actionID
-                        pendingLearningTerm = response.term ?? candidate.replacement
-                        showTransientState(.notice("Learned \(pendingLearningTerm ?? candidate.replacement) · Undo"))
-                    } else if response.status == "already_known" {
+                guard learnFromCorrections else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
+                }
+                guard Self.canShowLearningNotice(for: pillState) else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
+                }
+                let response = try await engine.request(op: "learning.auto_learn", fields: [
+                    "produced": .string(candidate.produced),
+                    "replacement": .string(candidate.replacement), "row_id": .number(Double(rowID)),
+                    "app_bundle_id": .string(receipt.appBundleID)
+                ])
+                if response.status == "learned", let actionID = response.learningActionID {
+                    let term = response.term ?? candidate.replacement
+                    guard Self.canShowLearningNotice(for: pillState) else {
+                        _ = try? await engine.request(op: "learning.undo", fields: ["action_id": .number(Double(actionID))])
+                        try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                         return
                     }
-                } else {
-                    let response = try await engine.request(op: "learned.propose", fields: [
-                        "produced": .string(candidate.produced), "replacement": .string(candidate.replacement),
-                        "row_id": .number(Double(rowID)), "app_bundle_id": .string(receipt.appBundleID)
-                    ])
-                    if let suggestion = response.suggestion,
-                       !learnedSuggestions.contains(where: { $0.id == suggestion.id }) {
-                        learnedSuggestions.insert(suggestion, at: 0)
-                    }
+                    pendingLearningActionID = actionID
+                    pendingLearningTerm = term
+                    showTransientState(.notice(Self.learningNotice(for: term)))
+                } else if response.status == "already_known" {
+                    return
+                } else if response.status == "disabled" {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                 }
             } catch {
                 statusText = "Learning unavailable: \(error.localizedDescription)"
             }
         }
+    }
+
+    private func proposeEdit(candidate: LearningCandidate, rowID: Int, appBundleID: String) async throws {
+        let response = try await engine.request(op: "learned.propose", fields: [
+            "produced": .string(candidate.produced), "replacement": .string(candidate.replacement),
+            "row_id": .number(Double(rowID)), "app_bundle_id": .string(appBundleID)
+        ])
+        if let suggestion = response.suggestion,
+           !learnedSuggestions.contains(where: { $0.id == suggestion.id }) {
+            learnedSuggestions.insert(suggestion, at: 0)
+        }
+    }
+
+    private func clearPendingLearning() {
+        pendingLearningActionID = nil
+        pendingLearningTerm = nil
     }
 
     func undoPendingLearning() {
@@ -1021,6 +1061,7 @@ final class AppModel: ObservableObject {
     }
 
     private func showNudge(_ detected: DetectedMeeting) {
+        clearPendingLearning()
         nudgeTask?.cancel()
         nudgeHovered = false
         nudgeFraction = 1
@@ -1080,6 +1121,7 @@ final class AppModel: ObservableObject {
             return
         }
         cancelNudge()
+        clearPendingLearning()
         meetingElapsedTask?.cancel()
         meetingElapsedTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -1141,6 +1183,7 @@ final class AppModel: ObservableObject {
         case .listening, .working, .inserted, .guarded, .error, .recording:
             return
         }
+        clearPendingLearning()
         pillState = .notice(message)
         schedulePillReset(from: .notice(message), after: hold)
     }
@@ -1207,6 +1250,7 @@ final class AppModel: ObservableObject {
     }
 
     private func showTransientError(_ message: String, duration: Duration) {
+        clearPendingLearning()
         pillState = .error(message)
         schedulePillReset(from: .error(message), after: duration)
     }
@@ -1214,13 +1258,11 @@ final class AppModel: ObservableObject {
     /// Inserted is a receipt, not a warning, so it leaves twice as fast as
     /// Kept raw and Error do.
     private func showTransientState(_ state: PillState) {
-        if case .notice = state {
-            // A learning receipt sets the pending action immediately before
-            // this call; other notices clear it explicitly at their source.
-        } else {
-            pendingLearningActionID = nil
-            pendingLearningTerm = nil
-        }
+        let preservesLearning = if case .notice = state,
+                                    let term = pendingLearningTerm {
+            Self.isLearningNotice(state, term: term)
+        } else { false }
+        if !preservesLearning { clearPendingLearning() }
         pillState = state
         schedulePillReset(from: state, after: FlowBarMetrics.transientHold(for: state))
     }

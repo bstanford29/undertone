@@ -263,6 +263,14 @@ def auto_learn(
             existing = next((term for term in terms if term.casefold() == term_key), None)
             if existing is not None:
                 return {"status": "already_known", "term": existing}
+            # A user may remove a previously learned term directly. Do not
+            # let that stale action retain ownership of the next learning
+            # action or block its undo.
+            db.execute(
+                "UPDATE learning_actions SET status = 'superseded' "
+                "WHERE term_key = ? AND status = 'active'",
+                (term_key,),
+            )
             dictionary.add_term(replacement)
             created_at = time.time()
             cursor = db.execute(
@@ -291,8 +299,8 @@ def undo(action_id: int) -> dict[str, Any]:
             ).fetchone()
             if row is None:
                 raise ValueError("Unknown learning action")
-            if row[3] == "undone":
-                return {"status": "undone", "action_id": action_id, "term": row[1]}
+            if row[3] != "active":
+                return {"status": row[3], "action_id": action_id, "term": row[1]}
             other = db.execute(
                 "SELECT 1 FROM learning_actions WHERE term_key = ? AND status = 'active' AND id != ? LIMIT 1",
                 (row[2], action_id),

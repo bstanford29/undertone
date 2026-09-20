@@ -117,6 +117,17 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(learning.undo(second_action)["status"], "removed")
         self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
 
+    def test_removing_term_supersedes_stale_action_before_relearning(self):
+        row_id = self._row()
+        first = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        dictionary.remove_term("Velora")
+        second = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        self.assertEqual(second["status"], "learned")
+        self.assertEqual(learning.undo(second["action_id"])["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(first["action_id"])["status"], "superseded")
+        self.assertEqual(learning.undo(first["action_id"])["status"], "superseded")
+
 
 if __name__ == "__main__":
     unittest.main()

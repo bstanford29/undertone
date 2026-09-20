@@ -305,6 +305,23 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.dispatch({'op':'config.update','config':{'ollama_url':'https://example.com'}})
 
+    def test_auto_learning_uses_persisted_setting_not_request_flag(self):
+        row_id = self.engine.dispatch({
+            'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',
+            'insert_mode': 'ax', 'app_bundle_id': 'test.app',
+        })['row_id']
+        request = {
+            'op': 'learning.auto_learn', 'produced': 'Valora', 'replacement': 'Velora',
+            'row_id': row_id, 'app_bundle_id': 'test.app', 'enabled': True,
+        }
+        self.assertEqual(self.engine.dispatch(request)['status'], 'disabled')
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': True}})
+        self.assertEqual(self.engine.dispatch(request)['status'], 'learned')
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': False}})
+        self.assertEqual(self.engine.dispatch({**request, 'replacement': 'Vellora'})['status'], 'disabled')
+        with self.assertRaises(ValueError):
+            self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': 'yes'}})
+
     def test_pill_settings_persist_and_validate(self):
         self.engine.dispatch({'op': 'config.update', 'config': {'pill_edge': 'left', 'pill_offset': 0.25, 'pill_persistent': False}})
         saved = self.engine.dispatch({'op': 'config.get'})['config']

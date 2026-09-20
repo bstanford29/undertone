@@ -473,15 +473,12 @@ class Engine:
             )
             return {"suggestion": suggestion}
         if op == "learning.auto_learn":
-            enabled = r.get("enabled")
-            if not isinstance(enabled, bool):
-                raise ValueError("enabled must be a boolean")
             return learning.auto_learn(
                 text_field(r, "produced", learning.MAX_PHRASE_CHARS),
                 text_field(r, "replacement", learning.MAX_PHRASE_CHARS),
                 r.get("row_id"),
                 text_field(r, "app_bundle_id", learning.MAX_APP_CHARS),
-                enabled=enabled,
+                enabled=bool(settings.load_config()["learn_from_corrections"]),
             )
         if op == "learning.undo":
             return learning.undo(r.get("action_id"))
