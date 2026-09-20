@@ -298,6 +298,10 @@ def undo(action_id: int) -> dict[str, Any]:
                 (row[2], action_id),
             ).fetchone()
             if other is not None:
+                db.execute(
+                    "UPDATE learning_actions SET status = 'undone' WHERE id = ? AND status = 'active'",
+                    (action_id,),
+                )
                 return {"status": "preserved", "action_id": action_id, "term": row[1]}
             terms = dictionary.load_dictionary()["terms"]
             owned = [term for term in terms if term.casefold() == row[2]]

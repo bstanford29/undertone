@@ -97,6 +97,26 @@ class LearningTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             learning.auto_learn("Valora", "Velora", row_id, "com.example.other", enabled=True)
 
+    def test_undo_consumes_preserved_action_without_removing_other_owner_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                """INSERT INTO learning_actions
+                   (produced, term, term_key, row_id, app_bundle_id, created_at, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+                ("Valora", "Velora", "velora", row_id, "com.example.editor", 2.0),
+            )
+            second_action = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "preserved")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "undone")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(second_action)["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+
 
 if __name__ == "__main__":
     unittest.main()

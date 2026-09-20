@@ -129,8 +129,20 @@ enum FlowBarMetrics {
     // Holds
     static let insertedHold: Duration = .milliseconds(900)
     static let transientHold: Duration = .milliseconds(1800)
+    static let learningHold: Duration = .seconds(6)
     static let savedHold: Duration = .milliseconds(1200)
     static let meetingEndedHold: Duration = .seconds(3)
+
+    static func transientHold(for state: PillState) -> Duration {
+        switch state {
+        case .inserted:
+            return insertedHold
+        case .notice(let message) where message.hasPrefix("Learned ") && message.hasSuffix(" · Undo"):
+            return learningHold
+        default:
+            return transientHold
+        }
+    }
 }
 
 /// Panel-local geometry for every dock. `depth` measures inward from the

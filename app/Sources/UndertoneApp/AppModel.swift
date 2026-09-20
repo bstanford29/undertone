@@ -1222,9 +1222,7 @@ final class AppModel: ObservableObject {
             pendingLearningTerm = nil
         }
         pillState = state
-        let hold: Duration
-        if case .inserted = state { hold = FlowBarMetrics.insertedHold } else { hold = FlowBarMetrics.transientHold }
-        schedulePillReset(from: state, after: hold)
+        schedulePillReset(from: state, after: FlowBarMetrics.transientHold(for: state))
     }
 
     private func schedulePillReset(from expected: PillState, after duration: Duration) {
