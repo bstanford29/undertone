@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
     "sounds": True,
     "whisper_mode": False,
     "stream_insert": True,
+    "learn_from_corrections": False,
     "obsidian_vault_path": None,
     "pill_persistent": True,
     "pill_edge": "bottom",

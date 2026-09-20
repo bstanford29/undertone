@@ -359,6 +359,11 @@ struct SettingsView: View {
                         guard !model.previewMode else { return }
                         model.updateConfig("whisper_mode", .bool(value))
                     }
+                Toggle("Learn from my corrections", isOn: $model.learnFromCorrections)
+                    .onChange(of: model.learnFromCorrections) { _, value in
+                        guard !model.previewMode else { return }
+                        model.updateConfig(CorrectionLearningSetting.key, .bool(value))
+                    }
                 LabeledContent("Hold key", value: "fn / F13")
             }
             Section("Models") {
@@ -425,6 +430,7 @@ struct SettingsView: View {
                 if case .bool(let value) = PreviewFixtures.config["sounds"] { model.soundsEnabled = value }
                 if case .bool(let value) = PreviewFixtures.config["stream_insert"] { model.streamInsert = value }
                 if case .bool(let value) = PreviewFixtures.config["whisper_mode"] { model.whisperMode = value }
+                model.learnFromCorrections = CorrectionLearningSetting.value(from: PreviewFixtures.config)
                 if case .string(let value) = PreviewFixtures.config["obsidian_vault_path"] { vaultPath = value }
                 return
             }
@@ -445,6 +451,7 @@ struct SettingsView: View {
             if case .bool(let value) = config["sounds"] { model.soundsEnabled = value }
             if case .bool(let value) = config["stream_insert"] { model.streamInsert = value }
             if case .bool(let value) = config["whisper_mode"] { model.whisperMode = value }
+            model.learnFromCorrections = CorrectionLearningSetting.value(from: config)
             if case .string(let value) = config["obsidian_vault_path"] { vaultPath = value }
         } catch {
             errorMessage = error.localizedDescription

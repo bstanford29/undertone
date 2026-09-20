@@ -69,6 +69,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var nudgeFraction: Double = 1
     @Published var configError: String?
     @Published var learnedSuggestions: [LearnedSuggestion] = []
+    @Published var learnFromCorrections = false
+    @Published private(set) var pendingLearningActionID: Int?
+    @Published private(set) var pendingLearningTerm: String?
     @Published private(set) var permissionSnapshot = PermissionSnapshot.current()
     @Published var permissionRequestMessage: String?
     @Published private(set) var shortcutTapActive = false
@@ -243,6 +246,7 @@ final class AppModel: ObservableObject {
             if case .bool(let value) = config["sounds"] { soundsEnabled = value }
             if case .bool(let value) = config["stream_insert"] { streamInsert = value }
             if case .bool(let value) = config["whisper_mode"] { whisperMode = value }
+            learnFromCorrections = CorrectionLearningSetting.value(from: config)
             if case .bool(let value) = config["pill_persistent"] { pillPersistent = value }
             if case .string(let value) = config["pill_edge"], let edge = PillEdge(rawValue: value) { pillEdge = edge }
             if case .number(let value) = config["pill_offset"] { pillOffset = value }
@@ -681,14 +685,51 @@ final class AppModel: ObservableObject {
                 _ = try await engine.request(op: "history.update", fields: [
                     "row_id": .number(Double(rowID)), "edited_text": .string(editedText)
                 ])
-                let response = try await engine.request(op: "learned.propose", fields: [
-                    "produced": .string(candidate.produced), "replacement": .string(candidate.replacement),
-                    "row_id": .number(Double(rowID)), "app_bundle_id": .string(receipt.appBundleID)
-                ])
-                if let suggestion = response.suggestion,
-                   !learnedSuggestions.contains(where: { $0.id == suggestion.id }) {
-                    learnedSuggestions.insert(suggestion, at: 0)
+                guard candidate.reason != "already_known" else { return }
+                if learnFromCorrections {
+                    let response = try await engine.request(op: "learning.auto_learn", fields: [
+                        "enabled": .bool(true), "produced": .string(candidate.produced),
+                        "replacement": .string(candidate.replacement), "row_id": .number(Double(rowID)),
+                        "app_bundle_id": .string(receipt.appBundleID)
+                    ])
+                    if response.status == "learned", let actionID = response.learningActionID {
+                        pendingLearningActionID = actionID
+                        pendingLearningTerm = response.term ?? candidate.replacement
+                        showTransientState(.notice("Learned \(pendingLearningTerm ?? candidate.replacement) · Undo"))
+                    } else if response.status == "already_known" {
+                        return
+                    }
+                } else {
+                    let response = try await engine.request(op: "learned.propose", fields: [
+                        "produced": .string(candidate.produced), "replacement": .string(candidate.replacement),
+                        "row_id": .number(Double(rowID)), "app_bundle_id": .string(receipt.appBundleID)
+                    ])
+                    if let suggestion = response.suggestion,
+                       !learnedSuggestions.contains(where: { $0.id == suggestion.id }) {
+                        learnedSuggestions.insert(suggestion, at: 0)
+                    }
                 }
+            } catch {
+                statusText = "Learning unavailable: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    func undoPendingLearning() {
+        guard let actionID = pendingLearningActionID else { return }
+        guard !previewMode else {
+            pendingLearningActionID = nil
+            pendingLearningTerm = nil
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await engine.request(op: "learning.undo", fields: ["action_id": .number(Double(actionID))])
+                pendingLearningActionID = nil
+                let term = pendingLearningTerm ?? "term"
+                pendingLearningTerm = nil
+                showTransientState(.notice("Undid learning \(term)"))
             } catch {
                 statusText = "Learning unavailable: \(error.localizedDescription)"
             }
@@ -1173,6 +1214,13 @@ final class AppModel: ObservableObject {
     /// Inserted is a receipt, not a warning, so it leaves twice as fast as
     /// Kept raw and Error do.
     private func showTransientState(_ state: PillState) {
+        if case .notice = state {
+            // A learning receipt sets the pending action immediately before
+            // this call; other notices clear it explicitly at their source.
+        } else {
+            pendingLearningActionID = nil
+            pendingLearningTerm = nil
+        }
         pillState = state
         let hold: Duration
         if case .inserted = state { hold = FlowBarMetrics.insertedHold } else { hold = FlowBarMetrics.transientHold }
@@ -1185,6 +1233,10 @@ final class AppModel: ObservableObject {
             do { try await Task.sleep(for: duration) } catch { return }
             guard let self, self.pillState == expected else { return }
             self.pillState = .idle
+            if case .notice = expected {
+                self.pendingLearningActionID = nil
+                self.pendingLearningTerm = nil
+            }
             self.pillResetTask = nil
         }
     }

@@ -62,6 +62,14 @@ def add_term(term: str) -> dict[str, Any]:
     return dictionary
 
 
+def remove_term(term: str) -> dict[str, Any]:
+    """Remove every case-insensitive occurrence of one vocabulary term."""
+    dictionary = load_dictionary()
+    dictionary["terms"] = [existing for existing in dictionary["terms"] if existing.casefold() != term.casefold()]
+    save_dictionary(dictionary)
+    return dictionary
+
+
 def vocab_prompt(dictionary: dict[str, Any] | None = None) -> str:
     dictionary = load_dictionary() if dictionary is None else dictionary
     terms = dictionary.get("terms", [])

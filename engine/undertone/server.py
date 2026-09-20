@@ -263,7 +263,7 @@ class Engine:
         if op == "config.update":
             import yaml
             changes = r.get("config")
-            booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert"}
+            booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert", "learn_from_corrections"}
             allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset"}
             if not isinstance(changes, dict) or set(changes) - allowed:
                 raise ValueError("Unsupported settings")
@@ -472,6 +472,19 @@ class Engine:
                 text_field(r, "app_bundle_id", learning.MAX_APP_CHARS),
             )
             return {"suggestion": suggestion}
+        if op == "learning.auto_learn":
+            enabled = r.get("enabled")
+            if not isinstance(enabled, bool):
+                raise ValueError("enabled must be a boolean")
+            return learning.auto_learn(
+                text_field(r, "produced", learning.MAX_PHRASE_CHARS),
+                text_field(r, "replacement", learning.MAX_PHRASE_CHARS),
+                r.get("row_id"),
+                text_field(r, "app_bundle_id", learning.MAX_APP_CHARS),
+                enabled=enabled,
+            )
+        if op == "learning.undo":
+            return learning.undo(r.get("action_id"))
         if op == "learned.list":
             limit = r.get("limit", learning.MAX_SUGGESTIONS)
             return {"suggestions": learning.list_suggestions(limit)}

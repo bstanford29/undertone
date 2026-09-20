@@ -116,6 +116,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(suggestion.reason, "capitalized")
     }
 
+    func testCorrectionLearningSettingDefaultsOffAndReadsPersistedConfig() {
+        XCTAssertFalse(CorrectionLearningSetting.value(from: [:]))
+        XCTAssertTrue(CorrectionLearningSetting.value(from: [CorrectionLearningSetting.key: .bool(true)]))
+        XCTAssertFalse(CorrectionLearningSetting.value(from: [CorrectionLearningSetting.key: .string("yes")]))
+    }
+
+    func testLearningActionResponseDecodesStatusAndUndoToken() throws {
+        let data = #"{"id":9,"status":"learned","action_id":12,"term":"Velora"}"#.data(using: .utf8)!
+        let response = try JSONDecoder().decode(EngineResponse.self, from: data)
+        XCTAssertEqual(response.status, "learned")
+        XCTAssertEqual(response.learningActionID, 12)
+        XCTAssertEqual(response.term, "Velora")
+    }
+
     func testEngineClientUnixSocketRoundTrip() async throws {
         let path = "/tmp/undertone-test-\(UUID().uuidString).sock"
         defer { unlink(path) }

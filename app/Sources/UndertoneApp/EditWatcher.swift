@@ -83,6 +83,22 @@ final class EditWatcher {
                     onCandidate(candidate, edited)
                     return
                 }
+                // A term already in the dictionary is still an accepted edit
+                // for history, but it must not create a suggestion or learning
+                // action. Keep the public candidate classifier's old nil
+                // result for callers that only want new vocabulary.
+                if let knownCandidate = Self.candidate(produced: receipt.produced, replacement: edited, knownTerms: []) {
+                    let known = knownTerms.contains(knownCandidate.replacement.lowercased())
+                    if known {
+                        onCandidate(
+                            LearningCandidate(produced: knownCandidate.produced,
+                                              replacement: knownCandidate.replacement,
+                                              reason: "already_known"),
+                            edited
+                        )
+                        return
+                    }
+                }
             }
         }
     }

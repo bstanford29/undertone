@@ -555,7 +555,9 @@ final class PillPanelController {
             guard let control = FlowBarDock.control(at: point, axis: axis, hovered: chrome.hovered) else { return }
             activate(control)
         case .working, .inserted, .guarded, .error, .notice:
-            break
+            if case .notice = model.pillState, model.pendingLearningActionID != nil {
+                model.undoPendingLearning()
+            }
         }
     }
 

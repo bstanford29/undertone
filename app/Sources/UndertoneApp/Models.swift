@@ -245,6 +245,8 @@ struct EngineResponse: Codable, Equatable, Sendable {
     let config: [String: JSONValue]?
     let suggestions: [LearnedSuggestion]?
     let suggestion: LearnedSuggestion?
+    let learningActionID: Int?
+    let term: String?
     let session: MeetingSession?
     let sessions: [MeetingSession]?
     let sessionID: String?
@@ -274,6 +276,7 @@ struct EngineResponse: Codable, Equatable, Sendable {
         case id, raw, clean, cleanText = "clean_text", rewrite, sttMS = "stt_ms", llmMS = "llm_ms", model, whisper, cleanup
         case errorMessage = "error_message"
         case guardFired = "guard_fired", rowID = "row_id", row, rows, terms, replacements, config, suggestions, suggestion
+        case learningActionID = "action_id", term
         case session, sessions, sessionID = "session_id", title, startedAt = "started_at", endedAt = "ended_at"
         case summary, notePath = "note_path", transcriptPath = "transcript_path", chunkCount = "chunk_count", chunks
         case status, text, errorCode = "error_code", nextOffset = "next_offset", error

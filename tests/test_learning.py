@@ -63,6 +63,40 @@ class LearningTests(unittest.TestCase):
         add_term.assert_called_once_with("new")
         self.assertEqual(learning.list_suggestions(), [])
 
+    def test_auto_learn_is_disabled_without_touching_dictionary(self):
+        row_id = self._row()
+        result = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=False)
+        self.assertEqual(result["status"], "disabled")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_auto_learn_returns_one_action_and_undo_removes_only_that_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        self.assertEqual(learned["status"], "learned")
+        self.assertIsInstance(learned["action_id"], int)
+        self.assertEqual(learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)["status"], "already_known")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
+        undone = learning.undo(learned["action_id"])
+        self.assertEqual(undone["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "undone")
+
+    def test_auto_learn_already_saved_term_has_no_undo_action_or_duplicate(self):
+        dictionary.add_term("Qwen")
+        row_id = self._row()
+        result = learning.auto_learn("Quinn", "Qwen", row_id, "com.example.editor", enabled=True)
+        self.assertEqual(result["status"], "already_known")
+        self.assertNotIn("action_id", result)
+        self.assertEqual(sum(term.casefold() == "qwen" for term in dictionary.load_dictionary()["terms"]), 1)
+
+    def test_auto_learn_rejects_multi_word_and_wrong_history_owner(self):
+        row_id = self._row()
+        with self.assertRaises(ValueError):
+            learning.auto_learn("Valora", "Velora Prime", row_id, "com.example.editor", enabled=True)
+        with self.assertRaises(ValueError):
+            learning.auto_learn("Valora", "Velora", row_id, "com.example.other", enabled=True)
+
 
 if __name__ == "__main__":
     unittest.main()
