@@ -104,6 +104,39 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(learning.undo(resolved["action_id"])["status"], "removed")
         self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
 
+    def test_auto_learn_dictionary_failure_before_write_discards_preparing_action(self):
+        row_id = self._row()
+        with patch.object(dictionary, "add_term", side_effect=OSError("synthetic pre-write failure")):
+            with self.assertRaises(OSError):
+                learning.auto_learn(
+                    "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+                    client_token="pre-write-token",
+                )
+
+        self.assertEqual(learning.lookup("pre-write-token")["status"], "not_found")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM learning_actions WHERE client_token = ?",
+                ("pre-write-token",),
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_explicit_add_supersedes_an_interrupted_preparing_action(self):
+        row_id = self._row()
+        with patch.object(dictionary, "add_term", side_effect=OSError("synthetic pre-write failure")):
+            with self.assertRaises(OSError):
+                learning.auto_learn(
+                    "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+                    client_token="explicit-owner-token",
+                )
+
+        learning.add_explicit_term("Velora")
+        resolved = learning.lookup("explicit-owner-token")
+        self.assertEqual(resolved["action_status"], "superseded")
+        self.assertEqual(learning.undo(resolved["action_id"])["status"], "superseded")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
     def test_auto_learn_already_saved_term_has_no_undo_action_or_duplicate(self):
         dictionary.add_term("Qwen")
         row_id = self._row()

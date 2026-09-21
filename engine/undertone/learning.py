@@ -135,11 +135,30 @@ def _suggestion(row: Any) -> dict[str, Any]:
     }
 
 
-def _supersede_active_actions(db: Any, term: str) -> None:
-    db.execute(
+def _supersede_open_actions(db: Any, term: str, *, excluding_action_id: int | None = None) -> None:
+    query = (
         "UPDATE learning_actions SET status = 'superseded' "
-        "WHERE term_key = ? AND status = 'active'",
-        (term.casefold(),),
+        "WHERE term_key = ? AND status IN ('active', 'preparing')"
+    )
+    parameters: tuple[Any, ...] = (term.casefold(),)
+    if excluding_action_id is not None:
+        query += " AND id != ?"
+        parameters += (excluding_action_id,)
+    db.execute(query, parameters)
+
+
+def _dictionary_term(term_key: str) -> str | None:
+    return next(
+        (term for term in dictionary.load_dictionary()["terms"] if term.casefold() == term_key),
+        None,
+    )
+
+
+def _activate_preparing_action(db: Any, action_id: int, term: str) -> None:
+    _supersede_open_actions(db, term, excluding_action_id=action_id)
+    db.execute(
+        "UPDATE learning_actions SET status = 'active' WHERE id = ? AND status = 'preparing'",
+        (action_id,),
     )
 
 
@@ -148,7 +167,7 @@ def add_explicit_term(term: str) -> dict[str, Any]:
     with _LOCK:
         with history._connect() as db:
             _ensure_schema(db)
-            _supersede_active_actions(db, term)
+            _supersede_open_actions(db, term)
             dictionary_data = dictionary.add_term(term)
             return dictionary_data
 
@@ -251,7 +270,7 @@ def act(suggestion_id: int, action: str) -> dict[str, Any]:
             raise ValueError("Suggestion was already handled")
         # Suggestion acceptance writes its term to the dictionary here.
         if action == "add":
-            _supersede_active_actions(db, row[2])
+            _supersede_open_actions(db, row[2])
             dictionary.add_term(row[2])
         if action == "never_ask":
             db.execute(
@@ -302,42 +321,46 @@ def auto_learn(
                 raise ValueError("History row does not belong to app")
             if client_token is not None:
                 existing_action = db.execute(
-                    "SELECT id, term, status, created_at FROM learning_actions WHERE client_token = ?",
+                    "SELECT id, term, term_key, status, created_at FROM learning_actions WHERE client_token = ?",
                     (client_token,),
                 ).fetchone()
                 if existing_action is not None:
+                    if existing_action[3] == "preparing":
+                        if _dictionary_term(existing_action[2]) is None:
+                            dictionary.add_term(existing_action[1])
+                        _activate_preparing_action(db, existing_action[0], existing_action[1])
                     return {
                         "status": "learned",
                         "term": existing_action[1],
                         "action_id": existing_action[0],
-                        "created_at": existing_action[3],
+                        "created_at": existing_action[4],
                         "client_token": client_token,
-                        "action_status": existing_action[2],
+                        "action_status": "active" if existing_action[3] == "preparing" else existing_action[3],
                     }
             terms = dictionary.load_dictionary()["terms"]
             existing = next((term for term in terms if term.casefold() == term_key), None)
             if existing is not None:
                 return {"status": "already_known", "term": existing}
-            # A user may remove a previously learned term directly. Do not
-            # let that stale action retain ownership of the next learning
-            # action or block its undo.
-            _supersede_active_actions(db, replacement)
             created_at = time.time()
             cursor = db.execute(
                 """INSERT INTO learning_actions
                    (produced, term, term_key, row_id, app_bundle_id, created_at, client_token, status)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active')""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'preparing')""",
                 (produced, replacement, term_key, row_id, app_bundle_id, created_at, client_token),
             )
-            # Commit the recoverable action before the separate YAML store.
-            # If dictionary persistence fails, lookup/Undo can still resolve
-            # and consume this action instead of leaving an orphaned term.
+            action_id = cursor.lastrowid
+            # Journal the action before the separate YAML store. Reconciliation
+            # can then tell whether the term reached disk after an interruption.
             db.commit()
             dictionary.add_term(replacement)
+            # A user may remove a previously learned term directly. Do not
+            # let that stale action retain ownership of the new learning action
+            # or block its undo.
+            _activate_preparing_action(db, action_id, replacement)
             return {
                 "status": "learned",
                 "term": replacement,
-                "action_id": cursor.lastrowid,
+                "action_id": action_id,
                 "created_at": created_at,
                 "client_token": client_token,
                 "action_status": "active",
@@ -345,7 +368,7 @@ def auto_learn(
 
 
 def lookup(client_token: str) -> dict[str, Any]:
-    """Resolve an auto-learning client token without changing learning state."""
+    """Resolve a token and finish or discard an interrupted journaled action."""
     client_token = _client_token(client_token)
     with _LOCK, history._connect() as db:
         _ensure_schema(db)
@@ -355,11 +378,19 @@ def lookup(client_token: str) -> dict[str, Any]:
         ).fetchone()
         if row is None:
             return {"status": "not_found", "client_token": client_token}
+        if row[2] == "preparing":
+            if _dictionary_term(row[1].casefold()) is None:
+                db.execute("DELETE FROM learning_actions WHERE id = ? AND status = 'preparing'", (row[0],))
+                return {"status": "not_found", "client_token": client_token}
+            _activate_preparing_action(db, row[0], row[1])
+            action_status = "active"
+        else:
+            action_status = row[2]
         return {
             "status": "learned",
             "action_id": row[0],
             "term": row[1],
-            "action_status": row[2],
+            "action_status": action_status,
             "created_at": row[3],
             "client_token": client_token,
         }

@@ -232,11 +232,14 @@ token contains no candidate text and makes a repeated request idempotent.
 The response is `status:"learned"` with `action_id`, `term`,
 `client_token`, and `action_status:"active"`; `already_known` and `disabled`
 are non-learning outcomes. The server never trusts a request-supplied enabled
-flag. If a response is lost, the client performs this read-only reconciliation:
+flag. If a response is lost, the client performs this reconciliation lookup:
 
 ```json
 {"id":31,"op":"learning.lookup","client_token":"velora-token"}
 ```
+
+The lookup never creates a dictionary term. It only finishes or discards the
+journaled action based on whether that term reached the local dictionary.
 
 Lookup returns `status:"learned"` with the same action ID, term, and
 `action_status`, or `status:"not_found"`. An active action can be shown as a
