@@ -212,7 +212,7 @@ def act(suggestion_id: int, action: str) -> dict[str, Any]:
             return {"suggestion_id": suggestion_id, "status": desired}
         if status != "pending":
             raise ValueError("Suggestion was already handled")
-        # This is deliberately the only path that writes an auto-learned term.
+        # Adding a suggestion is the only path here that writes its term to the dictionary.
         if action == "add":
             dictionary.add_term(row[2])
         if action == "never_ask":

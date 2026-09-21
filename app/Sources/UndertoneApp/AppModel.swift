@@ -94,6 +94,7 @@ final class AppModel: ObservableObject {
     private var accessibilityUnavailable = false
     private var insertionInFlight = false
     private var learningUndoInFlight = false
+    private var learningRecoveryPending = false
     private var meetingsObservation: AnyCancellable?
     private var meetingStateObservation: AnyCancellable?
     private var detectionObservation: AnyCancellable?
@@ -222,6 +223,36 @@ final class AppModel: ObservableObject {
 
     nonisolated static func canBeginLearningUndo(actionID: Int?, inFlight: Bool) -> Bool {
         actionID != nil && !inFlight
+    }
+
+    nonisolated static func shouldKeepLearningActionAfterRollback(rollbackSucceeded: Bool) -> Bool {
+        !rollbackSucceeded
+    }
+
+    nonisolated static func canShowLearningRecoveryNotice(for state: PillState) -> Bool {
+        if case .idle = state { return true }
+        return false
+    }
+
+    nonisolated static func canSupersedeLearningRecovery(_ recoveryPending: Bool) -> Bool {
+        !recoveryPending
+    }
+
+    nonisolated static func shouldKeepLearningRecoveryAfterReshowing(inFlight: Bool) -> Bool {
+        inFlight
+    }
+
+    nonisolated static func shouldPreserveLearningRecoveryWhileShowingNotice(
+        state: PillState, nextState: PillState, actionID: Int?, term: String?, recoveryPending: Bool
+    ) -> Bool {
+        guard case .notice = nextState else { return false }
+        if recoveryPending { return true }
+        guard actionID != nil, let term else { return false }
+        return isLearningNotice(state, term: term)
+    }
+
+    nonisolated static func shouldFallbackForPendingLearning(actionID: Int?) -> Bool {
+        actionID != nil
     }
 
     nonisolated static func commandSidecarPayload(selectedText: String, instruction: String) -> [String: String] {
@@ -403,7 +434,7 @@ final class AppModel: ObservableObject {
         case .listening, .working, .recording:
             return
         }
-        clearPendingLearning()
+        clearPendingLearningUnlessRecovering()
         cancelNudge()
         editWatcher.cancel()
         pillResetTask?.cancel()
@@ -455,6 +486,7 @@ final class AppModel: ObservableObject {
             self.target = nil
             statusText = "No speech detected"
             pillState = .idle
+            showPendingLearningRecoveryIfSafe()
             return
         }
         pillState = .working
@@ -557,6 +589,7 @@ final class AppModel: ObservableObject {
                 statusText = "No speech detected"
                 self.commandMode = false
                 pillState = .idle
+                showPendingLearningRecoveryIfSafe()
                 return
             }
             // Retain the raw transcript beside the audio before any history or
@@ -735,6 +768,10 @@ final class AppModel: ObservableObject {
                     try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                     return
                 }
+                guard !Self.shouldFallbackForPendingLearning(actionID: pendingLearningActionID) else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
+                }
                 guard Self.canShowLearningNotice(for: pillState) else {
                     try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                     return
@@ -747,12 +784,31 @@ final class AppModel: ObservableObject {
                 if response.status == "learned", let actionID = response.learningActionID {
                     let term = response.term ?? candidate.replacement
                     guard Self.canShowLearningNotice(for: pillState) else {
-                        _ = try? await engine.request(op: "learning.undo", fields: ["action_id": .number(Double(actionID))])
-                        try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                        let rollbackSucceeded: Bool
+                        do {
+                            _ = try await engine.request(op: "learning.undo", fields: [
+                                "action_id": .number(Double(actionID))
+                            ])
+                            rollbackSucceeded = true
+                        } catch {
+                            rollbackSucceeded = false
+                        }
+                        if Self.shouldKeepLearningActionAfterRollback(rollbackSucceeded: rollbackSucceeded) {
+                            pendingLearningActionID = actionID
+                            pendingLearningTerm = term
+                            learningRecoveryPending = true
+                        }
+                        do {
+                            try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                        } catch {
+                            statusText = "Learning unavailable: \(error.localizedDescription)"
+                        }
+                        showPendingLearningRecoveryIfSafe()
                         return
                     }
                     pendingLearningActionID = actionID
                     pendingLearningTerm = term
+                    learningRecoveryPending = false
                     showTransientState(.notice(Self.learningNotice(for: term)))
                 } else if response.status == "already_known" {
                     return
@@ -779,10 +835,25 @@ final class AppModel: ObservableObject {
     private func clearPendingLearning() {
         pendingLearningActionID = nil
         pendingLearningTerm = nil
+        learningRecoveryPending = false
+    }
+
+    private func clearPendingLearningUnlessRecovering() {
+        guard Self.canSupersedeLearningRecovery(learningRecoveryPending) else { return }
+        clearPendingLearning()
     }
 
     private func clearDeferredMeetingNudge() {
         deferredMeetingNudge = nil
+    }
+
+    private func showPendingLearningRecoveryIfSafe() {
+        guard learningRecoveryPending,
+              pendingLearningActionID != nil,
+              let term = pendingLearningTerm,
+              Self.canShowLearningRecoveryNotice(for: pillState) else { return }
+        learningRecoveryPending = Self.shouldKeepLearningRecoveryAfterReshowing(inFlight: learningUndoInFlight)
+        showTransientState(.notice(Self.learningNotice(for: term)))
     }
 
     func undoPendingLearning() {
@@ -791,9 +862,11 @@ final class AppModel: ObservableObject {
         guard !previewMode else {
             pendingLearningActionID = nil
             pendingLearningTerm = nil
+            learningRecoveryPending = false
             return
         }
         learningUndoInFlight = true
+        learningRecoveryPending = true
         let term = pendingLearningTerm ?? "term"
         Task { [weak self] in
             guard let self else { return }
@@ -803,8 +876,12 @@ final class AppModel: ObservableObject {
                 guard pendingLearningActionID == actionID else { return }
                 pendingLearningActionID = nil
                 pendingLearningTerm = nil
+                learningRecoveryPending = false
                 showNotice("Undid learning \(term)", hold: FlowBarMetrics.transientHold)
             } catch {
+                if pendingLearningActionID == actionID {
+                    learningRecoveryPending = true
+                }
                 statusText = "Learning unavailable: \(error.localizedDescription)"
             }
         }
@@ -1052,6 +1129,7 @@ final class AppModel: ObservableObject {
     func ignoreDetectedMeeting() {
         if let detected = detectedMeeting { meetings.ignore(detected) }
         cancelNudge()
+        showPendingLearningRecoveryIfSafe()
     }
 
     /// Hovering the card pauses its countdown so a reachable mouse does not
@@ -1065,7 +1143,10 @@ final class AppModel: ObservableObject {
     func setDetectCallsEnabled(_ enabled: Bool) {
         detectCallsEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: MeetingDetectionSettings.detectCallsKey)
-        if !enabled { cancelNudge() }
+        if !enabled {
+            cancelNudge()
+            showPendingLearningRecoveryIfSafe()
+        }
     }
 
     // MARK: - Meeting nudge
@@ -1083,6 +1164,7 @@ final class AppModel: ObservableObject {
             meetings.clearIgnored()
             deferredMeetingNudge = nil
             cancelNudge()
+            showPendingLearningRecoveryIfSafe()
             return
         }
         guard Self.shouldShowNudge(
@@ -1105,7 +1187,7 @@ final class AppModel: ObservableObject {
     }
 
     private func showNudge(_ detected: DetectedMeeting) {
-        clearPendingLearning()
+        clearPendingLearningUnlessRecovering()
         clearDeferredMeetingNudge()
         nudgeTask?.cancel()
         nudgeHovered = false
@@ -1128,6 +1210,7 @@ final class AppModel: ObservableObject {
             guard let self, case .meetingDetected = self.pillState else { return }
             self.pillState = .idle
             self.nudgeTask = nil
+            self.showPendingLearningRecoveryIfSafe()
         }
     }
 
@@ -1137,7 +1220,9 @@ final class AppModel: ObservableObject {
         clearDeferredMeetingNudge()
         nudgeHovered = false
         nudgeFraction = 1
-        if case .meetingDetected = pillState { pillState = .idle }
+        if case .meetingDetected = pillState {
+            pillState = .idle
+        }
     }
 
     // MARK: - Auto-stop
@@ -1163,11 +1248,14 @@ final class AppModel: ObservableObject {
         guard state == .recording else {
             meetingElapsedTask?.cancel()
             meetingElapsedTask = nil
-            if case .recording = pillState { pillState = .idle }
+            if case .recording = pillState {
+                pillState = .idle
+                showPendingLearningRecoveryIfSafe()
+            }
             return
         }
         cancelNudge()
-        clearPendingLearning()
+        clearPendingLearningUnlessRecovering()
         clearDeferredMeetingNudge()
         meetingElapsedTask?.cancel()
         meetingElapsedTask = Task { [weak self] in
@@ -1225,14 +1313,23 @@ final class AppModel: ObservableObject {
     /// capture: those states own the dock while they run.
     private func showNotice(_ message: String, hold: Duration) {
         let nextState = PillState.notice(message)
+        let preservesRecovery = Self.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: pillState, nextState: nextState,
+            actionID: pendingLearningActionID,
+            term: pendingLearningTerm,
+            recoveryPending: learningRecoveryPending
+        )
+        if preservesRecovery { learningRecoveryPending = true }
         switch pillState {
         case .idle, .notice:
             break
         case .listening, .working, .inserted, .guarded, .error, .recording, .meetingDetected:
             return
         }
-        clearPendingLearning()
-        if !Self.preservesDeferredMeetingNudge(nextState) { clearDeferredMeetingNudge() }
+        if !preservesRecovery { clearPendingLearning() }
+        if !preservesRecovery && !Self.preservesDeferredMeetingNudge(nextState) {
+            clearDeferredMeetingNudge()
+        }
         pillState = nextState
         schedulePillReset(from: nextState, after: hold)
     }
@@ -1299,8 +1396,10 @@ final class AppModel: ObservableObject {
     }
 
     private func showTransientError(_ message: String, duration: Duration) {
-        clearPendingLearning()
-        clearDeferredMeetingNudge()
+        if !learningRecoveryPending {
+            clearPendingLearning()
+            clearDeferredMeetingNudge()
+        }
         pillState = .error(message)
         schedulePillReset(from: .error(message), after: duration)
     }
@@ -1312,7 +1411,7 @@ final class AppModel: ObservableObject {
                                     let term = pendingLearningTerm {
             Self.isLearningNotice(state, term: term)
         } else { false }
-        if !preservesLearning {
+        if !preservesLearning && !learningRecoveryPending {
             clearPendingLearning()
             clearDeferredMeetingNudge()
         }
@@ -1327,11 +1426,13 @@ final class AppModel: ObservableObject {
             guard let self, self.pillState == expected else { return }
             let deferredMeeting = self.deferredMeetingNudge
             self.pillState = .idle
-            if case .notice = expected {
+            if case .notice = expected, !self.learningRecoveryPending {
                 self.pendingLearningActionID = nil
                 self.pendingLearningTerm = nil
             }
             self.pillResetTask = nil
+            self.showPendingLearningRecoveryIfSafe()
+            guard self.pillState == .idle else { return }
             guard let deferredMeeting,
                   Self.shouldShowDeferredMeetingNudge(
                 current: self.detectedMeeting,

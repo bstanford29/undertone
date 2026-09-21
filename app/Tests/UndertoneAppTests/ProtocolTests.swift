@@ -709,6 +709,36 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AppModel.canBeginLearningUndo(actionID: nil, inFlight: false))
     }
 
+    func testFailedBusyRollbackRetainsRecoverableUndoUntilSafe() {
+        let learningNotice = PillState.notice(AppModel.learningNotice(for: "Velora"))
+        XCTAssertFalse(AppModel.shouldKeepLearningActionAfterRollback(rollbackSucceeded: true))
+        XCTAssertTrue(AppModel.shouldKeepLearningActionAfterRollback(rollbackSucceeded: false))
+        XCTAssertTrue(AppModel.canShowLearningRecoveryNotice(for: .idle))
+        XCTAssertFalse(AppModel.canShowLearningRecoveryNotice(for: .inserted(totalMS: 12)))
+        XCTAssertFalse(AppModel.canShowLearningRecoveryNotice(for: .meetingDetected(PreviewFixtures.detectedMeeting)))
+        XCTAssertTrue(AppModel.canSupersedeLearningRecovery(false))
+        XCTAssertFalse(AppModel.canSupersedeLearningRecovery(true))
+        XCTAssertTrue(AppModel.shouldKeepLearningRecoveryAfterReshowing(inFlight: true))
+        XCTAssertFalse(AppModel.shouldKeepLearningRecoveryAfterReshowing(inFlight: false))
+        XCTAssertTrue(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: learningNotice, nextState: .notice("Meeting ended"),
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertTrue(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: learningNotice, nextState: .notice("Saved"),
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertTrue(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: .idle, nextState: .notice("Saved"),
+            actionID: nil, term: nil, recoveryPending: true))
+        XCTAssertFalse(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: .notice("Saved"), nextState: .notice("Saved"),
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertFalse(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: learningNotice, nextState: .idle,
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertTrue(AppModel.shouldFallbackForPendingLearning(actionID: 7))
+        XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil))
+    }
+
     func testHarvestDropsOversizedUnicodeToken() {
         let oversized = String(repeating: "A", count: AXContextReader.maximumHarvestTokenScalars + 1)
         let target = TargetSnapshot(bundleID: "fixture", element: nil, value: oversized + " Northwind",
