@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import logging
 import math
 import os
 import socket
@@ -14,8 +15,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import yaml
+
 from . import config as settings, dictionary, history, learning, meeting
 from .cleanup import OllamaModelNotFoundError
+
+logger = logging.getLogger("undertone.server")
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = MAX_REQUEST_BYTES
@@ -102,7 +107,10 @@ class Engine:
     """Serialize model work without logging transcript content."""
 
     def __init__(self) -> None:
-        learning.recover_pending_dictionary_writes()
+        try:
+            learning.recover_pending_dictionary_writes()
+        except (OSError, sqlite3.Error, yaml.YAMLError):
+            logger.warning("Pending dictionary write recovery deferred")
         self.lock = threading.RLock()
         self.transcriber = None
         self._meetings: meeting.MeetingService | None = None
@@ -262,7 +270,6 @@ class Engine:
         if op == "config.get":
             return {"config": settings.load_config()}
         if op == "config.update":
-            import yaml
             changes = r.get("config")
             booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert", "learn_from_corrections"}
             allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset"}
@@ -314,7 +321,7 @@ class Engine:
             data = dictionary.load_dictionary()
             if op == "dictionary.remove":
                 term = text_field(r, "term", 200)
-                data["terms"] = [word for word in data["terms"] if word.casefold() != term.casefold()]
+                return learning.remove_explicit_term(term)
             else:
                 phrase = text_field(r, "phrase", 1000).strip()
                 if not phrase:

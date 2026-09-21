@@ -79,7 +79,6 @@ def _ensure_schema(db: Any) -> None:
         "CREATE INDEX IF NOT EXISTS learned_suggestions_pending_idx "
         "ON learned_suggestions(status, created_at DESC)"
     )
-    _recover_dictionary_writes(db)
 
 
 def _phrase(value: Any, name: str) -> str:
@@ -198,6 +197,7 @@ def recover_pending_dictionary_writes() -> None:
     """Finish durable manual dictionary writes left by an interrupted engine."""
     with _LOCK, history._connect() as db:
         _ensure_schema(db)
+        _recover_dictionary_writes(db)
 
 
 def add_explicit_term(term: str) -> dict[str, Any]:
@@ -205,9 +205,24 @@ def add_explicit_term(term: str) -> dict[str, Any]:
     with _LOCK:
         with history._connect() as db:
             _ensure_schema(db)
+            _recover_dictionary_writes(db)
             _supersede_open_actions(db, term)
             write_id = _journal_dictionary_write(db, term)
             return _write_journaled_dictionary_term(db, write_id, term)
+
+
+def remove_explicit_term(term: str) -> dict[str, Any]:
+    """Remove a term after cancelling any interrupted manual add for it."""
+    term_key = term.casefold()
+    with _LOCK:
+        with history._connect() as db:
+            _ensure_schema(db)
+            pending = db.execute("SELECT id, term FROM dictionary_writes").fetchall()
+            for write_id, pending_term in pending:
+                if pending_term.casefold() == term_key:
+                    db.execute("DELETE FROM dictionary_writes WHERE id = ?", (write_id,))
+            db.commit()
+            return dictionary.remove_term(term)
 
 
 def propose(
@@ -292,6 +307,8 @@ def act(suggestion_id: int, action: str) -> dict[str, Any]:
         raise ValueError("Invalid learned action")
     with _LOCK, history._connect() as db:
         _ensure_schema(db)
+        if action == "add":
+            _recover_dictionary_writes(db)
         row = db.execute(
             """SELECT id, produced, replacement, row_id, app_bundle_id, created_at, reason,
                       status, produced_key

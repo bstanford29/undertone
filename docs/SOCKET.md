@@ -150,10 +150,13 @@ fails, audio, rows, and the NDJSON transcript remain available for retry.
 
 `dictionary.add` accepts a non-empty term up to 200 characters. It journals the
 manual ownership change before writing the local dictionary and finishes any
-interrupted write when the engine restarts. `dictionary.remove` accepts a term
-up to 200 characters. `dictionary.replace` accepts a non-empty phrase up to
-1,000 characters and a replacement up to 10,000 characters. Responses contain
-the current `terms` and `replacements` maps.
+interrupted write when the engine restarts or the next manual add is handled.
+If startup recovery cannot access either local store, the engine remains
+available and retains the journal for a later retry. `dictionary.remove`
+accepts a term up to 200 characters and cancels a matching pending add before
+removing it. `dictionary.replace` accepts a non-empty phrase up to 1,000
+characters and a replacement up to 10,000 characters. Responses contain the
+current `terms` and `replacements` maps.
 
 ## History
 

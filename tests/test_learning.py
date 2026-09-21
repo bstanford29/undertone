@@ -216,6 +216,21 @@ class LearningTests(unittest.TestCase):
         with history._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
 
+    def test_explicit_remove_cancels_matching_pending_dictionary_write(self):
+        dictionary.add_term("TransientTerm")
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                "INSERT INTO dictionary_writes (term, created_at) VALUES (?, ?)",
+                ("TransientTerm", 1.0),
+            )
+
+        learning.remove_explicit_term("transientterm")
+        learning.recover_pending_dictionary_writes()
+        self.assertNotIn("TransientTerm", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
+
     def test_accepted_suggestion_transfers_same_term_ownership(self):
         row_id = self._row()
         learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
