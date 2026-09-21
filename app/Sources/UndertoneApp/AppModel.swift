@@ -29,6 +29,12 @@ struct PermissionSnapshot: Equatable {
     }
 }
 
+enum LearningReconciliationOutcome: Equatable {
+    case learned(actionID: Int, term: String)
+    case notFound
+    case unavailable
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     let engine: EngineClient
@@ -197,6 +203,20 @@ final class AppModel: ObservableObject {
         "Learned \(term) · Undo"
     }
 
+    nonisolated static func learningClientToken() -> String {
+        UUID().uuidString
+    }
+
+    nonisolated static func learningReconciliationOutcome(
+        status: String?, actionID: Int?, term: String?
+    ) -> LearningReconciliationOutcome {
+        if status == "not_found" { return .notFound }
+        guard status == "learned", let actionID, let term, !term.isEmpty else {
+            return .unavailable
+        }
+        return .learned(actionID: actionID, term: term)
+    }
+
     nonisolated static func isLearningNotice(_ state: PillState, term: String) -> Bool {
         guard case .notice(let message) = state else { return false }
         return message == learningNotice(for: term)
@@ -213,6 +233,7 @@ final class AppModel: ObservableObject {
             || message.hasPrefix("Kept newer dictionary entry for ")
             || message.hasPrefix("Kept newer learning for ")
             || message.hasPrefix("Learning for ") && message.hasSuffix(" was already undone")
+            || message.hasSuffix(" was already removed")
     }
 
     nonisolated static func learningUndoReceipt(status: String?, term: String) -> String? {
@@ -225,6 +246,8 @@ final class AppModel: ObservableObject {
             return "Kept newer learning for \(term)"
         case "undone":
             return "Learning for \(term) was already undone"
+        case "absent":
+            return "\(term) was already removed"
         default:
             return nil
         }
@@ -794,48 +817,86 @@ final class AppModel: ObservableObject {
                     try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                     return
                 }
-                let response = try await engine.request(op: "learning.auto_learn", fields: [
-                    "produced": .string(candidate.produced),
-                    "replacement": .string(candidate.replacement), "row_id": .number(Double(rowID)),
-                    "app_bundle_id": .string(receipt.appBundleID)
-                ])
-                if response.status == "learned", let actionID = response.learningActionID {
-                    let term = response.term ?? candidate.replacement
-                    guard Self.canShowLearningNotice(for: pillState) else {
-                        let rollbackSucceeded: Bool
-                        do {
-                            _ = try await engine.request(op: "learning.undo", fields: [
-                                "action_id": .number(Double(actionID))
-                            ])
-                            rollbackSucceeded = true
-                        } catch {
-                            rollbackSucceeded = false
-                        }
-                        if Self.shouldKeepLearningActionAfterRollback(rollbackSucceeded: rollbackSucceeded) {
-                            pendingLearningActionID = actionID
-                            pendingLearningTerm = term
-                            learningRecoveryPending = true
-                        }
-                        do {
-                            try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
-                        } catch {
-                            statusText = "Learning unavailable: \(error.localizedDescription)"
-                        }
-                        showPendingLearningRecoveryIfSafe()
+                let clientToken = Self.learningClientToken()
+                let response: EngineResponse
+                do {
+                    response = try await engine.request(op: "learning.auto_learn", fields: [
+                        "produced": .string(candidate.produced),
+                        "replacement": .string(candidate.replacement), "row_id": .number(Double(rowID)),
+                        "app_bundle_id": .string(receipt.appBundleID),
+                        "client_token": .string(clientToken),
+                    ])
+                } catch {
+                    let resolved: EngineResponse
+                    do {
+                        resolved = try await engine.request(op: "learning.lookup", fields: [
+                            "client_token": .string(clientToken),
+                        ])
+                    } catch {
+                        statusText = "Learning unavailable: response could not be resolved"
                         return
                     }
-                    pendingLearningActionID = actionID
-                    pendingLearningTerm = term
-                    learningRecoveryPending = false
-                    showTransientState(.notice(Self.learningNotice(for: term)))
-                } else if response.status == "already_known" {
-                    return
-                } else if response.status == "disabled" {
-                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    switch Self.learningReconciliationOutcome(
+                        status: resolved.status, actionID: resolved.learningActionID, term: resolved.term
+                    ) {
+                    case .learned:
+                        response = resolved
+                    case .notFound:
+                        try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                        return
+                    case .unavailable:
+                        statusText = "Learning unavailable: unexpected resolution"
+                        return
+                    }
                 }
+                try await applyAutoLearnResponse(
+                    response, candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID
+                )
             } catch {
                 statusText = "Learning unavailable: \(error.localizedDescription)"
             }
+        }
+    }
+
+    private func applyAutoLearnResponse(
+        _ response: EngineResponse,
+        candidate: LearningCandidate,
+        rowID: Int,
+        appBundleID: String
+    ) async throws {
+        if response.status == "learned", let actionID = response.learningActionID {
+            let term = response.term ?? candidate.replacement
+            guard Self.canShowLearningNotice(for: pillState) else {
+                let rollbackSucceeded: Bool
+                do {
+                    _ = try await engine.request(op: "learning.undo", fields: [
+                        "action_id": .number(Double(actionID))
+                    ])
+                    rollbackSucceeded = true
+                } catch {
+                    rollbackSucceeded = false
+                }
+                if Self.shouldKeepLearningActionAfterRollback(rollbackSucceeded: rollbackSucceeded) {
+                    pendingLearningActionID = actionID
+                    pendingLearningTerm = term
+                    learningRecoveryPending = true
+                }
+                do {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: appBundleID)
+                } catch {
+                    statusText = "Learning unavailable: \(error.localizedDescription)"
+                }
+                showPendingLearningRecoveryIfSafe()
+                return
+            }
+            pendingLearningActionID = actionID
+            pendingLearningTerm = term
+            learningRecoveryPending = false
+            showTransientState(.notice(Self.learningNotice(for: term)))
+        } else if response.status == "already_known" {
+            return
+        } else if response.status == "disabled" {
+            try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: appBundleID)
         }
     }
 

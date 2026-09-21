@@ -155,6 +155,50 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(sum(term.casefold() == "qwen" for term in terms), 1)
         self.assertNotIn("Velora", terms)
 
+    def test_auto_learn_client_token_is_idempotent_and_lookup_resolves(self):
+        row_id = self._row()
+        first = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="velora-token",
+        )
+        second = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="velora-token",
+        )
+        self.assertEqual(second["action_id"], first["action_id"])
+        resolved = learning.lookup("velora-token")
+        self.assertEqual(resolved["status"], "learned")
+        self.assertEqual(resolved["action_id"], first["action_id"])
+        self.assertEqual(resolved["term"], "Velora")
+
+    def test_learning_lookup_rejects_unknown_or_invalid_tokens(self):
+        self.assertEqual(learning.lookup("missing-token")["status"], "not_found")
+        with self.assertRaises(ValueError):
+            learning.lookup("bad token")
+        with self.assertRaises(ValueError):
+            learning.lookup("x" * (learning.MAX_CLIENT_TOKEN_CHARS + 1))
+
+    def test_learning_schema_migrates_actions_without_client_token(self):
+        with history._connect() as db:
+            db.execute(
+                """CREATE TABLE learning_actions (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   produced TEXT NOT NULL, term TEXT NOT NULL, term_key TEXT NOT NULL,
+                   row_id INTEGER NOT NULL, app_bundle_id TEXT NOT NULL,
+                   created_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active'
+                )"""
+            )
+        self.assertEqual(learning.lookup("legacy-token")["status"], "not_found")
+        with history._connect() as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(learning_actions)")}
+        self.assertIn("client_token", columns)
+
+    def test_undo_reports_absent_when_manual_removal_left_no_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        dictionary.remove_term("Velora")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "absent")
+
 
 if __name__ == "__main__":
     unittest.main()

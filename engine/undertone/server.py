@@ -479,9 +479,12 @@ class Engine:
                 r.get("row_id"),
                 text_field(r, "app_bundle_id", learning.MAX_APP_CHARS),
                 enabled=bool(settings.load_config()["learn_from_corrections"]),
+                client_token=r.get("client_token"),
             )
         if op == "learning.undo":
             return learning.undo(r.get("action_id"))
+        if op == "learning.lookup":
+            return learning.lookup(r.get("client_token"))
         if op == "learned.list":
             limit = r.get("limit", learning.MAX_SUGGESTIONS)
             return {"suggestions": learning.list_suggestions(limit)}

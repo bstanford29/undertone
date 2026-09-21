@@ -123,11 +123,36 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testLearningActionResponseDecodesStatusAndUndoToken() throws {
-        let data = #"{"id":9,"status":"learned","action_id":12,"term":"Velora"}"#.data(using: .utf8)!
+        let data = #"{"id":9,"status":"learned","action_id":12,"term":"Velora","action_status":"active","client_token":"velora-token"}"#.data(using: .utf8)!
         let response = try JSONDecoder().decode(EngineResponse.self, from: data)
         XCTAssertEqual(response.status, "learned")
         XCTAssertEqual(response.learningActionID, 12)
+        XCTAssertEqual(response.learningActionStatus, "active")
+        XCTAssertEqual(response.learningClientToken, "velora-token")
         XCTAssertEqual(response.term, "Velora")
+    }
+
+    func testLearningReconciliationPolicyRequiresACompleteLearnedResponse() {
+        let token = AppModel.learningClientToken()
+        XCTAssertTrue(token.count <= 128)
+        XCTAssertTrue(token.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" })
+        XCTAssertFalse(token.contains("Velora"))
+        XCTAssertEqual(
+            AppModel.learningReconciliationOutcome(status: "learned", actionID: 12, term: "Velora"),
+            .learned(actionID: 12, term: "Velora")
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationOutcome(status: "not_found", actionID: nil, term: nil),
+            .notFound
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationOutcome(status: nil, actionID: nil, term: nil),
+            .unavailable
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationOutcome(status: "learned", actionID: nil, term: "Velora"),
+            .unavailable
+        )
     }
 
     func testEngineClientUnixSocketRoundTrip() async throws {
@@ -676,6 +701,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer dictionary entry for Velora")))
         XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer learning for Velora")))
         XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Learning for Velora was already undone")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Velora was already removed")))
         XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(learningNotice))
         XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(.notice("Saved")))
     }
@@ -685,6 +711,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(AppModel.learningUndoReceipt(status: "superseded", term: "Velora"), "Kept newer dictionary entry for Velora")
         XCTAssertEqual(AppModel.learningUndoReceipt(status: "preserved", term: "Velora"), "Kept newer learning for Velora")
         XCTAssertEqual(AppModel.learningUndoReceipt(status: "undone", term: "Velora"), "Learning for Velora was already undone")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "absent", term: "Velora"), "Velora was already removed")
         XCTAssertNil(AppModel.learningUndoReceipt(status: nil, term: "Velora"))
         XCTAssertNil(AppModel.learningUndoReceipt(status: "unexpected", term: "Velora"))
     }

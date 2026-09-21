@@ -10,6 +10,7 @@ MAX_PHRASE_CHARS = 200
 MAX_PHRASE_WORDS = 12
 MAX_APP_CHARS = 300
 MAX_SUGGESTIONS = 100
+MAX_CLIENT_TOKEN_CHARS = 128
 
 _LOCK = threading.RLock()
 
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS learning_actions (
     row_id INTEGER NOT NULL,
     app_bundle_id TEXT NOT NULL,
     created_at REAL NOT NULL,
+    client_token TEXT,
     status TEXT NOT NULL DEFAULT 'active'
 )
 """
@@ -53,9 +55,16 @@ def _ensure_schema(db: Any) -> None:
     db.execute(_SCHEMA)
     db.execute(_SUPPRESSION_SCHEMA)
     db.execute(_ACTION_SCHEMA)
+    columns = {row[1] for row in db.execute("PRAGMA table_info(learning_actions)")}
+    if "client_token" not in columns:
+        db.execute("ALTER TABLE learning_actions ADD COLUMN client_token TEXT")
     db.execute(
         "CREATE INDEX IF NOT EXISTS learning_actions_term_idx "
         "ON learning_actions(term_key, status)"
+    )
+    db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS learning_actions_client_token_idx "
+        "ON learning_actions(client_token) WHERE client_token IS NOT NULL"
     )
     db.execute(
         "CREATE INDEX IF NOT EXISTS learned_suggestions_pending_idx "
@@ -94,6 +103,16 @@ def _row_id(value: Any) -> int:
 def _action_id(value: Any) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise ValueError("action_id must be an integer")
+    return value
+
+
+def _client_token(value: Any) -> str:
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= MAX_CLIENT_TOKEN_CHARS
+        or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for char in value)
+    ):
+        raise ValueError("Invalid client_token")
     return value
 
 
@@ -258,12 +277,15 @@ def auto_learn(
     app_bundle_id: str,
     *,
     enabled: bool,
+    client_token: str | None = None,
 ) -> dict[str, Any]:
     """Learn one accepted correction and return an action-scoped undo token."""
     produced = _single_word(_phrase(produced, "produced"), "produced")
     replacement = _single_word(_phrase(replacement, "replacement"), "replacement")
     row_id = _row_id(row_id)
     app_bundle_id = _app_bundle(app_bundle_id)
+    if client_token is not None:
+        client_token = _client_token(client_token)
     if not enabled:
         return {"status": "disabled", "term": replacement}
     if produced.casefold() == replacement.casefold():
@@ -278,6 +300,20 @@ def auto_learn(
             ).fetchone()
             if owner is None or owner[0] != app_bundle_id:
                 raise ValueError("History row does not belong to app")
+            if client_token is not None:
+                existing_action = db.execute(
+                    "SELECT id, term, status, created_at FROM learning_actions WHERE client_token = ?",
+                    (client_token,),
+                ).fetchone()
+                if existing_action is not None:
+                    return {
+                        "status": "learned",
+                        "term": existing_action[1],
+                        "action_id": existing_action[0],
+                        "created_at": existing_action[3],
+                        "client_token": client_token,
+                        "action_status": existing_action[2],
+                    }
             terms = dictionary.load_dictionary()["terms"]
             existing = next((term for term in terms if term.casefold() == term_key), None)
             if existing is not None:
@@ -290,16 +326,38 @@ def auto_learn(
             created_at = time.time()
             cursor = db.execute(
                 """INSERT INTO learning_actions
-                   (produced, term, term_key, row_id, app_bundle_id, created_at, status)
-                   VALUES (?, ?, ?, ?, ?, ?, 'active')""",
-                (produced, replacement, term_key, row_id, app_bundle_id, created_at),
+                   (produced, term, term_key, row_id, app_bundle_id, created_at, client_token, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 'active')""",
+                (produced, replacement, term_key, row_id, app_bundle_id, created_at, client_token),
             )
             return {
                 "status": "learned",
                 "term": replacement,
                 "action_id": cursor.lastrowid,
                 "created_at": created_at,
+                "client_token": client_token,
             }
+
+
+def lookup(client_token: str) -> dict[str, Any]:
+    """Resolve an auto-learning client token without changing learning state."""
+    client_token = _client_token(client_token)
+    with _LOCK, history._connect() as db:
+        _ensure_schema(db)
+        row = db.execute(
+            "SELECT id, term, status, created_at FROM learning_actions WHERE client_token = ?",
+            (client_token,),
+        ).fetchone()
+        if row is None:
+            return {"status": "not_found", "client_token": client_token}
+        return {
+            "status": "learned",
+            "action_id": row[0],
+            "term": row[1],
+            "action_status": row[2],
+            "created_at": row[3],
+            "client_token": client_token,
+        }
 
 
 def undo(action_id: int) -> dict[str, Any]:
@@ -328,7 +386,9 @@ def undo(action_id: int) -> dict[str, Any]:
                 return {"status": "preserved", "action_id": action_id, "term": row[1]}
             terms = dictionary.load_dictionary()["terms"]
             owned = [term for term in terms if term.casefold() == row[2]]
-            if len(owned) == 1:
+            if len(owned) == 0:
+                result = "absent"
+            elif len(owned) == 1:
                 dictionary.remove_term(owned[0])
                 result = "removed"
             else:

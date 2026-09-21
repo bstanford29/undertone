@@ -339,6 +339,24 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': 'yes'}})
 
+    def test_learning_lookup_dispatch_resolves_token_and_unknown_is_read_only(self):
+        row_id = self.engine.dispatch({
+            'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',
+            'insert_mode': 'ax', 'app_bundle_id': 'test.app',
+        })['row_id']
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': True}})
+        learned = self.engine.dispatch({
+            'op': 'learning.auto_learn', 'produced': 'Valora', 'replacement': 'Velora',
+            'row_id': row_id, 'app_bundle_id': 'test.app', 'client_token': 'server-token',
+        })
+        resolved = self.engine.dispatch({'op': 'learning.lookup', 'client_token': 'server-token'})
+        self.assertEqual(resolved['status'], 'learned')
+        self.assertEqual(resolved['action_id'], learned['action_id'])
+        self.assertEqual(
+            self.engine.dispatch({'op': 'learning.lookup', 'client_token': 'unknown-token'})['status'],
+            'not_found',
+        )
+
     def test_pill_settings_persist_and_validate(self):
         self.engine.dispatch({'op': 'config.update', 'config': {'pill_edge': 'left', 'pill_offset': 0.25, 'pill_persistent': False}})
         saved = self.engine.dispatch({'op': 'config.get'})['config']
