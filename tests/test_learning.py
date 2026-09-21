@@ -216,6 +216,22 @@ class LearningTests(unittest.TestCase):
         with history._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
 
+    def test_recovered_explicit_add_supersedes_newer_automatic_action(self):
+        row_id = self._row()
+        with patch.object(dictionary, "add_term", side_effect=OSError("synthetic pre-write failure")):
+            with self.assertRaises(OSError):
+                learning.add_explicit_term("Velora")
+
+        learned = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="newer-auto-action",
+        )
+        learning.recover_pending_dictionary_writes()
+
+        self.assertEqual(learning.lookup("newer-auto-action")["action_status"], "superseded")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
     def test_explicit_remove_cancels_matching_pending_dictionary_write(self):
         dictionary.add_term("TransientTerm")
         with history._connect() as db:

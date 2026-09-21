@@ -174,6 +174,7 @@ def _activate_preparing_action(db: Any, action_id: int, term: str) -> None:
 def _recover_dictionary_writes(db: Any) -> None:
     rows = db.execute("SELECT id, term FROM dictionary_writes ORDER BY id").fetchall()
     for write_id, term in rows:
+        _supersede_open_actions(db, term)
         dictionary.add_term(term)
         db.execute("DELETE FROM dictionary_writes WHERE id = ?", (write_id,))
 
