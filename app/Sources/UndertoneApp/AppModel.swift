@@ -692,6 +692,15 @@ final class AppModel: ObservableObject {
         statusText = "Learning unavailable: correction could not be queued"
     }
 
+    private func handleLearningLookupFailure(_ error: Error) {
+        if let clientError = error as? EngineClientError, clientError.isTransportFailure {
+            statusText = "Learning unavailable: response could not be resolved"
+            return
+        }
+        clearUnresolvedLearning()
+        statusText = "Learning unavailable: recovery request was rejected"
+    }
+
     private func reconcileUnresolvedLearningIfAvailable() async {
         guard Self.canBeginLearningReconciliation(
             tokenPresent: unresolvedLearningClientToken != nil,
@@ -705,11 +714,7 @@ final class AppModel: ObservableObject {
                 "client_token": .string(token),
             ])
         } catch {
-            if let clientError = error as? EngineClientError, clientError.isTransportFailure {
-                return
-            }
-            clearUnresolvedLearning()
-            statusText = "Learning unavailable: recovery request was rejected"
+            handleLearningLookupFailure(error)
             return
         }
         let policy = Self.learningReconciliationPolicy(
@@ -990,7 +995,7 @@ final class AppModel: ObservableObject {
                             "client_token": .string(clientToken),
                         ])
                     } catch {
-                        statusText = "Learning unavailable: response could not be resolved"
+                        handleLearningLookupFailure(error)
                         return
                     }
                     switch Self.learningReconciliationPolicy(

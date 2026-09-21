@@ -1,5 +1,7 @@
 from __future__ import annotations
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from undertone import dictionary
 
@@ -13,3 +15,27 @@ class DictionaryTests(unittest.TestCase):
             self.assertEqual(dictionary.vocab_prompt({}), '')
             self.assertEqual(dictionary.apply_replacements('Keep this', {}), 'Keep this')
             load.assert_not_called()
+
+    def test_failed_save_keeps_the_previous_dictionary_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(dictionary, 'DICTIONARY_DIR', root), patch.object(
+                dictionary, 'DICTIONARY_PATH', root / 'dictionary.yaml'
+            ):
+                dictionary.save_dictionary({'terms': ['Stable'], 'replacements': {}})
+                with patch.object(dictionary.yaml, 'safe_dump', side_effect=OSError('fixture')):
+                    with self.assertRaises(OSError):
+                        dictionary.save_dictionary({'terms': ['Lost'], 'replacements': {}})
+                self.assertEqual(dictionary.load_dictionary()['terms'], ['Stable'])
+
+    def test_replacement_and_term_updates_preserve_each_other(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(dictionary, 'DICTIONARY_DIR', root), patch.object(
+                dictionary, 'DICTIONARY_PATH', root / 'dictionary.yaml'
+            ):
+                dictionary.add_term('Velora')
+                dictionary.set_replacement('btw', 'by the way')
+                saved = dictionary.load_dictionary()
+                self.assertIn('Velora', saved['terms'])
+                self.assertEqual(saved['replacements']['btw'], 'by the way')

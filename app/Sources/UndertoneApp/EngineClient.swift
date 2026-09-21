@@ -1,6 +1,10 @@
 import Foundation
 import Darwin
 
+private struct EngineEnvelope: Decodable {
+    let error: EngineError?
+}
+
 actor EngineClient {
     private let path: String
     private var nextID = 1
@@ -21,9 +25,7 @@ actor EngineClient {
         line.append(10)
         try writeAll(fd, line)
         let responseData = try readLine(fd, buffer: &readBuffer)
-        let response = try JSONDecoder().decode(EngineResponse.self, from: responseData)
-        guard response.id == requestID else { throw EngineClientError.protocolViolation("response id \(response.id) did not match request \(requestID)") }
-        if let error = response.error { throw EngineClientError.remote(error.code, error.message) }
+        let response = try decodeResponse(responseData, requestID: requestID)
         return response
     }
 
@@ -46,16 +48,26 @@ actor EngineClient {
         try writeAll(fd, line)
         while true {
             let responseData = try readLine(fd, buffer: &readBuffer)
-            let response = try JSONDecoder().decode(EngineResponse.self, from: responseData)
-            guard response.id == requestID else {
-                throw EngineClientError.protocolViolation("response id \(response.id) did not match request \(requestID)")
-            }
-            if let error = response.error { throw EngineClientError.remote(error.code, error.message) }
+            let response = try decodeResponse(responseData, requestID: requestID)
             if let chunk = response.chunk {
                 await onChunk(chunk)
             }
             if response.done == true { return response }
         }
+    }
+
+    private func decodeResponse(_ data: Data, requestID: Int) throws -> EngineResponse {
+        let decoder = JSONDecoder()
+        let envelope = try decoder.decode(EngineEnvelope.self, from: data)
+        if let error = envelope.error {
+            if error.code == "busy" { throw EngineClientError.system("engine is busy") }
+            throw EngineClientError.remote(error.code, error.message)
+        }
+        let response = try decoder.decode(EngineResponse.self, from: data)
+        guard response.id == requestID else {
+            throw EngineClientError.protocolViolation("response id \(response.id) did not match request \(requestID)")
+        }
+        return response
     }
 
     /// Saves an edited title, notes, or summary. Only the given fields change.

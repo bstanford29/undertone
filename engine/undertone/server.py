@@ -326,13 +326,10 @@ class Engine:
                 term = text_field(r, "term", 200)
                 return learning.remove_explicit_term(term)
             else:
-                data = dictionary.load_dictionary()
                 phrase = text_field(r, "phrase", 1000).strip()
                 if not phrase:
                     raise ValueError("Phrase is empty")
-                data["replacements"][phrase] = text_field(r, "replacement", 10000)
-            dictionary.save_dictionary(data)
-            return data
+                return dictionary.set_replacement(phrase, text_field(r, "replacement", 10000))
         if op == "transcribe":
             from .audio import load_wav
             from .stt import Transcriber
