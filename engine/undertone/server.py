@@ -109,7 +109,7 @@ class Engine:
     def __init__(self) -> None:
         try:
             learning.recover_pending_dictionary_writes()
-        except (OSError, sqlite3.Error, yaml.YAMLError):
+        except Exception:
             logger.warning("Pending dictionary write recovery deferred")
         self.lock = threading.RLock()
         self.transcriber = None
@@ -318,11 +318,11 @@ class Engine:
                 if not term:
                     raise ValueError("Term is empty")
                 return learning.add_explicit_term(term)
-            data = dictionary.load_dictionary()
             if op == "dictionary.remove":
                 term = text_field(r, "term", 200)
                 return learning.remove_explicit_term(term)
             else:
+                data = dictionary.load_dictionary()
                 phrase = text_field(r, "phrase", 1000).strip()
                 if not phrase:
                     raise ValueError("Phrase is empty")

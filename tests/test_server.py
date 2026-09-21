@@ -336,7 +336,7 @@ class ServerTests(unittest.TestCase):
             self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
 
     def test_engine_startup_defers_failed_dictionary_recovery(self):
-        with patch.object(learning, 'recover_pending_dictionary_writes', side_effect=OSError('fixture')):
+        with patch.object(learning, 'recover_pending_dictionary_writes', side_effect=AttributeError('fixture')):
             with self.assertLogs('undertone.server', level='WARNING') as captured:
                 engine = Engine()
         self.assertEqual(engine.whisper_status, 'loading')
