@@ -98,6 +98,7 @@ final class AppModel: ObservableObject {
     private var meetingStateObservation: AnyCancellable?
     private var detectionObservation: AnyCancellable?
     private var nudgeTask: Task<Void, Never>?
+    private var deferredMeetingNudge: DetectedMeeting?
     private var nudgeHovered = false
     private var meetingElapsedTask: Task<Void, Never>?
     /// Set by the app delegate, which owns the Quick note panel.
@@ -200,10 +201,23 @@ final class AppModel: ObservableObject {
         return message == learningNotice(for: term)
     }
 
-    nonisolated static func canShowMeetingNudge(for state: PillState, pendingLearningTerm: String?) -> Bool {
-        if case .idle = state { return true }
+    nonisolated static func shouldDeferMeetingNudge(for state: PillState, pendingLearningTerm: String?) -> Bool {
         guard let pendingLearningTerm else { return false }
         return isLearningNotice(state, term: pendingLearningTerm)
+    }
+
+    nonisolated static func preservesDeferredMeetingNudge(_ state: PillState) -> Bool {
+        guard case .notice(let message) = state else { return false }
+        return message.hasPrefix("Undid learning ")
+    }
+
+    nonisolated static func shouldShowDeferredMeetingNudge(
+        current: DetectedMeeting?, deferred: DetectedMeeting?, enabled: Bool,
+        persistent: Bool, ignored: Bool, busy: Bool, pillIsIdle: Bool
+    ) -> Bool {
+        guard let current, let deferred, current == deferred else { return false }
+        return shouldShowNudge(enabled: enabled, persistent: persistent, ignored: ignored,
+                               busy: busy, pillIsIdle: pillIsIdle)
     }
 
     nonisolated static func canBeginLearningUndo(actionID: Int?, inFlight: Bool) -> Bool {
@@ -331,6 +345,7 @@ final class AppModel: ObservableObject {
         pillResetTask = nil
         nudgeTask?.cancel()
         nudgeTask = nil
+        deferredMeetingNudge = nil
         meetingElapsedTask?.cancel()
         meetingElapsedTask = nil
         powerMonitor?.stop()
@@ -766,6 +781,10 @@ final class AppModel: ObservableObject {
         pendingLearningTerm = nil
     }
 
+    private func clearDeferredMeetingNudge() {
+        deferredMeetingNudge = nil
+    }
+
     func undoPendingLearning() {
         guard Self.canBeginLearningUndo(actionID: pendingLearningActionID, inFlight: learningUndoInFlight),
               let actionID = pendingLearningActionID else { return }
@@ -1062,6 +1081,7 @@ final class AppModel: ObservableObject {
     private func detectionChanged(_ detected: DetectedMeeting?) {
         guard let detected else {
             meetings.clearIgnored()
+            deferredMeetingNudge = nil
             cancelNudge()
             return
         }
@@ -1070,13 +1090,23 @@ final class AppModel: ObservableObject {
             persistent: pillPersistent,
             ignored: meetings.isIgnored(detected),
             busy: meetings.state.isBusy,
-            pillIsIdle: Self.canShowMeetingNudge(for: pillState, pendingLearningTerm: pendingLearningTerm)
-        ) else { return }
+            pillIsIdle: true
+        ) else {
+            deferredMeetingNudge = nil
+            return
+        }
+        guard pillState == .idle else {
+            if Self.shouldDeferMeetingNudge(for: pillState, pendingLearningTerm: pendingLearningTerm) {
+                deferredMeetingNudge = detected
+            }
+            return
+        }
         showNudge(detected)
     }
 
     private func showNudge(_ detected: DetectedMeeting) {
         clearPendingLearning()
+        clearDeferredMeetingNudge()
         nudgeTask?.cancel()
         nudgeHovered = false
         nudgeFraction = 1
@@ -1104,6 +1134,7 @@ final class AppModel: ObservableObject {
     private func cancelNudge() {
         nudgeTask?.cancel()
         nudgeTask = nil
+        clearDeferredMeetingNudge()
         nudgeHovered = false
         nudgeFraction = 1
         if case .meetingDetected = pillState { pillState = .idle }
@@ -1137,6 +1168,7 @@ final class AppModel: ObservableObject {
         }
         cancelNudge()
         clearPendingLearning()
+        clearDeferredMeetingNudge()
         meetingElapsedTask?.cancel()
         meetingElapsedTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -1192,6 +1224,7 @@ final class AppModel: ObservableObject {
     /// A short receipt on the dock. It never interrupts dictation or a live
     /// capture: those states own the dock while they run.
     private func showNotice(_ message: String, hold: Duration) {
+        let nextState = PillState.notice(message)
         switch pillState {
         case .idle, .notice:
             break
@@ -1199,8 +1232,9 @@ final class AppModel: ObservableObject {
             return
         }
         clearPendingLearning()
-        pillState = .notice(message)
-        schedulePillReset(from: .notice(message), after: hold)
+        if !Self.preservesDeferredMeetingNudge(nextState) { clearDeferredMeetingNudge() }
+        pillState = nextState
+        schedulePillReset(from: nextState, after: hold)
     }
 
     /// Persists a new pill dock position, applied immediately for the panel
@@ -1266,6 +1300,7 @@ final class AppModel: ObservableObject {
 
     private func showTransientError(_ message: String, duration: Duration) {
         clearPendingLearning()
+        clearDeferredMeetingNudge()
         pillState = .error(message)
         schedulePillReset(from: .error(message), after: duration)
     }
@@ -1277,7 +1312,10 @@ final class AppModel: ObservableObject {
                                     let term = pendingLearningTerm {
             Self.isLearningNotice(state, term: term)
         } else { false }
-        if !preservesLearning { clearPendingLearning() }
+        if !preservesLearning {
+            clearPendingLearning()
+            clearDeferredMeetingNudge()
+        }
         pillState = state
         schedulePillReset(from: state, after: FlowBarMetrics.transientHold(for: state))
     }
@@ -1287,12 +1325,27 @@ final class AppModel: ObservableObject {
         pillResetTask = Task { [weak self] in
             do { try await Task.sleep(for: duration) } catch { return }
             guard let self, self.pillState == expected else { return }
+            let deferredMeeting = self.deferredMeetingNudge
             self.pillState = .idle
             if case .notice = expected {
                 self.pendingLearningActionID = nil
                 self.pendingLearningTerm = nil
             }
             self.pillResetTask = nil
+            guard let deferredMeeting,
+                  Self.shouldShowDeferredMeetingNudge(
+                current: self.detectedMeeting,
+                deferred: deferredMeeting,
+                enabled: self.detectCallsEnabled,
+                persistent: self.pillPersistent,
+                ignored: self.meetings.isIgnored(self.detectedMeeting),
+                busy: self.meetings.state.isBusy,
+                pillIsIdle: self.pillState == .idle
+            ) else {
+                self.deferredMeetingNudge = nil
+                return
+            }
+            self.showNudge(deferredMeeting)
         }
     }
 

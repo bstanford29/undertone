@@ -666,13 +666,41 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AppModel.isLearningNotice(state, term: "Qwen"))
     }
 
-    func testMeetingNudgeOnlyPreemptsTheExactLearningNotice() {
+    func testMeetingNudgeDefersOnlyTheExactLearningNotice() {
         let learningNotice = PillState.notice(AppModel.learningNotice(for: "Velora"))
-        XCTAssertTrue(AppModel.canShowMeetingNudge(for: .idle, pendingLearningTerm: nil))
-        XCTAssertTrue(AppModel.canShowMeetingNudge(for: learningNotice, pendingLearningTerm: "Velora"))
-        XCTAssertFalse(AppModel.canShowMeetingNudge(for: .notice("Saved"), pendingLearningTerm: "Velora"))
-        XCTAssertFalse(AppModel.canShowMeetingNudge(for: learningNotice, pendingLearningTerm: "Qwen"))
-        XCTAssertFalse(AppModel.canShowMeetingNudge(for: .meetingDetected(PreviewFixtures.detectedMeeting), pendingLearningTerm: "Velora"))
+        XCTAssertTrue(AppModel.shouldDeferMeetingNudge(for: learningNotice, pendingLearningTerm: "Velora"))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .notice("Saved"), pendingLearningTerm: "Velora"))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: learningNotice, pendingLearningTerm: "Qwen"))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .idle, pendingLearningTerm: "Velora"))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Undid learning Velora")))
+        XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(learningNotice))
+        XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(.notice("Saved")))
+    }
+
+    func testDeferredMeetingNudgeRequiresTheSameCurrentDetectionAndEligibility() {
+        let meeting = PreviewFixtures.detectedMeeting
+        let otherMeeting = PreviewFixtures.detectedTeams
+        XCTAssertTrue(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: nil, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: otherMeeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: false, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: true, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: true, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: false))
     }
 
     func testLearningUndoCanBeginOnlyOnceWhileRequestIsInFlight() {
