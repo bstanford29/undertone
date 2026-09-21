@@ -247,6 +247,21 @@ class LearningTests(unittest.TestCase):
         with history._connect() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
 
+    def test_undo_recovers_pending_manual_owner_before_removing_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                "INSERT INTO dictionary_writes (term, created_at) VALUES (?, ?)",
+                ("VELORA", 1.0),
+            )
+
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
+
     def test_accepted_suggestion_transfers_same_term_ownership(self):
         row_id = self._row()
         learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)

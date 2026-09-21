@@ -118,6 +118,21 @@ def remove_term(term: str) -> dict[str, Any]:
         return data
 
 
+def remove_unique_term(term: str) -> str:
+    """Remove one uniquely matching term and report what happened atomically."""
+    term_key = term.casefold()
+    with _dictionary_lock():
+        data = _load_dictionary()
+        matches = [existing for existing in data["terms"] if existing.casefold() == term_key]
+        if not matches:
+            return "absent"
+        if len(matches) != 1:
+            return "preserved"
+        data["terms"] = [existing for existing in data["terms"] if existing.casefold() != term_key]
+        _save_dictionary(data)
+        return "removed"
+
+
 def set_replacement(phrase: str, replacement: str) -> dict[str, Any]:
     with _dictionary_lock():
         data = _load_dictionary()

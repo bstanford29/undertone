@@ -460,6 +460,13 @@ def undo(action_id: int) -> dict[str, Any]:
     with _LOCK:
         with history._connect() as db:
             _ensure_schema(db)
+            # Claim the cross-process SQLite write lock before deciding who
+            # owns the term. Manual adds use the same database before taking
+            # the dictionary flock, so their ownership transfer cannot land
+            # between this check and the conditional dictionary removal.
+            db.commit()
+            db.execute("BEGIN IMMEDIATE")
+            _recover_dictionary_writes(db)
             row = db.execute(
                 "SELECT id, term, term_key, status FROM learning_actions WHERE id = ?",
                 (action_id,),
@@ -478,15 +485,7 @@ def undo(action_id: int) -> dict[str, Any]:
                     (action_id,),
                 )
                 return {"status": "preserved", "action_id": action_id, "term": row[1]}
-            terms = dictionary.load_dictionary()["terms"]
-            owned = [term for term in terms if term.casefold() == row[2]]
-            if len(owned) == 0:
-                result = "absent"
-            elif len(owned) == 1:
-                dictionary.remove_term(owned[0])
-                result = "removed"
-            else:
-                result = "preserved"
+            result = dictionary.remove_unique_term(row[1])
             db.execute(
                 "UPDATE learning_actions SET status = 'undone' WHERE id = ? AND status = 'active'",
                 (action_id,),

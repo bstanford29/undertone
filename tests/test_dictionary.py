@@ -45,6 +45,19 @@ class DictionaryTests(unittest.TestCase):
                 self.assertIn('Velora', saved['terms'])
                 self.assertEqual(saved['replacements']['btw'], 'by the way')
 
+    def test_remove_unique_term_classifies_and_changes_in_one_transaction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(dictionary, 'DICTIONARY_DIR', root), patch.object(
+                dictionary, 'DICTIONARY_PATH', root / 'dictionary.yaml'
+            ):
+                dictionary.save_dictionary({'terms': ['Velora'], 'replacements': {}})
+                self.assertEqual(dictionary.remove_unique_term('velora'), 'removed')
+                self.assertEqual(dictionary.remove_unique_term('velora'), 'absent')
+                dictionary.save_dictionary({'terms': ['Velora', 'VELORA'], 'replacements': {}})
+                self.assertEqual(dictionary.remove_unique_term('velora'), 'preserved')
+                self.assertEqual(dictionary.load_dictionary()['terms'], ['Velora', 'VELORA'])
+
     def test_mutation_waits_for_interprocess_lock(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
