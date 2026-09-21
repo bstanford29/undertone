@@ -214,9 +214,47 @@ to 200 characters and 12 words and control characters are rejected.
 previously suppressed produced phrase. A new suggestion contains only `id`,
 `produced`, `replacement`, `row_id`, `app_bundle_id`, `created_at`, and
 `reason`. `learned.list` returns pending suggestions in newest-first order.
-Only `learned.add` writes the replacement term to the personal dictionary;
-ignore and never-ask do not. Every action is persisted locally and is safe to
+Within these suggestion actions, only `learned.add` writes the replacement term
+to the personal dictionary; ignore and never-ask do not. Every action is persisted locally and is safe to
 retry with the same outcome. No suggestion text is included in errors or logs.
+
+## Correction learning
+
+Correction learning is enabled only by the persisted `learn_from_corrections`
+setting. The app sends a client-generated opaque `client_token` (1 to 128 ASCII
+letters, numbers, `_`, or `-`) with each `learning.auto_learn` request. The
+token contains no candidate text and makes a repeated request idempotent.
+
+```json
+{"id":30,"op":"learning.auto_learn","produced":"Valora","replacement":"Velora","row_id":1,"app_bundle_id":"com.example.editor","client_token":"velora-token"}
+```
+
+The response is `status:"learned"` with `action_id`, `term`,
+`client_token`, and `action_status:"active"`; `already_known` and `disabled`
+are non-learning outcomes. The client never trusts a request-supplied enabled
+flag. If a response is lost, it performs this read-only reconciliation:
+
+```json
+{"id":31,"op":"learning.lookup","client_token":"velora-token"}
+```
+
+Lookup returns `status:"learned"` with the same action ID, term, and
+`action_status`, or `status:"not_found"`. An active action can be shown as a
+new Undo notice. `superseded` and `undone` actions do not create a new Undo
+notice. The token is retained locally until lookup definitively finds or does
+not find the action.
+
+Undo is action-scoped and safe to repeat:
+
+```json
+{"id":32,"op":"learning.undo","action_id":12}
+```
+
+Semantic statuses are `removed` (the term was removed), `absent` (it was
+already removed), `preserved` (another active learning action owns the term),
+`superseded` (a later explicit dictionary action owns it), and `undone` (the
+action was already consumed). These operations change only the vocabulary
+term owned by the action; edited destination text is unaffected.
 
 ## Error responses
 

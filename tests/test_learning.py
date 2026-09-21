@@ -161,6 +161,7 @@ class LearningTests(unittest.TestCase):
             "Valora", "Velora", row_id, "com.example.editor", enabled=True,
             client_token="velora-token",
         )
+        self.assertEqual(first["action_status"], "active")
         second = learning.auto_learn(
             "Valora", "Velora", row_id, "com.example.editor", enabled=True,
             client_token="velora-token",

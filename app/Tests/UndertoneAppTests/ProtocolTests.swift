@@ -138,22 +138,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(token.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" })
         XCTAssertFalse(token.contains("Velora"))
         XCTAssertEqual(
-            AppModel.learningReconciliationOutcome(status: "learned", actionID: 12, term: "Velora"),
-            .learned(actionID: 12, term: "Velora")
-        )
-        XCTAssertEqual(
-            AppModel.learningReconciliationOutcome(status: "not_found", actionID: nil, term: nil),
-            .notFound
-        )
-        XCTAssertEqual(
-            AppModel.learningReconciliationOutcome(status: nil, actionID: nil, term: nil),
-            .unavailable
-        )
-        XCTAssertEqual(
-            AppModel.learningReconciliationOutcome(status: "learned", actionID: nil, term: "Velora"),
-            .unavailable
-        )
-        XCTAssertEqual(
             AppModel.learningReconciliationPolicy(
                 status: "learned", actionStatus: "active", actionID: 12, term: "Velora"
             ),
@@ -814,6 +798,9 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil))
         XCTAssertTrue(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: "opaque-token"))
         XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: nil))
+        XCTAssertTrue(AppModel.canBeginLearningReconciliation(engineReady: true, tokenPresent: true, inFlight: false))
+        XCTAssertFalse(AppModel.canBeginLearningReconciliation(engineReady: true, tokenPresent: true, inFlight: true))
+        XCTAssertFalse(AppModel.canBeginLearningReconciliation(engineReady: false, tokenPresent: true, inFlight: false))
     }
 
     func testHarvestDropsOversizedUnicodeToken() {

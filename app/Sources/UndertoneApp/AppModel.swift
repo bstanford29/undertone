@@ -29,12 +29,6 @@ struct PermissionSnapshot: Equatable {
     }
 }
 
-enum LearningReconciliationOutcome: Equatable {
-    case learned(actionID: Int, term: String)
-    case notFound
-    case unavailable
-}
-
 enum LearningReconciliationPolicy: Equatable {
     case active(actionID: Int, term: String)
     case notFound
@@ -108,6 +102,7 @@ final class AppModel: ObservableObject {
     private var insertionInFlight = false
     private var learningUndoInFlight = false
     private var learningRecoveryPending = false
+    private var learningReconciliationInFlight = false
     private var unresolvedLearningClientToken = UserDefaults.standard.string(forKey: "Undertone.unresolvedLearningClientToken")
     private var meetingsObservation: AnyCancellable?
     private var meetingStateObservation: AnyCancellable?
@@ -216,16 +211,6 @@ final class AppModel: ObservableObject {
         UUID().uuidString
     }
 
-    nonisolated static func learningReconciliationOutcome(
-        status: String?, actionID: Int?, term: String?
-    ) -> LearningReconciliationOutcome {
-        if status == "not_found" { return .notFound }
-        guard status == "learned", let actionID, let term, !term.isEmpty else {
-            return .unavailable
-        }
-        return .learned(actionID: actionID, term: term)
-    }
-
     nonisolated static func learningReconciliationPolicy(
         status: String?, actionStatus: String?, actionID: Int?, term: String?
     ) -> LearningReconciliationPolicy {
@@ -234,7 +219,7 @@ final class AppModel: ObservableObject {
         switch actionStatus {
         case "active":
             return .active(actionID: actionID, term: term)
-        case "superseded", "undone", "absent":
+        case "superseded", "undone":
             return learningUndoReceipt(status: actionStatus, term: term).map(LearningReconciliationPolicy.receipt) ?? .clear
         default:
             return .clear
@@ -318,6 +303,12 @@ final class AppModel: ObservableObject {
 
     nonisolated static func shouldFallbackForPendingLearning(actionID: Int?, unresolvedToken: String? = nil) -> Bool {
         actionID != nil || unresolvedToken != nil
+    }
+
+    nonisolated static func canBeginLearningReconciliation(
+        engineReady: Bool, tokenPresent: Bool, inFlight: Bool
+    ) -> Bool {
+        engineReady && tokenPresent && !inFlight
     }
 
     nonisolated static func commandSidecarPayload(selectedText: String, instruction: String) -> [String: String] {
@@ -642,7 +633,13 @@ final class AppModel: ObservableObject {
     }
 
     private func reconcileUnresolvedLearningIfReady() async {
-        guard engineReady, let token = unresolvedLearningClientToken else { return }
+        guard Self.canBeginLearningReconciliation(
+            engineReady: engineReady,
+            tokenPresent: unresolvedLearningClientToken != nil,
+            inFlight: learningReconciliationInFlight
+        ), let token = unresolvedLearningClientToken else { return }
+        learningReconciliationInFlight = true
+        defer { learningReconciliationInFlight = false }
         let response: EngineResponse
         do {
             response = try await engine.request(op: "learning.lookup", fields: [
@@ -672,6 +669,7 @@ final class AppModel: ObservableObject {
                 showNotice(message, hold: FlowBarMetrics.transientHold)
             }
         case .clear:
+            statusText = "Learning unavailable: unexpected resolution"
             setUnresolvedLearningToken(nil)
         }
     }
@@ -926,6 +924,7 @@ final class AppModel: ObservableObject {
                         }
                         return
                     case .clear:
+                        statusText = "Learning unavailable: unexpected resolution"
                         setUnresolvedLearningToken(nil)
                         return
                     }
