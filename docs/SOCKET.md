@@ -232,7 +232,7 @@ token contains no candidate text and makes a repeated request idempotent.
 The response is `status:"learned"` with `action_id`, `term`,
 `client_token`, and `action_status:"active"`; `already_known` and `disabled`
 are non-learning outcomes. The server never trusts a request-supplied enabled
-flag. If a response is lost, it performs this read-only reconciliation:
+flag. If a response is lost, the client performs this read-only reconciliation:
 
 ```json
 {"id":31,"op":"learning.lookup","client_token":"velora-token"}
