@@ -684,7 +684,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handleLearningFallbackFailure(_ error: Error) {
-        if let clientError = error as? EngineClientError, clientError.isTransportFailure {
+        if let clientError = error as? EngineClientError, clientError.isRetryableRecoveryFailure {
             statusText = "Learning unavailable: suggestion fallback could not be saved"
             return
         }
@@ -693,7 +693,7 @@ final class AppModel: ObservableObject {
     }
 
     private func handleLearningLookupFailure(_ error: Error) {
-        if let clientError = error as? EngineClientError, clientError.isTransportFailure {
+        if let clientError = error as? EngineClientError, clientError.isRetryableRecoveryFailure {
             statusText = "Learning unavailable: response could not be resolved"
             return
         }

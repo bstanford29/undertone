@@ -222,6 +222,75 @@ final class ProtocolTests: XCTestCase {
         await fulfillment(of: [ready], timeout: 2)
     }
 
+    func testEngineClientDecodesIDlessBusyAndRemoteErrors() async throws {
+        let path = "/tmp/undertone-errors-\(UUID().uuidString).sock"
+        defer { unlink(path) }
+        let server = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(server, 0)
+        defer { close(server) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(path.utf8CString)
+        XCTAssertLessThan(pathBytes.count, MemoryLayout.size(ofValue: address.sun_path))
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            destination.initializeMemory(as: UInt8.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() { destination[index] = UInt8(bitPattern: byte) }
+        }
+        XCTAssertEqual(withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(server, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }, 0)
+        XCTAssertEqual(listen(server, 2), 0)
+
+        let ready = expectation(description: "fake engine errors")
+        ready.expectedFulfillmentCount = 2
+        let responses = [
+            #"{"id":null,"error":{"code":"busy","message":"Engine is busy"}}"#,
+            #"{"id":null,"error":{"code":"invalid_json","message":"Malformed request"}}"#,
+        ]
+        DispatchQueue.global().async {
+            for responseText in responses {
+                let socket = accept(server, nil, nil)
+                guard socket >= 0 else { return }
+                var request = Data()
+                var byte: UInt8 = 0
+                while Darwin.read(socket, &byte, 1) == 1 {
+                    request.append(byte)
+                    if byte == 10 { break }
+                }
+                var response = responseText.data(using: .utf8)!
+                response.append(10)
+                response.withUnsafeBytes { buffer in
+                    if let base = buffer.baseAddress { _ = Darwin.write(socket, base, buffer.count) }
+                }
+                close(socket)
+                ready.fulfill()
+            }
+        }
+
+        let client = EngineClient(path: path)
+        do {
+            _ = try await client.request(op: "status")
+            XCTFail("busy response should throw")
+        } catch EngineClientError.system(let message) {
+            XCTAssertEqual(message, "engine is busy")
+        } catch {
+            XCTFail("unexpected busy error: \(error)")
+        }
+
+        do {
+            _ = try await client.request(op: "status")
+            XCTFail("remote error response should throw")
+        } catch EngineClientError.remote(let code, let message) {
+            XCTAssertEqual(code, "invalid_json")
+            XCTAssertEqual(message, "Malformed request")
+        } catch {
+            XCTFail("unexpected remote error: \(error)")
+        }
+        await fulfillment(of: [ready], timeout: 2)
+    }
+
     func testEngineResponseDecodesStreamFieldsAndOldFixtures() throws {
         let streamed = #"{"id":3,"chunk":"Hello ","seq":0,"done":false}"#.data(using: .utf8)!
         let chunkFrame = try JSONDecoder().decode(EngineResponse.self, from: streamed)
@@ -842,9 +911,10 @@ final class ProtocolTests: XCTestCase {
             produced: "Quinn", replacement: String(repeating: "x", count: 201), rowID: 7,
             appBundleID: "com.example.editor"
         ).isValid)
-        XCTAssertTrue(EngineClientError.system("fixture").isTransportFailure)
-        XCTAssertFalse(EngineClientError.remote("invalid_request", "fixture").isTransportFailure)
-        XCTAssertFalse(EngineClientError.protocolViolation("fixture").isTransportFailure)
+        XCTAssertTrue(EngineClientError.system("fixture").isRetryableRecoveryFailure)
+        XCTAssertTrue(EngineClientError.remote("engine_error", "fixture").isRetryableRecoveryFailure)
+        XCTAssertFalse(EngineClientError.remote("invalid_request", "fixture").isRetryableRecoveryFailure)
+        XCTAssertFalse(EngineClientError.protocolViolation("fixture").isRetryableRecoveryFailure)
     }
 
     func testHarvestDropsOversizedUnicodeToken() {
