@@ -116,6 +116,24 @@ def _suggestion(row: Any) -> dict[str, Any]:
     }
 
 
+def _supersede_active_actions(db: Any, term: str) -> None:
+    db.execute(
+        "UPDATE learning_actions SET status = 'superseded' "
+        "WHERE term_key = ? AND status = 'active'",
+        (term.casefold(),),
+    )
+
+
+def add_explicit_term(term: str) -> dict[str, Any]:
+    """Add a user-owned term and transfer ownership from auto-learning actions."""
+    with _LOCK:
+        with history._connect() as db:
+            _ensure_schema(db)
+            _supersede_active_actions(db, term)
+            dictionary_data = dictionary.add_term(term)
+            return dictionary_data
+
+
 def propose(
     produced: str,
     replacement: str,
@@ -212,8 +230,9 @@ def act(suggestion_id: int, action: str) -> dict[str, Any]:
             return {"suggestion_id": suggestion_id, "status": desired}
         if status != "pending":
             raise ValueError("Suggestion was already handled")
-        # Adding a suggestion is the only path here that writes its term to the dictionary.
+        # Suggestion acceptance writes its term to the dictionary here.
         if action == "add":
+            _supersede_active_actions(db, row[2])
             dictionary.add_term(row[2])
         if action == "never_ask":
             db.execute(
@@ -266,11 +285,7 @@ def auto_learn(
             # A user may remove a previously learned term directly. Do not
             # let that stale action retain ownership of the next learning
             # action or block its undo.
-            db.execute(
-                "UPDATE learning_actions SET status = 'superseded' "
-                "WHERE term_key = ? AND status = 'active'",
-                (term_key,),
-            )
+            _supersede_active_actions(db, replacement)
             dictionary.add_term(replacement)
             created_at = time.time()
             cursor = db.execute(

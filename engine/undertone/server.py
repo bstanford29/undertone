@@ -309,7 +309,7 @@ class Engine:
                 term = text_field(r, "term", 200).strip()
                 if not term:
                     raise ValueError("Term is empty")
-                return dictionary.add_term(term)
+                return learning.add_explicit_term(term)
             data = dictionary.load_dictionary()
             if op == "dictionary.remove":
                 term = text_field(r, "term", 200)

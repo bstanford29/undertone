@@ -305,6 +305,23 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.dispatch({'op':'config.update','config':{'ollama_url':'https://example.com'}})
 
+    def test_dictionary_add_supersedes_auto_learning_action(self):
+        row_id = self.engine.dispatch({
+            'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',
+            'insert_mode': 'ax', 'app_bundle_id': 'test.app',
+        })['row_id']
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': True}})
+        action = self.engine.dispatch({
+            'op': 'learning.auto_learn', 'produced': 'Valora', 'replacement': 'Velora',
+            'row_id': row_id, 'app_bundle_id': 'test.app',
+        })
+        self.engine.dispatch({'op': 'dictionary.add', 'term': 'VELORA'})
+        self.assertEqual(
+            self.engine.dispatch({'op': 'learning.undo', 'action_id': action['action_id']})['status'],
+            'superseded',
+        )
+        self.assertIn('VELORA', self.engine.dispatch({'op': 'dictionary.list'})['terms'])
+
     def test_auto_learning_uses_persisted_setting_not_request_flag(self):
         row_id = self.engine.dispatch({
             'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',

@@ -128,6 +128,33 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(learning.undo(first["action_id"])["status"], "superseded")
         self.assertEqual(learning.undo(first["action_id"])["status"], "superseded")
 
+    def test_explicit_dictionary_add_transfers_recased_term_ownership(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        learning.add_explicit_term("VELORA")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+
+    def test_accepted_suggestion_transfers_same_term_ownership(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        suggestion = learning.propose("Valora", "Velora", row_id, "com.example.editor")
+        self.assertEqual(learning.act(suggestion["id"], "add")["status"], "added")
+        self.assertEqual(learning.act(suggestion["id"], "add")["status"], "added")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_explicit_unrelated_add_preserves_other_action_and_is_idempotent(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        learning.add_explicit_term("Qwen")
+        learning.add_explicit_term("qwen")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "removed")
+        terms = dictionary.load_dictionary()["terms"]
+        self.assertEqual(sum(term.casefold() == "qwen" for term in terms), 1)
+        self.assertNotIn("Velora", terms)
+
 
 if __name__ == "__main__":
     unittest.main()
