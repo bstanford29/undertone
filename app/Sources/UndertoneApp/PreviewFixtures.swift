@@ -144,6 +144,7 @@ enum PreviewFixtures {
         "sounds": .bool(true),
         "stream_insert": .bool(true),
         "whisper_mode": .bool(false),
+        "learn_from_corrections": .bool(false),
     ]
 
     /// Preview screenshots always show the slower-on-battery warning so the

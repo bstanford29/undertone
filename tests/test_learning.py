@@ -63,6 +63,287 @@ class LearningTests(unittest.TestCase):
         add_term.assert_called_once_with("new")
         self.assertEqual(learning.list_suggestions(), [])
 
+    def test_auto_learn_is_disabled_without_touching_dictionary(self):
+        row_id = self._row()
+        result = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=False)
+        self.assertEqual(result["status"], "disabled")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_auto_learn_returns_one_action_and_undo_removes_only_that_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        self.assertEqual(learned["status"], "learned")
+        self.assertIsInstance(learned["action_id"], int)
+        self.assertEqual(learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)["status"], "already_known")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
+        undone = learning.undo(learned["action_id"])
+        self.assertEqual(undone["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "undone")
+
+    def test_auto_learn_dictionary_failure_leaves_recoverable_action(self):
+        row_id = self._row()
+        original_add_term = dictionary.add_term
+
+        def save_then_fail(term):
+            original_add_term(term)
+            raise OSError("synthetic dictionary failure")
+
+        with patch.object(dictionary, "add_term", side_effect=save_then_fail):
+            with self.assertRaises(OSError):
+                learning.auto_learn(
+                    "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+                    client_token="recovery-token",
+                )
+
+        resolved = learning.lookup("recovery-token")
+        self.assertEqual(resolved["status"], "learned")
+        self.assertEqual(resolved["action_status"], "active")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(resolved["action_id"])["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_auto_learn_dictionary_failure_before_write_discards_preparing_action(self):
+        row_id = self._row()
+        with patch.object(dictionary, "add_term", side_effect=OSError("synthetic pre-write failure")):
+            with self.assertRaises(OSError):
+                learning.auto_learn(
+                    "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+                    client_token="pre-write-token",
+                )
+
+        self.assertEqual(learning.lookup("pre-write-token")["status"], "not_found")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            count = db.execute(
+                "SELECT COUNT(*) FROM learning_actions WHERE client_token = ?",
+                ("pre-write-token",),
+            ).fetchone()[0]
+        self.assertEqual(count, 0)
+
+    def test_explicit_add_supersedes_an_interrupted_preparing_action(self):
+        row_id = self._row()
+        with patch.object(dictionary, "add_term", side_effect=OSError("synthetic pre-write failure")):
+            with self.assertRaises(OSError):
+                learning.auto_learn(
+                    "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+                    client_token="explicit-owner-token",
+                )
+
+        learning.add_explicit_term("Velora")
+        resolved = learning.lookup("explicit-owner-token")
+        self.assertEqual(resolved["action_status"], "superseded")
+        self.assertEqual(learning.undo(resolved["action_id"])["status"], "superseded")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_auto_learn_already_saved_term_has_no_undo_action_or_duplicate(self):
+        dictionary.add_term("Qwen")
+        row_id = self._row()
+        result = learning.auto_learn("Quinn", "Qwen", row_id, "com.example.editor", enabled=True)
+        self.assertEqual(result["status"], "already_known")
+        self.assertNotIn("action_id", result)
+        self.assertEqual(sum(term.casefold() == "qwen" for term in dictionary.load_dictionary()["terms"]), 1)
+
+    def test_auto_learn_rejects_multi_word_and_wrong_history_owner(self):
+        row_id = self._row()
+        with self.assertRaises(ValueError):
+            learning.auto_learn("Valora", "Velora Prime", row_id, "com.example.editor", enabled=True)
+        with self.assertRaises(ValueError):
+            learning.auto_learn("Valora", "Velora", row_id, "com.example.other", enabled=True)
+
+    def test_undo_consumes_preserved_action_without_removing_other_owner_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                """INSERT INTO learning_actions
+                   (produced, term, term_key, row_id, app_bundle_id, created_at, status)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+                ("Valora", "Velora", "velora", row_id, "com.example.editor", 2.0),
+            )
+            second_action = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "preserved")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "undone")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(second_action)["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_removing_term_supersedes_stale_action_before_relearning(self):
+        row_id = self._row()
+        first = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        dictionary.remove_term("Velora")
+        second = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        self.assertEqual(second["status"], "learned")
+        self.assertEqual(learning.undo(second["action_id"])["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(first["action_id"])["status"], "superseded")
+        self.assertEqual(learning.undo(first["action_id"])["status"], "superseded")
+
+    def test_explicit_dictionary_add_transfers_recased_term_ownership(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        learning.add_explicit_term("VELORA")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+
+    def test_explicit_add_recovers_after_dictionary_write_interruption(self):
+        row_id = self._row()
+        learned = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="manual-owner-token",
+        )
+        original_add_term = dictionary.add_term
+
+        def save_then_fail(term):
+            original_add_term(term)
+            raise OSError("synthetic post-write failure")
+
+        with patch.object(dictionary, "add_term", side_effect=save_then_fail):
+            with self.assertRaises(OSError):
+                learning.add_explicit_term("VELORA")
+
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 1)
+        learning.recover_pending_dictionary_writes()
+        self.assertEqual(learning.lookup("manual-owner-token")["action_status"], "superseded")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
+
+    def test_recovered_explicit_add_supersedes_newer_automatic_action(self):
+        row_id = self._row()
+        with patch.object(dictionary, "add_term", side_effect=OSError("synthetic pre-write failure")):
+            with self.assertRaises(OSError):
+                learning.add_explicit_term("Velora")
+
+        learned = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="newer-auto-action",
+        )
+        learning.recover_pending_dictionary_writes()
+
+        self.assertEqual(learning.lookup("newer-auto-action")["action_status"], "superseded")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_explicit_remove_cancels_matching_pending_dictionary_write(self):
+        dictionary.add_term("TransientTerm")
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                "INSERT INTO dictionary_writes (term, created_at) VALUES (?, ?)",
+                ("TransientTerm", 1.0),
+            )
+
+        learning.remove_explicit_term("transientterm")
+        learning.recover_pending_dictionary_writes()
+        self.assertNotIn("TransientTerm", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
+
+    def test_undo_recovers_pending_manual_owner_before_removing_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                "INSERT INTO dictionary_writes (term, created_at) VALUES (?, ?)",
+                ("VELORA", 1.0),
+            )
+
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
+
+    def test_accepted_suggestion_transfers_same_term_ownership(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        suggestion = learning.propose("Valora", "Velora", row_id, "com.example.editor")
+        self.assertEqual(learning.act(suggestion["id"], "add")["status"], "added")
+        self.assertEqual(learning.act(suggestion["id"], "add")["status"], "added")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_accepted_suggestion_recovers_journaled_dictionary_write(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        suggestion = learning.propose("Valora", "VELORA", row_id, "com.example.editor")
+        original_add_term = dictionary.add_term
+
+        def save_then_fail(term):
+            original_add_term(term)
+            raise OSError("synthetic suggestion post-write failure")
+
+        with patch.object(dictionary, "add_term", side_effect=save_then_fail):
+            with self.assertRaises(OSError):
+                learning.act(suggestion["id"], "add")
+
+        self.assertEqual(learning.act(suggestion["id"], "add")["status"], "added")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
+
+    def test_explicit_unrelated_add_preserves_other_action_and_is_idempotent(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        learning.add_explicit_term("Qwen")
+        learning.add_explicit_term("qwen")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "removed")
+        terms = dictionary.load_dictionary()["terms"]
+        self.assertEqual(sum(term.casefold() == "qwen" for term in terms), 1)
+        self.assertNotIn("Velora", terms)
+
+    def test_auto_learn_client_token_is_idempotent_and_lookup_resolves(self):
+        row_id = self._row()
+        first = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="velora-token",
+        )
+        self.assertEqual(first["action_status"], "active")
+        second = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="velora-token",
+        )
+        self.assertEqual(second["action_id"], first["action_id"])
+        resolved = learning.lookup("velora-token")
+        self.assertEqual(resolved["status"], "learned")
+        self.assertEqual(resolved["action_id"], first["action_id"])
+        self.assertEqual(resolved["term"], "Velora")
+
+    def test_learning_lookup_rejects_unknown_or_invalid_tokens(self):
+        self.assertEqual(learning.lookup("missing-token")["status"], "not_found")
+        with self.assertRaises(ValueError):
+            learning.lookup("bad token")
+        with self.assertRaises(ValueError):
+            learning.lookup("x" * (learning.MAX_CLIENT_TOKEN_CHARS + 1))
+
+    def test_learning_schema_migrates_actions_without_client_token(self):
+        with history._connect() as db:
+            db.execute(
+                """CREATE TABLE learning_actions (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   produced TEXT NOT NULL, term TEXT NOT NULL, term_key TEXT NOT NULL,
+                   row_id INTEGER NOT NULL, app_bundle_id TEXT NOT NULL,
+                   created_at REAL NOT NULL, status TEXT NOT NULL DEFAULT 'active'
+                )"""
+            )
+        self.assertEqual(learning.lookup("legacy-token")["status"], "not_found")
+        with history._connect() as db:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(learning_actions)")}
+        self.assertIn("client_token", columns)
+
+    def test_undo_reports_absent_when_manual_removal_left_no_term(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        dictionary.remove_term("Velora")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "absent")
+
 
 if __name__ == "__main__":
     unittest.main()

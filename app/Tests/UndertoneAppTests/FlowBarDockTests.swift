@@ -208,6 +208,11 @@ final class FlowBarCapsuleTests: XCTestCase {
         XCTAssertEqual(capsule?.mono, "742 ms")
     }
 
+    func testLearningNoticeHasSixSecondsForUndo() {
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Learned Velora · Undo")), .seconds(6))
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Saved")), FlowBarMetrics.transientHold)
+    }
+
     func testGuardedAndErrorCarryTheirOwnGlyphs() {
         XCTAssertEqual(FlowBarDock.textCapsule(for: .guarded(totalMS: 900), workingNote: nil),
                        FlowBarTextCapsule(glyph: .warning, text: "Kept raw"))

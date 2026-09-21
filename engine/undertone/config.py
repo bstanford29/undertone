@@ -36,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
     "sounds": True,
     "whisper_mode": False,
     "stream_insert": True,
+    "learn_from_corrections": False,
     "obsidian_vault_path": None,
     "pill_persistent": True,
     "pill_edge": "bottom",
@@ -76,5 +77,7 @@ def load_config() -> dict[str, Any]:
         offset = DEFAULTS["pill_offset"]
     config["pill_offset"] = min(1.0, max(0.0, offset))
     config["pill_persistent"] = bool(config.get("pill_persistent", DEFAULTS["pill_persistent"]))
+    if not isinstance(config.get("learn_from_corrections"), bool):
+        config["learn_from_corrections"] = DEFAULTS["learn_from_corrections"]
 
     return config

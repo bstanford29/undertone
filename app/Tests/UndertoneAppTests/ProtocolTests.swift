@@ -116,6 +116,65 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(suggestion.reason, "capitalized")
     }
 
+    func testCorrectionLearningSettingDefaultsOffAndReadsPersistedConfig() {
+        XCTAssertFalse(CorrectionLearningSetting.value(from: [:]))
+        XCTAssertTrue(CorrectionLearningSetting.value(from: [CorrectionLearningSetting.key: .bool(true)]))
+        XCTAssertFalse(CorrectionLearningSetting.value(from: [CorrectionLearningSetting.key: .string("yes")]))
+    }
+
+    func testLearningActionResponseDecodesStatusAndUndoToken() throws {
+        let data = #"{"id":9,"status":"learned","action_id":12,"term":"Velora","action_status":"active","client_token":"velora-token"}"#.data(using: .utf8)!
+        let response = try JSONDecoder().decode(EngineResponse.self, from: data)
+        XCTAssertEqual(response.status, "learned")
+        XCTAssertEqual(response.learningActionID, 12)
+        XCTAssertEqual(response.learningActionStatus, "active")
+        XCTAssertEqual(response.learningClientToken, "velora-token")
+        XCTAssertEqual(response.term, "Velora")
+    }
+
+    func testLearningReconciliationPolicyRequiresACompleteLearnedResponse() {
+        let token = AppModel.learningClientToken()
+        XCTAssertTrue(token.count <= 128)
+        XCTAssertTrue(token.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" })
+        XCTAssertFalse(token.contains("Velora"))
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "active", actionID: 12, term: "Velora"
+            ),
+            .active(actionID: 12, term: "Velora")
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "superseded", actionID: 12, term: "Velora"
+            ),
+            .receipt("Kept newer dictionary entry for Velora")
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "undone", actionID: 12, term: "Velora"
+            ),
+            .receipt("Learning for Velora was already undone")
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "not_found", actionStatus: nil, actionID: nil, term: nil
+            ),
+            .notFound
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "mystery", actionID: 12, term: "Velora"
+            ),
+            .clear
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: nil, actionID: 12, term: "Velora"
+            ),
+            .clear
+        )
+    }
+
     func testEngineClientUnixSocketRoundTrip() async throws {
         let path = "/tmp/undertone-test-\(UUID().uuidString).sock"
         defer { unlink(path) }
@@ -160,6 +219,75 @@ final class ProtocolTests: XCTestCase {
         let response = try await client.request(op: "status")
         XCTAssertEqual(response.id, 1)
         XCTAssertEqual(response.raw, "socket ok")
+        await fulfillment(of: [ready], timeout: 2)
+    }
+
+    func testEngineClientDecodesIDlessBusyAndRemoteErrors() async throws {
+        let path = "/tmp/undertone-errors-\(UUID().uuidString).sock"
+        defer { unlink(path) }
+        let server = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(server, 0)
+        defer { close(server) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(path.utf8CString)
+        XCTAssertLessThan(pathBytes.count, MemoryLayout.size(ofValue: address.sun_path))
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            destination.initializeMemory(as: UInt8.self, repeating: 0)
+            for (index, byte) in pathBytes.enumerated() { destination[index] = UInt8(bitPattern: byte) }
+        }
+        XCTAssertEqual(withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(server, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }, 0)
+        XCTAssertEqual(listen(server, 2), 0)
+
+        let ready = expectation(description: "fake engine errors")
+        ready.expectedFulfillmentCount = 2
+        let responses = [
+            #"{"id":null,"error":{"code":"busy","message":"Engine is busy"}}"#,
+            #"{"id":null,"error":{"code":"invalid_json","message":"Malformed request"}}"#,
+        ]
+        DispatchQueue.global().async {
+            for responseText in responses {
+                let socket = accept(server, nil, nil)
+                guard socket >= 0 else { return }
+                var request = Data()
+                var byte: UInt8 = 0
+                while Darwin.read(socket, &byte, 1) == 1 {
+                    request.append(byte)
+                    if byte == 10 { break }
+                }
+                var response = responseText.data(using: .utf8)!
+                response.append(10)
+                response.withUnsafeBytes { buffer in
+                    if let base = buffer.baseAddress { _ = Darwin.write(socket, base, buffer.count) }
+                }
+                close(socket)
+                ready.fulfill()
+            }
+        }
+
+        let client = EngineClient(path: path)
+        do {
+            _ = try await client.request(op: "status")
+            XCTFail("busy response should throw")
+        } catch EngineClientError.system(let message) {
+            XCTAssertEqual(message, "engine is busy")
+        } catch {
+            XCTFail("unexpected busy error: \(error)")
+        }
+
+        do {
+            _ = try await client.request(op: "status")
+            XCTFail("remote error response should throw")
+        } catch EngineClientError.remote(let code, let message) {
+            XCTAssertEqual(code, "invalid_json")
+            XCTAssertEqual(message, "Malformed request")
+        } catch {
+            XCTFail("unexpected remote error: \(error)")
+        }
         await fulfillment(of: [ready], timeout: 2)
     }
 
@@ -634,6 +762,159 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(EditWatcher.candidate(produced: "quinn", replacement: "Quinn", knownTerms: []))
         let punctuation = EditWatcher.candidate(produced: "Quinn", replacement: "Qwen,", knownTerms: [])
         XCTAssertEqual(punctuation?.replacement, "Qwen")
+        XCTAssertEqual(EditWatcher.alreadyKnownCandidate(produced: "Quinn", replacement: "Qwen", knownTerms: ["qwen"]),
+                       LearningCandidate(produced: "Quinn", replacement: "Qwen", reason: "already_known"))
+    }
+
+    func testCorrectionLearningNoticePolicyUsesExactSafeStatesAndCopy() {
+        XCTAssertTrue(AppModel.canShowLearningNotice(for: .idle))
+        XCTAssertTrue(AppModel.canShowLearningNotice(for: .notice("Saved")))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .meetingDetected(PreviewFixtures.detectedMeeting)))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .listening(level: 0.5)))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .working))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .recording(elapsed: 1)))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .error("busy")))
+        let state = PillState.notice(AppModel.learningNotice(for: "Velora"))
+        XCTAssertTrue(AppModel.isLearningNotice(state, term: "Velora"))
+        XCTAssertFalse(AppModel.isLearningNotice(.notice("Saved"), term: "Velora"))
+        XCTAssertFalse(AppModel.isLearningNotice(state, term: "Qwen"))
+    }
+
+    func testMeetingNudgeDefersLearningUndoAndConfirmationNotices() {
+        let learningNotice = PillState.notice(AppModel.learningNotice(for: "Velora"))
+        XCTAssertTrue(AppModel.shouldDeferMeetingNudge(for: learningNotice, pendingLearningTerm: "Velora"))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .notice("Saved"), pendingLearningTerm: "Velora"))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: learningNotice, pendingLearningTerm: "Qwen"))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .idle, pendingLearningTerm: "Velora"))
+        XCTAssertTrue(AppModel.shouldDeferMeetingNudge(
+            for: .notice("Undid learning Velora"), pendingLearningTerm: nil
+        ))
+        XCTAssertTrue(AppModel.shouldDeferMeetingNudge(
+            for: .notice("Velora was already removed"), pendingLearningTerm: nil
+        ))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .notice("Saved"), pendingLearningTerm: nil))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Undid learning Velora")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer dictionary entry for Velora")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer learning for Velora")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Learning for Velora was already undone")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Velora was already removed")))
+        XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(learningNotice))
+        XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(.notice("Saved")))
+    }
+
+    func testLearningUndoReceiptNamesEachSemanticStatusAndRejectsUnknown() {
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "removed", term: "Velora"), "Undid learning Velora")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "superseded", term: "Velora"), "Kept newer dictionary entry for Velora")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "preserved", term: "Velora"), "Kept newer learning for Velora")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "undone", term: "Velora"), "Learning for Velora was already undone")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "absent", term: "Velora"), "Velora was already removed")
+        XCTAssertNil(AppModel.learningUndoReceipt(status: nil, term: "Velora"))
+        XCTAssertNil(AppModel.learningUndoReceipt(status: "unexpected", term: "Velora"))
+    }
+
+    func testDeferredMeetingNudgeRequiresTheSameCurrentDetectionAndEligibility() {
+        let meeting = PreviewFixtures.detectedMeeting
+        let otherMeeting = PreviewFixtures.detectedTeams
+        XCTAssertTrue(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: nil, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: otherMeeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: false, persistent: true,
+            ignored: false, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: true, busy: false, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: true, pillIsIdle: true))
+        XCTAssertFalse(AppModel.shouldShowDeferredMeetingNudge(
+            current: meeting, deferred: meeting, enabled: true, persistent: true,
+            ignored: false, busy: false, pillIsIdle: false))
+    }
+
+    func testLearningUndoCanBeginOnlyOnceWhileRequestIsInFlight() {
+        XCTAssertTrue(AppModel.canBeginLearningUndo(actionID: 7, inFlight: false))
+        XCTAssertFalse(AppModel.canBeginLearningUndo(actionID: 7, inFlight: true))
+        XCTAssertFalse(AppModel.canBeginLearningUndo(actionID: nil, inFlight: false))
+    }
+
+    func testFailedBusyRollbackRetainsRecoverableUndoUntilSafe() {
+        let learningNotice = PillState.notice(AppModel.learningNotice(for: "Velora"))
+        XCTAssertFalse(AppModel.shouldKeepLearningActionAfterRollback(rollbackSucceeded: true))
+        XCTAssertTrue(AppModel.shouldKeepLearningActionAfterRollback(rollbackSucceeded: false))
+        XCTAssertTrue(AppModel.canShowLearningRecoveryNotice(for: .idle))
+        XCTAssertFalse(AppModel.canShowLearningRecoveryNotice(for: .inserted(totalMS: 12)))
+        XCTAssertFalse(AppModel.canShowLearningRecoveryNotice(for: .meetingDetected(PreviewFixtures.detectedMeeting)))
+        XCTAssertTrue(AppModel.canSupersedeLearningRecovery(false))
+        XCTAssertFalse(AppModel.canSupersedeLearningRecovery(true))
+        XCTAssertTrue(AppModel.shouldKeepLearningRecoveryAfterReshowing(inFlight: true))
+        XCTAssertFalse(AppModel.shouldKeepLearningRecoveryAfterReshowing(inFlight: false))
+        XCTAssertTrue(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: learningNotice, nextState: .notice("Meeting ended"),
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertTrue(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: learningNotice, nextState: .notice("Saved"),
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertTrue(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: .idle, nextState: .notice("Saved"),
+            actionID: nil, term: nil, recoveryPending: true))
+        XCTAssertFalse(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: .notice("Saved"), nextState: .notice("Saved"),
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertFalse(AppModel.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: learningNotice, nextState: .idle,
+            actionID: 7, term: "Velora", recoveryPending: false))
+        XCTAssertTrue(AppModel.shouldFallbackForPendingLearning(actionID: 7))
+        XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil))
+        XCTAssertTrue(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: "opaque-token"))
+        XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: nil))
+        XCTAssertTrue(AppModel.canBeginLearningReconciliation(tokenPresent: true, inFlight: false))
+        XCTAssertFalse(AppModel.canBeginLearningReconciliation(tokenPresent: true, inFlight: true))
+        XCTAssertFalse(AppModel.canBeginLearningReconciliation(tokenPresent: false, inFlight: false))
+    }
+
+    func testPersistedLearningFallbackIsBoundedAndRoundTrips() throws {
+        let fallback = PersistedLearningFallback(
+            produced: "Quinn", replacement: "Qwen", rowID: 7,
+            appBundleID: "com.example.editor"
+        )
+        XCTAssertTrue(fallback.isValid)
+        XCTAssertEqual(fallback.candidate, LearningCandidate(
+            produced: "Quinn", replacement: "Qwen", reason: "recovered"
+        ))
+        let decoded = try JSONDecoder().decode(
+            PersistedLearningFallback.self,
+            from: JSONEncoder().encode(fallback)
+        )
+        XCTAssertEqual(decoded, fallback)
+        let request = PersistedLearningRequest(token: "opaque-token", fallback: fallback)
+        XCTAssertTrue(request.isValid)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                PersistedLearningRequest.self,
+                from: JSONEncoder().encode(request)
+            ),
+            request
+        )
+        XCTAssertFalse(PersistedLearningRequest(token: "bad token", fallback: fallback).isValid)
+        XCTAssertFalse(PersistedLearningFallback(
+            produced: "Quinn", replacement: "Qwen", rowID: 0,
+            appBundleID: "com.example.editor"
+        ).isValid)
+        XCTAssertFalse(PersistedLearningFallback(
+            produced: "Quinn", replacement: String(repeating: "x", count: 201), rowID: 7,
+            appBundleID: "com.example.editor"
+        ).isValid)
+        XCTAssertTrue(EngineClientError.system("fixture").isRetryableRecoveryFailure)
+        XCTAssertTrue(EngineClientError.remote("engine_error", "fixture").isRetryableRecoveryFailure)
+        XCTAssertFalse(EngineClientError.remote("invalid_request", "fixture").isRetryableRecoveryFailure)
+        XCTAssertFalse(EngineClientError.protocolViolation("fixture").isRetryableRecoveryFailure)
     }
 
     func testHarvestDropsOversizedUnicodeToken() {

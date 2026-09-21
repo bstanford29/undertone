@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from undertone import config, dictionary, history
+from undertone import config, dictionary, history, learning
 from undertone import cleanup
 from undertone.server import Engine, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Server
 
@@ -304,6 +304,93 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(saved['sounds'])
         with self.assertRaises(ValueError):
             self.engine.dispatch({'op':'config.update','config':{'ollama_url':'https://example.com'}})
+
+    def test_dictionary_add_supersedes_auto_learning_action(self):
+        row_id = self.engine.dispatch({
+            'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',
+            'insert_mode': 'ax', 'app_bundle_id': 'test.app',
+        })['row_id']
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': True}})
+        action = self.engine.dispatch({
+            'op': 'learning.auto_learn', 'produced': 'Valora', 'replacement': 'Velora',
+            'row_id': row_id, 'app_bundle_id': 'test.app',
+        })
+        self.engine.dispatch({'op': 'dictionary.add', 'term': 'VELORA'})
+        self.assertEqual(
+            self.engine.dispatch({'op': 'learning.undo', 'action_id': action['action_id']})['status'],
+            'superseded',
+        )
+        self.assertIn('VELORA', self.engine.dispatch({'op': 'dictionary.list'})['terms'])
+
+    def test_engine_startup_recovers_pending_manual_dictionary_write(self):
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                "INSERT INTO dictionary_writes (term, created_at) VALUES (?, ?)",
+                ("StartupTerm", 1.0),
+            )
+
+        Engine()
+        self.assertIn('StartupTerm', dictionary.load_dictionary()['terms'])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
+
+    def test_engine_startup_defers_failed_dictionary_recovery(self):
+        with patch.object(learning, 'recover_pending_dictionary_writes', side_effect=AttributeError('fixture')):
+            with self.assertLogs('undertone.server', level='WARNING') as captured:
+                engine = Engine()
+        self.assertEqual(engine.whisper_status, 'loading')
+        self.assertEqual(captured.output, ['WARNING:undertone.server:Pending dictionary write recovery deferred'])
+
+    def test_auto_learning_uses_persisted_setting_not_request_flag(self):
+        row_id = self.engine.dispatch({
+            'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',
+            'insert_mode': 'ax', 'app_bundle_id': 'test.app',
+        })['row_id']
+        request = {
+            'op': 'learning.auto_learn', 'produced': 'Valora', 'replacement': 'Velora',
+            'row_id': row_id, 'app_bundle_id': 'test.app', 'enabled': True,
+        }
+        self.assertEqual(self.engine.dispatch(request)['status'], 'disabled')
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': True}})
+        self.assertEqual(self.engine.dispatch(request)['status'], 'learned')
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': False}})
+        self.assertEqual(self.engine.dispatch({**request, 'replacement': 'Vellora'})['status'], 'disabled')
+        with self.assertRaises(ValueError):
+            self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': 'yes'}})
+
+    def test_learning_lookup_dispatch_resolves_token_and_unknown_is_read_only(self):
+        row_id = self.engine.dispatch({
+            'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',
+            'insert_mode': 'ax', 'app_bundle_id': 'test.app',
+        })['row_id']
+        self.engine.dispatch({'op': 'config.update', 'config': {'learn_from_corrections': True}})
+        learned = self.engine.dispatch({
+            'op': 'learning.auto_learn', 'produced': 'Valora', 'replacement': 'Velora',
+            'row_id': row_id, 'app_bundle_id': 'test.app', 'client_token': 'server-token',
+        })
+        resolved = self.engine.dispatch({'op': 'learning.lookup', 'client_token': 'server-token'})
+        self.assertEqual(resolved['status'], 'learned')
+        self.assertEqual(resolved['action_id'], learned['action_id'])
+        self.assertEqual(
+            self.engine.dispatch({'op': 'learning.lookup', 'client_token': 'unknown-token'})['status'],
+            'not_found',
+        )
+
+    def test_learning_dispatch_does_not_wait_for_model_lock(self):
+        class RejectingLock:
+            def __enter__(self):
+                raise AssertionError('model lock was used')
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        self.engine.lock = RejectingLock()
+        self.assertEqual(
+            self.engine.dispatch({'op': 'learning.lookup', 'client_token': 'warmup-token'})['status'],
+            'not_found',
+        )
+        self.assertEqual(self.engine.dispatch({'op': 'learned.list'})['suggestions'], [])
 
     def test_pill_settings_persist_and_validate(self):
         self.engine.dispatch({'op': 'config.update', 'config': {'pill_edge': 'left', 'pill_offset': 0.25, 'pill_persistent': False}})

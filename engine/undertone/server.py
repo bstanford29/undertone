@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import logging
 import math
 import os
 import socket
@@ -14,8 +15,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import yaml
+
 from . import config as settings, dictionary, history, learning, meeting
 from .cleanup import OllamaModelNotFoundError
+
+logger = logging.getLogger("undertone.server")
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = MAX_REQUEST_BYTES
@@ -102,6 +107,10 @@ class Engine:
     """Serialize model work without logging transcript content."""
 
     def __init__(self) -> None:
+        try:
+            learning.recover_pending_dictionary_writes()
+        except Exception:
+            logger.warning("Pending dictionary write recovery deferred")
         self.lock = threading.RLock()
         self.transcriber = None
         self._meetings: meeting.MeetingService | None = None
@@ -192,6 +201,10 @@ class Engine:
         if r.get("op") == "status":
             return {"whisper": self.whisper_status, "cleanup": self.cleanup_status,
                     "model": settings.load_config()["cleanup_model"], "error_message": self.error}
+        if isinstance(r.get("op"), str) and (r["op"].startswith("learning.") or r["op"].startswith("learned.")):
+            # These operations use their own local lock and do not need either
+            # model, so recovery remains available during model warm-up.
+            return self._dispatch(r, emit=emit)
         if isinstance(r.get("op"), str) and r["op"].startswith("meeting."):
             # MeetingService owns session serialization. Only in-process Whisper
             # takes the model lock; long Ollama summaries must not block dictation.
@@ -261,9 +274,8 @@ class Engine:
         if op == "config.get":
             return {"config": settings.load_config()}
         if op == "config.update":
-            import yaml
             changes = r.get("config")
-            booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert"}
+            booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert", "learn_from_corrections"}
             allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset"}
             if not isinstance(changes, dict) or set(changes) - allowed:
                 raise ValueError("Unsupported settings")
@@ -309,18 +321,15 @@ class Engine:
                 term = text_field(r, "term", 200).strip()
                 if not term:
                     raise ValueError("Term is empty")
-                return dictionary.add_term(term)
-            data = dictionary.load_dictionary()
+                return learning.add_explicit_term(term)
             if op == "dictionary.remove":
                 term = text_field(r, "term", 200)
-                data["terms"] = [word for word in data["terms"] if word.casefold() != term.casefold()]
+                return learning.remove_explicit_term(term)
             else:
                 phrase = text_field(r, "phrase", 1000).strip()
                 if not phrase:
                     raise ValueError("Phrase is empty")
-                data["replacements"][phrase] = text_field(r, "replacement", 10000)
-            dictionary.save_dictionary(data)
-            return data
+                return dictionary.set_replacement(phrase, text_field(r, "replacement", 10000))
         if op == "transcribe":
             from .audio import load_wav
             from .stt import Transcriber
@@ -472,6 +481,19 @@ class Engine:
                 text_field(r, "app_bundle_id", learning.MAX_APP_CHARS),
             )
             return {"suggestion": suggestion}
+        if op == "learning.auto_learn":
+            return learning.auto_learn(
+                text_field(r, "produced", learning.MAX_PHRASE_CHARS),
+                text_field(r, "replacement", learning.MAX_PHRASE_CHARS),
+                r.get("row_id"),
+                text_field(r, "app_bundle_id", learning.MAX_APP_CHARS),
+                enabled=bool(settings.load_config()["learn_from_corrections"]),
+                client_token=r.get("client_token"),
+            )
+        if op == "learning.undo":
+            return learning.undo(r.get("action_id"))
+        if op == "learning.lookup":
+            return learning.lookup(r.get("client_token"))
         if op == "learned.list":
             limit = r.get("limit", learning.MAX_SUGGESTIONS)
             return {"suggestions": learning.list_suggestions(limit)}
