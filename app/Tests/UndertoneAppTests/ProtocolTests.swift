@@ -673,8 +673,20 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: learningNotice, pendingLearningTerm: "Qwen"))
         XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .idle, pendingLearningTerm: "Velora"))
         XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Undid learning Velora")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer dictionary entry for Velora")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer learning for Velora")))
+        XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Learning for Velora was already undone")))
         XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(learningNotice))
         XCTAssertFalse(AppModel.preservesDeferredMeetingNudge(.notice("Saved")))
+    }
+
+    func testLearningUndoReceiptNamesEachSemanticStatusAndRejectsUnknown() {
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "removed", term: "Velora"), "Undid learning Velora")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "superseded", term: "Velora"), "Kept newer dictionary entry for Velora")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "preserved", term: "Velora"), "Kept newer learning for Velora")
+        XCTAssertEqual(AppModel.learningUndoReceipt(status: "undone", term: "Velora"), "Learning for Velora was already undone")
+        XCTAssertNil(AppModel.learningUndoReceipt(status: nil, term: "Velora"))
+        XCTAssertNil(AppModel.learningUndoReceipt(status: "unexpected", term: "Velora"))
     }
 
     func testDeferredMeetingNudgeRequiresTheSameCurrentDetectionAndEligibility() {

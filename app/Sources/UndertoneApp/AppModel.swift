@@ -210,6 +210,24 @@ final class AppModel: ObservableObject {
     nonisolated static func preservesDeferredMeetingNudge(_ state: PillState) -> Bool {
         guard case .notice(let message) = state else { return false }
         return message.hasPrefix("Undid learning ")
+            || message.hasPrefix("Kept newer dictionary entry for ")
+            || message.hasPrefix("Kept newer learning for ")
+            || message.hasPrefix("Learning for ") && message.hasSuffix(" was already undone")
+    }
+
+    nonisolated static func learningUndoReceipt(status: String?, term: String) -> String? {
+        switch status {
+        case "removed":
+            return "Undid learning \(term)"
+        case "superseded":
+            return "Kept newer dictionary entry for \(term)"
+        case "preserved":
+            return "Kept newer learning for \(term)"
+        case "undone":
+            return "Learning for \(term) was already undone"
+        default:
+            return nil
+        }
     }
 
     nonisolated static func shouldShowDeferredMeetingNudge(
@@ -872,12 +890,17 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             defer { learningUndoInFlight = false }
             do {
-                _ = try await engine.request(op: "learning.undo", fields: ["action_id": .number(Double(actionID))])
+                let response = try await engine.request(op: "learning.undo", fields: ["action_id": .number(Double(actionID))])
                 guard pendingLearningActionID == actionID else { return }
+                guard let receipt = Self.learningUndoReceipt(status: response.status, term: term) else {
+                    learningRecoveryPending = true
+                    statusText = "Learning unavailable: unexpected undo status"
+                    return
+                }
                 pendingLearningActionID = nil
                 pendingLearningTerm = nil
                 learningRecoveryPending = false
-                showNotice("Undid learning \(term)", hold: FlowBarMetrics.transientHold)
+                showNotice(receipt, hold: FlowBarMetrics.transientHold)
             } catch {
                 if pendingLearningActionID == actionID {
                     learningRecoveryPending = true
