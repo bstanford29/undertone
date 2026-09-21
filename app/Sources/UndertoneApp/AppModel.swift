@@ -183,9 +183,9 @@ final class AppModel: ObservableObject {
 
     nonisolated static func canShowLearningNotice(for state: PillState) -> Bool {
         switch state {
-        case .idle, .notice, .meetingDetected:
+        case .idle, .notice:
             return true
-        case .listening, .working, .inserted, .guarded, .error, .recording:
+        case .listening, .working, .inserted, .guarded, .error, .recording, .meetingDetected:
             return false
         }
     }

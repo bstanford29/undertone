@@ -655,7 +655,7 @@ final class ProtocolTests: XCTestCase {
     func testCorrectionLearningNoticePolicyUsesExactSafeStatesAndCopy() {
         XCTAssertTrue(AppModel.canShowLearningNotice(for: .idle))
         XCTAssertTrue(AppModel.canShowLearningNotice(for: .notice("Saved")))
-        XCTAssertTrue(AppModel.canShowLearningNotice(for: .meetingDetected(PreviewFixtures.detectedMeeting)))
+        XCTAssertFalse(AppModel.canShowLearningNotice(for: .meetingDetected(PreviewFixtures.detectedMeeting)))
         XCTAssertFalse(AppModel.canShowLearningNotice(for: .listening(level: 0.5)))
         XCTAssertFalse(AppModel.canShowLearningNotice(for: .working))
         XCTAssertFalse(AppModel.canShowLearningNotice(for: .recording(elapsed: 1)))
