@@ -377,6 +377,21 @@ class ServerTests(unittest.TestCase):
             'not_found',
         )
 
+    def test_learning_dispatch_does_not_wait_for_model_lock(self):
+        class RejectingLock:
+            def __enter__(self):
+                raise AssertionError('model lock was used')
+
+            def __exit__(self, exc_type, exc, traceback):
+                return False
+
+        self.engine.lock = RejectingLock()
+        self.assertEqual(
+            self.engine.dispatch({'op': 'learning.lookup', 'client_token': 'warmup-token'})['status'],
+            'not_found',
+        )
+        self.assertEqual(self.engine.dispatch({'op': 'learned.list'})['suggestions'], [])
+
     def test_pill_settings_persist_and_validate(self):
         self.engine.dispatch({'op': 'config.update', 'config': {'pill_edge': 'left', 'pill_offset': 0.25, 'pill_persistent': False}})
         saved = self.engine.dispatch({'op': 'config.get'})['config']

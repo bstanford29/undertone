@@ -199,6 +199,7 @@ final class AppModel: ObservableObject {
             unresolvedLearningClientToken = request.token
             unresolvedLearningFallback = request.fallback
         } else {
+            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningRequestKey)
             unresolvedLearningClientToken = UserDefaults.standard.string(forKey: Self.unresolvedLearningTokenKey)
         }
         meetings.canStartMeeting = { [weak self] in
@@ -665,22 +666,30 @@ final class AppModel: ObservableObject {
         } catch { setEngineStatus("Engine unavailable") }
     }
 
-    private func setUnresolvedLearningToken(
-        _ token: String?, fallback: PersistedLearningFallback? = nil
-    ) {
-        if let token, let fallback {
-            let request = PersistedLearningRequest(token: token, fallback: fallback)
-            guard request.isValid, let data = try? JSONEncoder().encode(request) else { return }
-            unresolvedLearningClientToken = token
-            unresolvedLearningFallback = fallback
-            UserDefaults.standard.set(data, forKey: Self.unresolvedLearningRequestKey)
-            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
-        } else {
-            unresolvedLearningClientToken = nil
-            unresolvedLearningFallback = nil
-            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningRequestKey)
-            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
+    private func persistUnresolvedLearning(token: String, fallback: PersistedLearningFallback) -> Bool {
+        let request = PersistedLearningRequest(token: token, fallback: fallback)
+        guard request.isValid, let data = try? JSONEncoder().encode(request) else { return false }
+        unresolvedLearningClientToken = token
+        unresolvedLearningFallback = fallback
+        UserDefaults.standard.set(data, forKey: Self.unresolvedLearningRequestKey)
+        UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
+        return true
+    }
+
+    private func clearUnresolvedLearning() {
+        unresolvedLearningClientToken = nil
+        unresolvedLearningFallback = nil
+        UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningRequestKey)
+        UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
+    }
+
+    private func handleLearningFallbackFailure(_ error: Error) {
+        if let clientError = error as? EngineClientError, clientError.isTransportFailure {
+            statusText = "Learning unavailable: suggestion fallback could not be saved"
+            return
         }
+        clearUnresolvedLearning()
+        statusText = "Learning unavailable: correction could not be queued"
     }
 
     private func reconcileUnresolvedLearningIfAvailable() async {
@@ -696,6 +705,11 @@ final class AppModel: ObservableObject {
                 "client_token": .string(token),
             ])
         } catch {
+            if let clientError = error as? EngineClientError, clientError.isTransportFailure {
+                return
+            }
+            clearUnresolvedLearning()
+            statusText = "Learning unavailable: recovery request was rejected"
             return
         }
         let policy = Self.learningReconciliationPolicy(
@@ -706,7 +720,7 @@ final class AppModel: ObservableObject {
         )
         switch policy {
         case .active(let actionID, let term):
-            setUnresolvedLearningToken(nil)
+            clearUnresolvedLearning()
             pendingLearningActionID = actionID
             pendingLearningTerm = term
             learningRecoveryPending = true
@@ -714,7 +728,7 @@ final class AppModel: ObservableObject {
         case .notFound:
             guard let fallback = unresolvedLearningFallback else {
                 statusText = "Learning unavailable: correction details could not be recovered"
-                setUnresolvedLearningToken(nil)
+                clearUnresolvedLearning()
                 return
             }
             do {
@@ -723,18 +737,18 @@ final class AppModel: ObservableObject {
                     rowID: fallback.rowID,
                     appBundleID: fallback.appBundleID
                 )
-                setUnresolvedLearningToken(nil)
+                clearUnresolvedLearning()
             } catch {
-                statusText = "Learning unavailable: suggestion fallback could not be saved"
+                handleLearningFallbackFailure(error)
             }
         case .receipt(let message):
-            setUnresolvedLearningToken(nil)
+            clearUnresolvedLearning()
             if Self.canShowLearningNotice(for: pillState) {
                 showNotice(message, hold: FlowBarMetrics.transientHold)
             }
         case .clear:
             statusText = "Learning unavailable: unexpected resolution"
-            setUnresolvedLearningToken(nil)
+            clearUnresolvedLearning()
         }
     }
 
@@ -957,11 +971,10 @@ final class AppModel: ObservableObject {
                     rowID: rowID,
                     appBundleID: receipt.appBundleID
                 )
-                guard fallback.isValid else {
+                guard persistUnresolvedLearning(token: clientToken, fallback: fallback) else {
                     try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                     return
                 }
-                setUnresolvedLearningToken(clientToken, fallback: fallback)
                 let response: EngineResponse
                 do {
                     response = try await engine.request(op: "learning.auto_learn", fields: [
@@ -985,21 +998,28 @@ final class AppModel: ObservableObject {
                         actionID: resolved.learningActionID, term: resolved.term
                     ) {
                     case .active:
-                        setUnresolvedLearningToken(nil)
+                        clearUnresolvedLearning()
                         response = resolved
                     case .notFound:
-                        try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
-                        setUnresolvedLearningToken(nil)
+                        do {
+                            try await proposeEdit(
+                                candidate: candidate, rowID: rowID,
+                                appBundleID: receipt.appBundleID
+                            )
+                            clearUnresolvedLearning()
+                        } catch {
+                            handleLearningFallbackFailure(error)
+                        }
                         return
                     case .receipt(let message):
-                        setUnresolvedLearningToken(nil)
+                        clearUnresolvedLearning()
                         if Self.canShowLearningNotice(for: pillState) {
                             showNotice(message, hold: FlowBarMetrics.transientHold)
                         }
                         return
                     case .clear:
                         statusText = "Learning unavailable: unexpected resolution"
-                        setUnresolvedLearningToken(nil)
+                        clearUnresolvedLearning()
                         return
                     }
                 }
@@ -1007,7 +1027,7 @@ final class AppModel: ObservableObject {
                     statusText = "Learning unavailable: action was not returned"
                     return
                 }
-                setUnresolvedLearningToken(nil)
+                clearUnresolvedLearning()
                 try await applyAutoLearnResponse(
                     response, candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID
                 )

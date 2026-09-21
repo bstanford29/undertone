@@ -143,6 +143,11 @@ enum EngineClientError: LocalizedError {
     case system(String)
     case remote(String, String)
     case protocolViolation(String)
+
+    var isTransportFailure: Bool {
+        if case .system = self { return true }
+        return false
+    }
     var errorDescription: String? {
         switch self {
         case .system(let message): return message

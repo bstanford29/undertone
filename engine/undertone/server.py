@@ -201,6 +201,10 @@ class Engine:
         if r.get("op") == "status":
             return {"whisper": self.whisper_status, "cleanup": self.cleanup_status,
                     "model": settings.load_config()["cleanup_model"], "error_message": self.error}
+        if isinstance(r.get("op"), str) and (r["op"].startswith("learning.") or r["op"].startswith("learned.")):
+            # These operations use their own local lock and do not need either
+            # model, so recovery remains available during model warm-up.
+            return self._dispatch(r, emit=emit)
         if isinstance(r.get("op"), str) and r["op"].startswith("meeting."):
             # MeetingService owns session serialization. Only in-process Whisper
             # takes the model lock; long Ollama summaries must not block dictation.

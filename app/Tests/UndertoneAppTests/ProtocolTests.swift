@@ -842,6 +842,9 @@ final class ProtocolTests: XCTestCase {
             produced: "Quinn", replacement: String(repeating: "x", count: 201), rowID: 7,
             appBundleID: "com.example.editor"
         ).isValid)
+        XCTAssertTrue(EngineClientError.system("fixture").isTransportFailure)
+        XCTAssertFalse(EngineClientError.remote("invalid_request", "fixture").isTransportFailure)
+        XCTAssertFalse(EngineClientError.protocolViolation("fixture").isTransportFailure)
     }
 
     func testHarvestDropsOversizedUnicodeToken() {
