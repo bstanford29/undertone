@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from undertone import config, dictionary, history
+from undertone import config, dictionary, history, learning
 from undertone import cleanup
 from undertone.server import Engine, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Server
 
@@ -321,6 +321,19 @@ class ServerTests(unittest.TestCase):
             'superseded',
         )
         self.assertIn('VELORA', self.engine.dispatch({'op': 'dictionary.list'})['terms'])
+
+    def test_engine_startup_recovers_pending_manual_dictionary_write(self):
+        with history._connect() as db:
+            learning._ensure_schema(db)
+            db.execute(
+                "INSERT INTO dictionary_writes (term, created_at) VALUES (?, ?)",
+                ("StartupTerm", 1.0),
+            )
+
+        Engine()
+        self.assertIn('StartupTerm', dictionary.load_dictionary()['terms'])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
 
     def test_auto_learning_uses_persisted_setting_not_request_flag(self):
         row_id = self.engine.dispatch({

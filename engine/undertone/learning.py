@@ -50,11 +50,20 @@ CREATE TABLE IF NOT EXISTS learning_actions (
 )
 """
 
+_DICTIONARY_WRITE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS dictionary_writes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    term TEXT NOT NULL,
+    created_at REAL NOT NULL
+)
+"""
+
 
 def _ensure_schema(db: Any) -> None:
     db.execute(_SCHEMA)
     db.execute(_SUPPRESSION_SCHEMA)
     db.execute(_ACTION_SCHEMA)
+    db.execute(_DICTIONARY_WRITE_SCHEMA)
     columns = {row[1] for row in db.execute("PRAGMA table_info(learning_actions)")}
     if "client_token" not in columns:
         db.execute("ALTER TABLE learning_actions ADD COLUMN client_token TEXT")
@@ -70,6 +79,7 @@ def _ensure_schema(db: Any) -> None:
         "CREATE INDEX IF NOT EXISTS learned_suggestions_pending_idx "
         "ON learned_suggestions(status, created_at DESC)"
     )
+    _recover_dictionary_writes(db)
 
 
 def _phrase(value: Any, name: str) -> str:
@@ -162,14 +172,42 @@ def _activate_preparing_action(db: Any, action_id: int, term: str) -> None:
     )
 
 
+def _recover_dictionary_writes(db: Any) -> None:
+    rows = db.execute("SELECT id, term FROM dictionary_writes ORDER BY id").fetchall()
+    for write_id, term in rows:
+        dictionary.add_term(term)
+        db.execute("DELETE FROM dictionary_writes WHERE id = ?", (write_id,))
+
+
+def _journal_dictionary_write(db: Any, term: str) -> int:
+    cursor = db.execute(
+        "INSERT INTO dictionary_writes (term, created_at) VALUES (?, ?)",
+        (term, time.time()),
+    )
+    return cursor.lastrowid
+
+
+def _write_journaled_dictionary_term(db: Any, write_id: int, term: str) -> dict[str, Any]:
+    db.commit()
+    dictionary_data = dictionary.add_term(term)
+    db.execute("DELETE FROM dictionary_writes WHERE id = ?", (write_id,))
+    return dictionary_data
+
+
+def recover_pending_dictionary_writes() -> None:
+    """Finish durable manual dictionary writes left by an interrupted engine."""
+    with _LOCK, history._connect() as db:
+        _ensure_schema(db)
+
+
 def add_explicit_term(term: str) -> dict[str, Any]:
     """Add a user-owned term and transfer ownership from auto-learning actions."""
     with _LOCK:
         with history._connect() as db:
             _ensure_schema(db)
             _supersede_open_actions(db, term)
-            dictionary_data = dictionary.add_term(term)
-            return dictionary_data
+            write_id = _journal_dictionary_write(db, term)
+            return _write_journaled_dictionary_term(db, write_id, term)
 
 
 def propose(
@@ -271,7 +309,7 @@ def act(suggestion_id: int, action: str) -> dict[str, Any]:
         # Suggestion acceptance writes its term to the dictionary here.
         if action == "add":
             _supersede_open_actions(db, row[2])
-            dictionary.add_term(row[2])
+            write_id = _journal_dictionary_write(db, row[2])
         if action == "never_ask":
             db.execute(
                 "INSERT OR IGNORE INTO learned_suppressions (produced_key, created_at) VALUES (?, ?)",
@@ -286,6 +324,8 @@ def act(suggestion_id: int, action: str) -> dict[str, Any]:
                 "UPDATE learned_suggestions SET status = ? WHERE id = ?",
                 (desired, suggestion_id),
             )
+        if action == "add":
+            _write_journaled_dictionary_term(db, write_id, row[2])
         return {"suggestion_id": suggestion_id, "status": desired}
 
 

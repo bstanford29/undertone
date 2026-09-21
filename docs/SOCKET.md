@@ -148,7 +148,12 @@ fails, audio, rows, and the NDJSON transcript remain available for retry.
 {"id":9,"op":"dictionary.replace","phrase":"btw","replacement":"by the way"}
 ```
 
-`dictionary.add` accepts a non-empty term up to 200 characters. `dictionary.remove` accepts a term up to 200 characters. `dictionary.replace` accepts a non-empty phrase up to 1,000 characters and a replacement up to 10,000 characters. Responses contain the current `terms` and `replacements` maps.
+`dictionary.add` accepts a non-empty term up to 200 characters. It journals the
+manual ownership change before writing the local dictionary and finishes any
+interrupted write when the engine restarts. `dictionary.remove` accepts a term
+up to 200 characters. `dictionary.replace` accepts a non-empty phrase up to
+1,000 characters and a replacement up to 10,000 characters. Responses contain
+the current `terms` and `replacements` maps.
 
 ## History
 
@@ -215,8 +220,10 @@ previously suppressed produced phrase. A new suggestion contains only `id`,
 `produced`, `replacement`, `row_id`, `app_bundle_id`, `created_at`, and
 `reason`. `learned.list` returns pending suggestions in newest-first order.
 Within these suggestion actions, only `learned.add` writes the replacement term
-to the personal dictionary; ignore and never-ask do not. Every action is persisted locally and is safe to
-retry with the same outcome. No suggestion text is included in errors or logs.
+to the personal dictionary. It uses the same local write journal as
+`dictionary.add`. Ignore and never-ask do not write terms. Every action is
+persisted locally and is safe to retry with the same outcome. No suggestion
+text is included in errors or logs.
 
 ## Correction learning
 

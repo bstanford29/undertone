@@ -191,6 +191,31 @@ class LearningTests(unittest.TestCase):
         self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
         self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
 
+    def test_explicit_add_recovers_after_dictionary_write_interruption(self):
+        row_id = self._row()
+        learned = learning.auto_learn(
+            "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+            client_token="manual-owner-token",
+        )
+        original_add_term = dictionary.add_term
+
+        def save_then_fail(term):
+            original_add_term(term)
+            raise OSError("synthetic post-write failure")
+
+        with patch.object(dictionary, "add_term", side_effect=save_then_fail):
+            with self.assertRaises(OSError):
+                learning.add_explicit_term("VELORA")
+
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 1)
+        learning.recover_pending_dictionary_writes()
+        self.assertEqual(learning.lookup("manual-owner-token")["action_status"], "superseded")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
+        with history._connect() as db:
+            self.assertEqual(db.execute("SELECT COUNT(*) FROM dictionary_writes").fetchone()[0], 0)
+
     def test_accepted_suggestion_transfers_same_term_ownership(self):
         row_id = self._row()
         learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
@@ -199,6 +224,24 @@ class LearningTests(unittest.TestCase):
         self.assertEqual(learning.act(suggestion["id"], "add")["status"], "added")
         self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
         self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+
+    def test_accepted_suggestion_recovers_journaled_dictionary_write(self):
+        row_id = self._row()
+        learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
+        suggestion = learning.propose("Valora", "VELORA", row_id, "com.example.editor")
+        original_add_term = dictionary.add_term
+
+        def save_then_fail(term):
+            original_add_term(term)
+            raise OSError("synthetic suggestion post-write failure")
+
+        with patch.object(dictionary, "add_term", side_effect=save_then_fail):
+            with self.assertRaises(OSError):
+                learning.act(suggestion["id"], "add")
+
+        self.assertEqual(learning.act(suggestion["id"], "add")["status"], "added")
+        self.assertEqual(learning.undo(learned["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
 
     def test_explicit_unrelated_add_preserves_other_action_and_is_idempotent(self):
         row_id = self._row()

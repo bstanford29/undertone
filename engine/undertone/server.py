@@ -102,6 +102,7 @@ class Engine:
     """Serialize model work without logging transcript content."""
 
     def __init__(self) -> None:
+        learning.recover_pending_dictionary_writes()
         self.lock = threading.RLock()
         self.transcriber = None
         self._meetings: meeting.MeetingService | None = None
