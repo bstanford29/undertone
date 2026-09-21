@@ -805,9 +805,43 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil))
         XCTAssertTrue(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: "opaque-token"))
         XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: nil))
-        XCTAssertTrue(AppModel.canBeginLearningReconciliation(engineReady: true, tokenPresent: true, inFlight: false))
-        XCTAssertFalse(AppModel.canBeginLearningReconciliation(engineReady: true, tokenPresent: true, inFlight: true))
-        XCTAssertFalse(AppModel.canBeginLearningReconciliation(engineReady: false, tokenPresent: true, inFlight: false))
+        XCTAssertTrue(AppModel.canBeginLearningReconciliation(tokenPresent: true, inFlight: false))
+        XCTAssertFalse(AppModel.canBeginLearningReconciliation(tokenPresent: true, inFlight: true))
+        XCTAssertFalse(AppModel.canBeginLearningReconciliation(tokenPresent: false, inFlight: false))
+    }
+
+    func testPersistedLearningFallbackIsBoundedAndRoundTrips() throws {
+        let fallback = PersistedLearningFallback(
+            produced: "Quinn", replacement: "Qwen", rowID: 7,
+            appBundleID: "com.example.editor"
+        )
+        XCTAssertTrue(fallback.isValid)
+        XCTAssertEqual(fallback.candidate, LearningCandidate(
+            produced: "Quinn", replacement: "Qwen", reason: "recovered"
+        ))
+        let decoded = try JSONDecoder().decode(
+            PersistedLearningFallback.self,
+            from: JSONEncoder().encode(fallback)
+        )
+        XCTAssertEqual(decoded, fallback)
+        let request = PersistedLearningRequest(token: "opaque-token", fallback: fallback)
+        XCTAssertTrue(request.isValid)
+        XCTAssertEqual(
+            try JSONDecoder().decode(
+                PersistedLearningRequest.self,
+                from: JSONEncoder().encode(request)
+            ),
+            request
+        )
+        XCTAssertFalse(PersistedLearningRequest(token: "bad token", fallback: fallback).isValid)
+        XCTAssertFalse(PersistedLearningFallback(
+            produced: "Quinn", replacement: "Qwen", rowID: 0,
+            appBundleID: "com.example.editor"
+        ).isValid)
+        XCTAssertFalse(PersistedLearningFallback(
+            produced: "Quinn", replacement: String(repeating: "x", count: 201), rowID: 7,
+            appBundleID: "com.example.editor"
+        ).isValid)
     }
 
     func testHarvestDropsOversizedUnicodeToken() {

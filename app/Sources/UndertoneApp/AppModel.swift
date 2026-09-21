@@ -36,6 +36,37 @@ enum LearningReconciliationPolicy: Equatable {
     case clear
 }
 
+struct PersistedLearningFallback: Codable, Equatable {
+    let produced: String
+    let replacement: String
+    let rowID: Int
+    let appBundleID: String
+
+    var isValid: Bool {
+        rowID > 0
+            && !produced.isEmpty && produced.utf8.count <= 200
+            && !replacement.isEmpty && replacement.utf8.count <= 200
+            && !appBundleID.isEmpty && appBundleID.utf8.count <= 300
+            && !produced.contains(where: { $0.isNewline || $0.asciiValue.map { $0 < 32 || $0 == 127 } == true })
+            && !replacement.contains(where: { $0.isNewline || $0.asciiValue.map { $0 < 32 || $0 == 127 } == true })
+    }
+
+    var candidate: LearningCandidate {
+        LearningCandidate(produced: produced, replacement: replacement, reason: "recovered")
+    }
+}
+
+struct PersistedLearningRequest: Codable, Equatable {
+    let token: String
+    let fallback: PersistedLearningFallback
+
+    var isValid: Bool {
+        !token.isEmpty && token.utf8.count <= 128
+            && token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
+            && fallback.isValid
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     let engine: EngineClient
@@ -103,7 +134,8 @@ final class AppModel: ObservableObject {
     private var learningUndoInFlight = false
     private var learningRecoveryPending = false
     private var learningReconciliationInFlight = false
-    private var unresolvedLearningClientToken = UserDefaults.standard.string(forKey: "Undertone.unresolvedLearningClientToken")
+    private var unresolvedLearningClientToken: String?
+    private var unresolvedLearningFallback: PersistedLearningFallback?
     private var meetingsObservation: AnyCancellable?
     private var meetingStateObservation: AnyCancellable?
     private var detectionObservation: AnyCancellable?
@@ -123,6 +155,7 @@ final class AppModel: ObservableObject {
     /// the detection and the dock's reaction to it side by side.
     nonisolated private static let log = Logger(subsystem: "com.undertone.app", category: "meeting")
     private static let unresolvedLearningTokenKey = "Undertone.unresolvedLearningClientToken"
+    private static let unresolvedLearningRequestKey = "Undertone.unresolvedLearningRequest"
     /// Matches the engine's default `min_speech_seconds` gate.
     private static let minimumRecordedSeconds = 0.4
     private static let workingTimeout: Duration = .seconds(25)
@@ -159,6 +192,14 @@ final class AppModel: ObservableObject {
                                 previewMode: previewMode)
         meetingsObservation = meetings.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.unresolvedLearningRequestKey),
+           let request = try? JSONDecoder().decode(PersistedLearningRequest.self, from: data),
+           request.isValid {
+            unresolvedLearningClientToken = request.token
+            unresolvedLearningFallback = request.fallback
+        } else {
+            unresolvedLearningClientToken = UserDefaults.standard.string(forKey: Self.unresolvedLearningTokenKey)
         }
         meetings.canStartMeeting = { [weak self] in
             guard let self else { return false }
@@ -307,9 +348,9 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated static func canBeginLearningReconciliation(
-        engineReady: Bool, tokenPresent: Bool, inFlight: Bool
+        tokenPresent: Bool, inFlight: Bool
     ) -> Bool {
-        engineReady && tokenPresent && !inFlight
+        tokenPresent && !inFlight
     }
 
     nonisolated static func commandSidecarPayload(selectedText: String, instruction: String) -> [String: String] {
@@ -620,22 +661,30 @@ final class AppModel: ObservableObject {
             } else if response.whisper == "warm" && response.cleanup == "warm" {
                 setEngineStatus("Whisper and \(response.model ?? "cleanup") warm · ready")
             } else { setEngineStatus("Engine loading…") }
-            if engineReady { await reconcileUnresolvedLearningIfReady() }
+            await reconcileUnresolvedLearningIfAvailable()
         } catch { setEngineStatus("Engine unavailable") }
     }
 
-    private func setUnresolvedLearningToken(_ token: String?) {
-        unresolvedLearningClientToken = token
-        if let token {
-            UserDefaults.standard.set(token, forKey: Self.unresolvedLearningTokenKey)
+    private func setUnresolvedLearningToken(
+        _ token: String?, fallback: PersistedLearningFallback? = nil
+    ) {
+        if let token, let fallback {
+            let request = PersistedLearningRequest(token: token, fallback: fallback)
+            guard request.isValid, let data = try? JSONEncoder().encode(request) else { return }
+            unresolvedLearningClientToken = token
+            unresolvedLearningFallback = fallback
+            UserDefaults.standard.set(data, forKey: Self.unresolvedLearningRequestKey)
+            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
         } else {
+            unresolvedLearningClientToken = nil
+            unresolvedLearningFallback = nil
+            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningRequestKey)
             UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
         }
     }
 
-    private func reconcileUnresolvedLearningIfReady() async {
+    private func reconcileUnresolvedLearningIfAvailable() async {
         guard Self.canBeginLearningReconciliation(
-            engineReady: engineReady,
             tokenPresent: unresolvedLearningClientToken != nil,
             inFlight: learningReconciliationInFlight
         ), let token = unresolvedLearningClientToken else { return }
@@ -663,7 +712,21 @@ final class AppModel: ObservableObject {
             learningRecoveryPending = true
             showPendingLearningRecoveryIfSafe()
         case .notFound:
-            setUnresolvedLearningToken(nil)
+            guard let fallback = unresolvedLearningFallback else {
+                statusText = "Learning unavailable: correction details could not be recovered"
+                setUnresolvedLearningToken(nil)
+                return
+            }
+            do {
+                try await proposeEdit(
+                    candidate: fallback.candidate,
+                    rowID: fallback.rowID,
+                    appBundleID: fallback.appBundleID
+                )
+                setUnresolvedLearningToken(nil)
+            } catch {
+                statusText = "Learning unavailable: suggestion fallback could not be saved"
+            }
         case .receipt(let message):
             setUnresolvedLearningToken(nil)
             if Self.canShowLearningNotice(for: pillState) {
@@ -888,7 +951,17 @@ final class AppModel: ObservableObject {
                     return
                 }
                 let clientToken = Self.learningClientToken()
-                setUnresolvedLearningToken(clientToken)
+                let fallback = PersistedLearningFallback(
+                    produced: candidate.produced,
+                    replacement: candidate.replacement,
+                    rowID: rowID,
+                    appBundleID: receipt.appBundleID
+                )
+                guard fallback.isValid else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
+                }
+                setUnresolvedLearningToken(clientToken, fallback: fallback)
                 let response: EngineResponse
                 do {
                     response = try await engine.request(op: "learning.auto_learn", fields: [
@@ -915,8 +988,8 @@ final class AppModel: ObservableObject {
                         setUnresolvedLearningToken(nil)
                         response = resolved
                     case .notFound:
-                        setUnresolvedLearningToken(nil)
                         try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                        setUnresolvedLearningToken(nil)
                         return
                     case .receipt(let message):
                         setUnresolvedLearningToken(nil)
