@@ -93,6 +93,7 @@ final class AppModel: ObservableObject {
     private var inputMonitoringUnavailable = false
     private var accessibilityUnavailable = false
     private var insertionInFlight = false
+    private var learningUndoInFlight = false
     private var meetingsObservation: AnyCancellable?
     private var meetingStateObservation: AnyCancellable?
     private var detectionObservation: AnyCancellable?
@@ -197,6 +198,16 @@ final class AppModel: ObservableObject {
     nonisolated static func isLearningNotice(_ state: PillState, term: String) -> Bool {
         guard case .notice(let message) = state else { return false }
         return message == learningNotice(for: term)
+    }
+
+    nonisolated static func canShowMeetingNudge(for state: PillState, pendingLearningTerm: String?) -> Bool {
+        if case .idle = state { return true }
+        guard let pendingLearningTerm else { return false }
+        return isLearningNotice(state, term: pendingLearningTerm)
+    }
+
+    nonisolated static func canBeginLearningUndo(actionID: Int?, inFlight: Bool) -> Bool {
+        actionID != nil && !inFlight
     }
 
     nonisolated static func commandSidecarPayload(selectedText: String, instruction: String) -> [String: String] {
@@ -756,18 +767,22 @@ final class AppModel: ObservableObject {
     }
 
     func undoPendingLearning() {
-        guard let actionID = pendingLearningActionID else { return }
+        guard Self.canBeginLearningUndo(actionID: pendingLearningActionID, inFlight: learningUndoInFlight),
+              let actionID = pendingLearningActionID else { return }
         guard !previewMode else {
             pendingLearningActionID = nil
             pendingLearningTerm = nil
             return
         }
+        learningUndoInFlight = true
+        let term = pendingLearningTerm ?? "term"
         Task { [weak self] in
             guard let self else { return }
+            defer { learningUndoInFlight = false }
             do {
                 _ = try await engine.request(op: "learning.undo", fields: ["action_id": .number(Double(actionID))])
+                guard pendingLearningActionID == actionID else { return }
                 pendingLearningActionID = nil
-                let term = pendingLearningTerm ?? "term"
                 pendingLearningTerm = nil
                 showNotice("Undid learning \(term)", hold: FlowBarMetrics.transientHold)
             } catch {
@@ -1055,7 +1070,7 @@ final class AppModel: ObservableObject {
             persistent: pillPersistent,
             ignored: meetings.isIgnored(detected),
             busy: meetings.state.isBusy,
-            pillIsIdle: pillState == .idle
+            pillIsIdle: Self.canShowMeetingNudge(for: pillState, pendingLearningTerm: pendingLearningTerm)
         ) else { return }
         showNudge(detected)
     }
@@ -1178,9 +1193,9 @@ final class AppModel: ObservableObject {
     /// capture: those states own the dock while they run.
     private func showNotice(_ message: String, hold: Duration) {
         switch pillState {
-        case .idle, .notice, .meetingDetected:
+        case .idle, .notice:
             break
-        case .listening, .working, .inserted, .guarded, .error, .recording:
+        case .listening, .working, .inserted, .guarded, .error, .recording, .meetingDetected:
             return
         }
         clearPendingLearning()

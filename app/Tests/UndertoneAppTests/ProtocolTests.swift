@@ -666,6 +666,21 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AppModel.isLearningNotice(state, term: "Qwen"))
     }
 
+    func testMeetingNudgeOnlyPreemptsTheExactLearningNotice() {
+        let learningNotice = PillState.notice(AppModel.learningNotice(for: "Velora"))
+        XCTAssertTrue(AppModel.canShowMeetingNudge(for: .idle, pendingLearningTerm: nil))
+        XCTAssertTrue(AppModel.canShowMeetingNudge(for: learningNotice, pendingLearningTerm: "Velora"))
+        XCTAssertFalse(AppModel.canShowMeetingNudge(for: .notice("Saved"), pendingLearningTerm: "Velora"))
+        XCTAssertFalse(AppModel.canShowMeetingNudge(for: learningNotice, pendingLearningTerm: "Qwen"))
+        XCTAssertFalse(AppModel.canShowMeetingNudge(for: .meetingDetected(PreviewFixtures.detectedMeeting), pendingLearningTerm: "Velora"))
+    }
+
+    func testLearningUndoCanBeginOnlyOnceWhileRequestIsInFlight() {
+        XCTAssertTrue(AppModel.canBeginLearningUndo(actionID: 7, inFlight: false))
+        XCTAssertFalse(AppModel.canBeginLearningUndo(actionID: 7, inFlight: true))
+        XCTAssertFalse(AppModel.canBeginLearningUndo(actionID: nil, inFlight: false))
+    }
+
     func testHarvestDropsOversizedUnicodeToken() {
         let oversized = String(repeating: "A", count: AXContextReader.maximumHarvestTokenScalars + 1)
         let target = TargetSnapshot(bundleID: "fixture", element: nil, value: oversized + " Northwind",
