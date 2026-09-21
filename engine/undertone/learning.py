@@ -322,7 +322,6 @@ def auto_learn(
             # let that stale action retain ownership of the next learning
             # action or block its undo.
             _supersede_active_actions(db, replacement)
-            dictionary.add_term(replacement)
             created_at = time.time()
             cursor = db.execute(
                 """INSERT INTO learning_actions
@@ -330,6 +329,11 @@ def auto_learn(
                    VALUES (?, ?, ?, ?, ?, ?, ?, 'active')""",
                 (produced, replacement, term_key, row_id, app_bundle_id, created_at, client_token),
             )
+            # Commit the recoverable action before the separate YAML store.
+            # If dictionary persistence fails, lookup/Undo can still resolve
+            # and consume this action instead of leaving an orphaned term.
+            db.commit()
+            dictionary.add_term(replacement)
             return {
                 "status": "learned",
                 "term": replacement,

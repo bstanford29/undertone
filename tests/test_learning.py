@@ -82,6 +82,28 @@ class LearningTests(unittest.TestCase):
         self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
         self.assertEqual(learning.undo(learned["action_id"])["status"], "undone")
 
+    def test_auto_learn_dictionary_failure_leaves_recoverable_action(self):
+        row_id = self._row()
+        original_add_term = dictionary.add_term
+
+        def save_then_fail(term):
+            original_add_term(term)
+            raise OSError("synthetic dictionary failure")
+
+        with patch.object(dictionary, "add_term", side_effect=save_then_fail):
+            with self.assertRaises(OSError):
+                learning.auto_learn(
+                    "Valora", "Velora", row_id, "com.example.editor", enabled=True,
+                    client_token="recovery-token",
+                )
+
+        resolved = learning.lookup("recovery-token")
+        self.assertEqual(resolved["status"], "learned")
+        self.assertEqual(resolved["action_status"], "active")
+        self.assertIn("Velora", dictionary.load_dictionary()["terms"])
+        self.assertEqual(learning.undo(resolved["action_id"])["status"], "removed")
+        self.assertNotIn("Velora", dictionary.load_dictionary()["terms"])
+
     def test_auto_learn_already_saved_term_has_no_undo_action_or_duplicate(self):
         dictionary.add_term("Qwen")
         row_id = self._row()
