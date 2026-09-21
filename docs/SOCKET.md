@@ -231,7 +231,7 @@ token contains no candidate text and makes a repeated request idempotent.
 
 The response is `status:"learned"` with `action_id`, `term`,
 `client_token`, and `action_status:"active"`; `already_known` and `disabled`
-are non-learning outcomes. The client never trusts a request-supplied enabled
+are non-learning outcomes. The server never trusts a request-supplied enabled
 flag. If a response is lost, it performs this read-only reconciliation:
 
 ```json
