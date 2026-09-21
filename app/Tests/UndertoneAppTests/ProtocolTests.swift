@@ -153,6 +153,42 @@ final class ProtocolTests: XCTestCase {
             AppModel.learningReconciliationOutcome(status: "learned", actionID: nil, term: "Velora"),
             .unavailable
         )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "active", actionID: 12, term: "Velora"
+            ),
+            .active(actionID: 12, term: "Velora")
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "superseded", actionID: 12, term: "Velora"
+            ),
+            .receipt("Kept newer dictionary entry for Velora")
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "undone", actionID: 12, term: "Velora"
+            ),
+            .receipt("Learning for Velora was already undone")
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "not_found", actionStatus: nil, actionID: nil, term: nil
+            ),
+            .notFound
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: "mystery", actionID: 12, term: "Velora"
+            ),
+            .clear
+        )
+        XCTAssertEqual(
+            AppModel.learningReconciliationPolicy(
+                status: "learned", actionStatus: nil, actionID: 12, term: "Velora"
+            ),
+            .clear
+        )
     }
 
     func testEngineClientUnixSocketRoundTrip() async throws {
@@ -776,6 +812,8 @@ final class ProtocolTests: XCTestCase {
             actionID: 7, term: "Velora", recoveryPending: false))
         XCTAssertTrue(AppModel.shouldFallbackForPendingLearning(actionID: 7))
         XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil))
+        XCTAssertTrue(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: "opaque-token"))
+        XCTAssertFalse(AppModel.shouldFallbackForPendingLearning(actionID: nil, unresolvedToken: nil))
     }
 
     func testHarvestDropsOversizedUnicodeToken() {

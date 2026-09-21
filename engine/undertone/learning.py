@@ -336,6 +336,7 @@ def auto_learn(
                 "action_id": cursor.lastrowid,
                 "created_at": created_at,
                 "client_token": client_token,
+                "action_status": "active",
             }
 
 

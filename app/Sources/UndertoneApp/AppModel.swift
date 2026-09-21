@@ -35,6 +35,13 @@ enum LearningReconciliationOutcome: Equatable {
     case unavailable
 }
 
+enum LearningReconciliationPolicy: Equatable {
+    case active(actionID: Int, term: String)
+    case notFound
+    case receipt(String)
+    case clear
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     let engine: EngineClient
@@ -101,6 +108,7 @@ final class AppModel: ObservableObject {
     private var insertionInFlight = false
     private var learningUndoInFlight = false
     private var learningRecoveryPending = false
+    private var unresolvedLearningClientToken = UserDefaults.standard.string(forKey: "Undertone.unresolvedLearningClientToken")
     private var meetingsObservation: AnyCancellable?
     private var meetingStateObservation: AnyCancellable?
     private var detectionObservation: AnyCancellable?
@@ -119,6 +127,7 @@ final class AppModel: ObservableObject {
     /// Same subsystem and category as the detector, so one log stream shows
     /// the detection and the dock's reaction to it side by side.
     nonisolated private static let log = Logger(subsystem: "com.undertone.app", category: "meeting")
+    private static let unresolvedLearningTokenKey = "Undertone.unresolvedLearningClientToken"
     /// Matches the engine's default `min_speech_seconds` gate.
     private static let minimumRecordedSeconds = 0.4
     private static let workingTimeout: Duration = .seconds(25)
@@ -217,6 +226,21 @@ final class AppModel: ObservableObject {
         return .learned(actionID: actionID, term: term)
     }
 
+    nonisolated static func learningReconciliationPolicy(
+        status: String?, actionStatus: String?, actionID: Int?, term: String?
+    ) -> LearningReconciliationPolicy {
+        if status == "not_found" { return .notFound }
+        guard status == "learned", let actionID, let term, !term.isEmpty else { return .clear }
+        switch actionStatus {
+        case "active":
+            return .active(actionID: actionID, term: term)
+        case "superseded", "undone", "absent":
+            return learningUndoReceipt(status: actionStatus, term: term).map(LearningReconciliationPolicy.receipt) ?? .clear
+        default:
+            return .clear
+        }
+    }
+
     nonisolated static func isLearningNotice(_ state: PillState, term: String) -> Bool {
         guard case .notice(let message) = state else { return false }
         return message == learningNotice(for: term)
@@ -292,8 +316,8 @@ final class AppModel: ObservableObject {
         return isLearningNotice(state, term: term)
     }
 
-    nonisolated static func shouldFallbackForPendingLearning(actionID: Int?) -> Bool {
-        actionID != nil
+    nonisolated static func shouldFallbackForPendingLearning(actionID: Int?, unresolvedToken: String? = nil) -> Bool {
+        actionID != nil || unresolvedToken != nil
     }
 
     nonisolated static func commandSidecarPayload(selectedText: String, instruction: String) -> [String: String] {
@@ -604,7 +628,52 @@ final class AppModel: ObservableObject {
             } else if response.whisper == "warm" && response.cleanup == "warm" {
                 setEngineStatus("Whisper and \(response.model ?? "cleanup") warm · ready")
             } else { setEngineStatus("Engine loading…") }
+            if engineReady { await reconcileUnresolvedLearningIfReady() }
         } catch { setEngineStatus("Engine unavailable") }
+    }
+
+    private func setUnresolvedLearningToken(_ token: String?) {
+        unresolvedLearningClientToken = token
+        if let token {
+            UserDefaults.standard.set(token, forKey: Self.unresolvedLearningTokenKey)
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
+        }
+    }
+
+    private func reconcileUnresolvedLearningIfReady() async {
+        guard engineReady, let token = unresolvedLearningClientToken else { return }
+        let response: EngineResponse
+        do {
+            response = try await engine.request(op: "learning.lookup", fields: [
+                "client_token": .string(token),
+            ])
+        } catch {
+            return
+        }
+        let policy = Self.learningReconciliationPolicy(
+            status: response.status,
+            actionStatus: response.learningActionStatus,
+            actionID: response.learningActionID,
+            term: response.term
+        )
+        switch policy {
+        case .active(let actionID, let term):
+            setUnresolvedLearningToken(nil)
+            pendingLearningActionID = actionID
+            pendingLearningTerm = term
+            learningRecoveryPending = true
+            showPendingLearningRecoveryIfSafe()
+        case .notFound:
+            setUnresolvedLearningToken(nil)
+        case .receipt(let message):
+            setUnresolvedLearningToken(nil)
+            if Self.canShowLearningNotice(for: pillState) {
+                showNotice(message, hold: FlowBarMetrics.transientHold)
+            }
+        case .clear:
+            setUnresolvedLearningToken(nil)
+        }
     }
 
     private func process(audioPath: URL, target: TargetSnapshot) async {
@@ -809,7 +878,9 @@ final class AppModel: ObservableObject {
                     try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                     return
                 }
-                guard !Self.shouldFallbackForPendingLearning(actionID: pendingLearningActionID) else {
+                guard !Self.shouldFallbackForPendingLearning(
+                    actionID: pendingLearningActionID, unresolvedToken: unresolvedLearningClientToken
+                ) else {
                     try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                     return
                 }
@@ -818,6 +889,7 @@ final class AppModel: ObservableObject {
                     return
                 }
                 let clientToken = Self.learningClientToken()
+                setUnresolvedLearningToken(clientToken)
                 let response: EngineResponse
                 do {
                     response = try await engine.request(op: "learning.auto_learn", fields: [
@@ -836,19 +908,33 @@ final class AppModel: ObservableObject {
                         statusText = "Learning unavailable: response could not be resolved"
                         return
                     }
-                    switch Self.learningReconciliationOutcome(
-                        status: resolved.status, actionID: resolved.learningActionID, term: resolved.term
+                    switch Self.learningReconciliationPolicy(
+                        status: resolved.status, actionStatus: resolved.learningActionStatus,
+                        actionID: resolved.learningActionID, term: resolved.term
                     ) {
-                    case .learned:
+                    case .active:
+                        setUnresolvedLearningToken(nil)
                         response = resolved
                     case .notFound:
+                        setUnresolvedLearningToken(nil)
                         try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
                         return
-                    case .unavailable:
-                        statusText = "Learning unavailable: unexpected resolution"
+                    case .receipt(let message):
+                        setUnresolvedLearningToken(nil)
+                        if Self.canShowLearningNotice(for: pillState) {
+                            showNotice(message, hold: FlowBarMetrics.transientHold)
+                        }
+                        return
+                    case .clear:
+                        setUnresolvedLearningToken(nil)
                         return
                     }
                 }
+                if response.status == "learned", response.learningActionID == nil {
+                    statusText = "Learning unavailable: action was not returned"
+                    return
+                }
+                setUnresolvedLearningToken(nil)
                 try await applyAutoLearnResponse(
                     response, candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID
                 )
@@ -864,8 +950,19 @@ final class AppModel: ObservableObject {
         rowID: Int,
         appBundleID: String
     ) async throws {
-        if response.status == "learned", let actionID = response.learningActionID {
+        if response.status == "learned" {
             let term = response.term ?? candidate.replacement
+            if let actionStatus = response.learningActionStatus, actionStatus != "active" {
+                if let receipt = Self.learningUndoReceipt(status: actionStatus, term: term),
+                   Self.canShowLearningNotice(for: pillState) {
+                    showNotice(receipt, hold: FlowBarMetrics.transientHold)
+                }
+                return
+            }
+            guard let actionID = response.learningActionID else {
+                statusText = "Learning unavailable: action was not returned"
+                return
+            }
             guard Self.canShowLearningNotice(for: pillState) else {
                 let rollbackSucceeded: Bool
                 do {
