@@ -711,12 +711,19 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(AppModel.isLearningNotice(state, term: "Qwen"))
     }
 
-    func testMeetingNudgeDefersOnlyTheExactLearningNotice() {
+    func testMeetingNudgeDefersLearningUndoAndConfirmationNotices() {
         let learningNotice = PillState.notice(AppModel.learningNotice(for: "Velora"))
         XCTAssertTrue(AppModel.shouldDeferMeetingNudge(for: learningNotice, pendingLearningTerm: "Velora"))
         XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .notice("Saved"), pendingLearningTerm: "Velora"))
         XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: learningNotice, pendingLearningTerm: "Qwen"))
         XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .idle, pendingLearningTerm: "Velora"))
+        XCTAssertTrue(AppModel.shouldDeferMeetingNudge(
+            for: .notice("Undid learning Velora"), pendingLearningTerm: nil
+        ))
+        XCTAssertTrue(AppModel.shouldDeferMeetingNudge(
+            for: .notice("Velora was already removed"), pendingLearningTerm: nil
+        ))
+        XCTAssertFalse(AppModel.shouldDeferMeetingNudge(for: .notice("Saved"), pendingLearningTerm: nil))
         XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Undid learning Velora")))
         XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer dictionary entry for Velora")))
         XCTAssertTrue(AppModel.preservesDeferredMeetingNudge(.notice("Kept newer learning for Velora")))

@@ -232,6 +232,7 @@ final class AppModel: ObservableObject {
     }
 
     nonisolated static func shouldDeferMeetingNudge(for state: PillState, pendingLearningTerm: String?) -> Bool {
+        if preservesDeferredMeetingNudge(state) { return true }
         guard let pendingLearningTerm else { return false }
         return isLearningNotice(state, term: pendingLearningTerm)
     }
