@@ -386,6 +386,47 @@ class LearningTests(unittest.TestCase):
         dictionary.remove_term("Velora")
         self.assertEqual(learning.undo(learned["action_id"])["status"], "absent")
 
+    def _assert_manual_handoff_preserves_term(self, *, suggestion):
+        row_id = self._row()
+        pending = learning.propose("Valora", "VELORA", row_id, "com.example.editor") if suggestion else None
+        original_begin = learning._begin_ownership_transaction
+        calls = 0
+
+        def interleave_after_journal(db):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                # The durable manual journal releases its first writer lock.
+                # A separate connection now represents auto-learn phase one.
+                db.commit()
+                with history._connect() as competing:
+                    competing.execute(
+                        """INSERT INTO learning_actions
+                           (produced, term, term_key, row_id, app_bundle_id,
+                            created_at, client_token, status)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, 'preparing')""",
+                        ("Valora", "Velora", "velora", row_id, "com.example.editor",
+                         1.0, "manual-handoff-token"),
+                    )
+            original_begin(db)
+
+        with patch.object(learning, "_begin_ownership_transaction", side_effect=interleave_after_journal):
+            if suggestion:
+                learning.act(pending["id"], "add")
+            else:
+                learning.add_explicit_term("VELORA")
+        self.assertEqual(calls, 2)
+        resolved = learning.lookup("manual-handoff-token")
+        self.assertEqual(resolved["action_status"], "superseded")
+        self.assertEqual(learning.undo(resolved["action_id"])["status"], "superseded")
+        self.assertEqual(dictionary.load_dictionary()["terms"][0], "VELORA")
+
+    def test_explicit_add_supersedes_auto_action_created_during_journal_handoff(self):
+        self._assert_manual_handoff_preserves_term(suggestion=False)
+
+    def test_suggestion_add_supersedes_auto_action_created_during_journal_handoff(self):
+        self._assert_manual_handoff_preserves_term(suggestion=True)
+
     def test_auto_learn_cannot_claim_concurrent_explicit_add(self):
         """A concurrent explicit addition remains user-owned across auto handoff."""
         row_id = self._row()

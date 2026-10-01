@@ -215,6 +215,9 @@ def _write_journaled_dictionary_term(db: Any, write_id: int, term: str) -> dict[
     row = db.execute("SELECT term FROM dictionary_writes WHERE id = ?", (write_id,)).fetchone()
     if row is None:
         return dictionary.load_dictionary()
+    # A new automatic action may have appeared after the journal commit.
+    # Transfer ownership again while holding the writer lock through YAML.
+    _supersede_open_actions(db, row[0])
     dictionary_data = dictionary.add_term(row[0])
     db.execute("DELETE FROM dictionary_writes WHERE id = ?", (write_id,))
     return dictionary_data
