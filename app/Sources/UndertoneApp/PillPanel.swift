@@ -258,6 +258,8 @@ final class PillPanelController {
     /// The panel-local point the current press started at, for click routing.
     private var pressPoint: CGPoint?
 
+    var panelFrameForTesting: NSRect { panel.frame }
+
     private static let settleDuration: TimeInterval = 0.26
     private static let liftDuration: TimeInterval = 0.12
     /// The panel is placed flush with the edge; the 6 and 10 point insets in
@@ -291,23 +293,33 @@ final class PillPanelController {
         panel.onDragMove = { [weak self] cursor in self?.moveDrag(cursor: cursor) }
         panel.onDragEnd = { [weak self] cursor in self?.endDrag(cursor: cursor) }
         panel.onDragCancel = { [weak self] in self?.cancelDrag() }
-        stateSubscription = model.$pillState.sink { [weak self] state in
+        stateSubscription = model.$pillState
+            .receive(on: RunLoop.main)
+            .sink { [weak self] state in
             MainActor.assumeIsolated { self?.pillStateChanged(to: state) }
         }
-        dockSubscription = model.$pillEdge.combineLatest(model.$pillOffset).sink { [weak self] _, _ in
+        dockSubscription = model.$pillEdge
+            .combineLatest(model.$pillOffset)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _, _ in
             MainActor.assumeIsolated { self?.update() }
         }
-        persistentSubscription = model.$pillPersistent.sink { [weak self] _ in
+        persistentSubscription = model.$pillPersistent
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
         }
         // The drawn size depends on the hovered control and on the words in
         // the current capsule, so any of those changing resizes the panel.
         contentSubscription = model.$commandMode
             .combineLatest(model.$dictationLocked, model.$workingNote)
+            .receive(on: RunLoop.main)
             .sink { [weak self] _, _, _ in MainActor.assumeIsolated { self?.update() } }
         // Resume makes the New note label longer than New note does, so the
         // panel has to resize when auto-stop arms it.
-        autoStopSubscription = model.meetings.$lastAutoStop.sink { [weak self] _ in
+        autoStopSubscription = model.meetings.$lastAutoStop
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
         }
         update()

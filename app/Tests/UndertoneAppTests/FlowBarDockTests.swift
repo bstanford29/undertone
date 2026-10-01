@@ -201,6 +201,24 @@ final class FlowBarCapsuleTests: XCTestCase {
     private let side = PillEdge.right
     private let flat = PillEdge.bottom
 
+    @MainActor
+    func testPublishedStateResizesTheActualPanelAfterAssignment() {
+        let model = AppModel(previewMode: true)
+        model.pillEdge = .right
+        let controller = PillPanelController(model: model)
+        model.pillState = .working
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        model.pillState = .notice("Learned Velora · Undo")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        let expected = FlowBarDock.panelSize(
+            for: FlowBarState.viewState(model: model, hovered: nil, open: false),
+            edge: .right
+        )
+        XCTAssertEqual(controller.panelFrameForTesting.size, expected)
+    }
+
     func testInsertedDropsTheWordAndKeepsTheReading() {
         let capsule = FlowBarDock.textCapsule(for: .inserted(totalMS: 742), workingNote: nil)
         XCTAssertEqual(capsule?.glyph, .check)
