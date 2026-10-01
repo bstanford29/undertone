@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import ApplicationServices
+import os
 
 struct InsertionReceipt {
     let rowID: Int
@@ -38,6 +39,16 @@ struct LearningCandidate: Equatable, Sendable {
 
 @MainActor
 final class EditWatcher {
+    private static let logger = Logger(subsystem: "com.undertone.app", category: "correction")
+
+    static func logUnavailable(rowID: Int, target: TargetSnapshot) {
+        logger.info("correction: row=\(rowID, privacy: .public) unavailable element=\(target.element != nil, privacy: .public) value=\(target.value != nil, privacy: .public) range=\(target.selectedRange != nil, privacy: .public)")
+    }
+
+    private func log(_ reason: String, rowID: Int) {
+        Self.logger.info("correction: row=\(rowID, privacy: .public) event=\(reason, privacy: .public)")
+    }
+
     private let inserter: InsertionController
     private var task: Task<Void, Never>?
     private let interval: Duration
@@ -56,6 +67,7 @@ final class EditWatcher {
 
     func start(receipt: InsertionReceipt, knownTerms: Set<String>, onCandidate: @escaping (LearningCandidate, String) -> Void) {
         cancel()
+        log("watch_started", rowID: receipt.rowID)
         if let element = receipt.target.element {
             _ = AXUIElementSetMessagingTimeout(element, 0.25)
         }
@@ -66,9 +78,19 @@ final class EditWatcher {
             var stableSince = ContinuousClock.now
             while !Task.isCancelled && ContinuousClock.now < deadline {
                 try? await Task.sleep(for: self.interval)
-                guard !Task.isCancelled, self.inserter.isCurrentTarget(receipt.target) else { return }
-                guard let value = self.inserter.currentValue(of: receipt.target),
-                      let edited = Self.isolatedEditedSpan(expected: receipt.expectedValue, current: value, range: receipt.insertedRange) else { return }
+                guard !Task.isCancelled else { return }
+                guard self.inserter.isCurrentTarget(receipt.target) else {
+                    self.log("target_changed", rowID: receipt.rowID)
+                    return
+                }
+                guard let value = self.inserter.currentValue(of: receipt.target) else {
+                    self.log("value_unavailable", rowID: receipt.rowID)
+                    return
+                }
+                guard let edited = Self.isolatedEditedSpan(expected: receipt.expectedValue, current: value, range: receipt.insertedRange) else {
+                    self.log("outside_inserted_span", rowID: receipt.rowID)
+                    return
+                }
                 guard edited != receipt.produced else {
                     stableEdit = nil
                     continue
@@ -80,6 +102,7 @@ final class EditWatcher {
                         let misspelling = NSSpellChecker.shared.checkSpelling(of: candidate.replacement, startingAt: 0)
                         guard misspelling.location != NSNotFound else { return }
                     }
+                    self.log("candidate_accepted", rowID: receipt.rowID)
                     onCandidate(candidate, edited)
                     return
                 }
@@ -90,10 +113,12 @@ final class EditWatcher {
                 if let knownCandidate = Self.alreadyKnownCandidate(
                     produced: receipt.produced, replacement: edited, knownTerms: knownTerms
                 ) {
+                    self.log("already_known", rowID: receipt.rowID)
                     onCandidate(knownCandidate, edited)
                     return
                 }
             }
+            if !Task.isCancelled { self.log("watch_expired", rowID: receipt.rowID) }
         }
     }
 

@@ -911,6 +911,8 @@ final class AppModel: ObservableObject {
                     editWatcher.start(receipt: receipt, knownTerms: knownTerms) { [weak self] candidate, edited in
                         self?.handleEdit(candidate: candidate, editedText: edited, receipt: receipt)
                     }
+                } else if !commandMode {
+                    EditWatcher.logUnavailable(rowID: rowID, target: target)
                 }
             }
             var historyUpdateFailed = false

@@ -37,3 +37,12 @@ When the opt-in setting is enabled, Undertone observes a clear single-word corre
 ## Delivery boundary
 
 The reviewed branch and PR may be prepared under Brandon's build authorization. Merge and installation remain human-required steps.
+
+## September 30 native acceptance repair
+
+Reported symptoms: the right-edge overlay cuts off timing text, and correcting a name did not produce a learning notice. The correction occurred within the existing 20-second watch window.
+
+- Repair panel resizing after published model values are assigned. Verify actual controller frames for timing and learning notices on the right edge.
+- Add correction-observer diagnostics containing only history row IDs, field-availability flags, and event names. Never log dictated or corrected text.
+- Use a signed installed build and a fresh native correction to identify the observer failure before declaring correction learning accepted.
+- Keep the existing phase issue, branch, and PR. The previously authorized installation may be updated with a reversible application backup; merge remains gated on native acceptance and human approval.
