@@ -202,15 +202,15 @@ final class FlowBarCapsuleTests: XCTestCase {
     private let flat = PillEdge.bottom
 
     @MainActor
-    func testPublishedStateResizesTheActualPanelAfterAssignment() {
+    func testPublishedStateResizesTheActualPanelAfterAssignment() async throws {
         let model = AppModel(previewMode: true)
         model.pillEdge = .right
         let controller = PillPanelController(model: model)
         model.pillState = .working
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try await Task.sleep(for: .milliseconds(50))
 
         model.pillState = .notice("Learned Velora · Undo")
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        try await Task.sleep(for: .milliseconds(50))
 
         let expected = FlowBarDock.panelSize(
             for: FlowBarState.viewState(model: model, hovered: nil, open: false),

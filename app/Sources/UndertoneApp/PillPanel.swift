@@ -293,19 +293,21 @@ final class PillPanelController {
         panel.onDragMove = { [weak self] cursor in self?.moveDrag(cursor: cursor) }
         panel.onDragEnd = { [weak self] cursor in self?.endDrag(cursor: cursor) }
         panel.onDragCancel = { [weak self] in self?.cancelDrag() }
+        // Defer past @Published willSet; the main queue also serves AppKit
+        // tracking/modal modes, unlike the default RunLoop scheduler.
         stateSubscription = model.$pillState
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
             MainActor.assumeIsolated { self?.pillStateChanged(to: state) }
         }
         dockSubscription = model.$pillEdge
             .combineLatest(model.$pillOffset)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _, _ in
             MainActor.assumeIsolated { self?.update() }
         }
         persistentSubscription = model.$pillPersistent
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
         }
@@ -313,12 +315,12 @@ final class PillPanelController {
         // the current capsule, so any of those changing resizes the panel.
         contentSubscription = model.$commandMode
             .combineLatest(model.$dictationLocked, model.$workingNote)
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _, _, _ in MainActor.assumeIsolated { self?.update() } }
         // Resume makes the New note label longer than New note does, so the
         // panel has to resize when auto-stop arms it.
         autoStopSubscription = model.meetings.$lastAutoStop
-            .receive(on: RunLoop.main)
+            .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
             MainActor.assumeIsolated { self?.update() }
         }

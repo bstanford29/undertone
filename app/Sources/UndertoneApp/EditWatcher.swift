@@ -100,7 +100,10 @@ final class EditWatcher {
                 if let candidate = Self.candidate(produced: receipt.produced, replacement: edited, knownTerms: knownTerms) {
                     if candidate.reason == "unknown" {
                         let misspelling = NSSpellChecker.shared.checkSpelling(of: candidate.replacement, startingAt: 0)
-                        guard misspelling.location != NSNotFound else { return }
+                        guard misspelling.location != NSNotFound else {
+                            self.log("spelled_correctly", rowID: receipt.rowID)
+                            return
+                        }
                     }
                     self.log("candidate_accepted", rowID: receipt.rowID)
                     onCandidate(candidate, edited)
