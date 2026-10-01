@@ -156,6 +156,12 @@ def _supersede_open_actions(db: Any, term: str, *, excluding_action_id: int | No
     db.execute(query, parameters)
 
 
+def _begin_ownership_transaction(db: Any) -> None:
+    """Take the SQLite writer lock before reading or changing dictionary ownership."""
+    db.commit()
+    db.execute("BEGIN IMMEDIATE")
+
+
 def _dictionary_term(term_key: str) -> str | None:
     return next(
         (term for term in dictionary.load_dictionary()["terms"] if term.casefold() == term_key),
@@ -169,6 +175,20 @@ def _activate_preparing_action(db: Any, action_id: int, term: str) -> None:
         "UPDATE learning_actions SET status = 'active' WHERE id = ? AND status = 'preparing'",
         (action_id,),
     )
+
+
+def _complete_preparing_action(db: Any, action_id: int, term: str) -> str:
+    """Finish a preparing action only while its ownership is still valid."""
+    row = db.execute(
+        "SELECT status FROM learning_actions WHERE id = ?",
+        (action_id,),
+    ).fetchone()
+    if row is None or row[0] != "preparing":
+        return row[0] if row is not None else "undone"
+    if _dictionary_term(term.casefold()) is None:
+        dictionary.add_term(term)
+    _activate_preparing_action(db, action_id, term)
+    return "active"
 
 
 def _recover_dictionary_writes(db: Any) -> None:
@@ -188,8 +208,14 @@ def _journal_dictionary_write(db: Any, term: str) -> int:
 
 
 def _write_journaled_dictionary_term(db: Any, write_id: int, term: str) -> dict[str, Any]:
-    db.commit()
-    dictionary_data = dictionary.add_term(term)
+    # The journal commit makes interruption recoverable. Reacquire the
+    # ownership lock before touching YAML so an auto-learning handoff cannot
+    # interleave with this explicit add.
+    _begin_ownership_transaction(db)
+    row = db.execute("SELECT term FROM dictionary_writes WHERE id = ?", (write_id,)).fetchone()
+    if row is None:
+        return dictionary.load_dictionary()
+    dictionary_data = dictionary.add_term(row[0])
     db.execute("DELETE FROM dictionary_writes WHERE id = ?", (write_id,))
     return dictionary_data
 
@@ -198,6 +224,7 @@ def recover_pending_dictionary_writes() -> None:
     """Finish durable manual dictionary writes left by an interrupted engine."""
     with _LOCK, history._connect() as db:
         _ensure_schema(db)
+        _begin_ownership_transaction(db)
         _recover_dictionary_writes(db)
 
 
@@ -206,6 +233,7 @@ def add_explicit_term(term: str) -> dict[str, Any]:
     with _LOCK:
         with history._connect() as db:
             _ensure_schema(db)
+            _begin_ownership_transaction(db)
             _recover_dictionary_writes(db)
             _supersede_open_actions(db, term)
             write_id = _journal_dictionary_write(db, term)
@@ -218,11 +246,14 @@ def remove_explicit_term(term: str) -> dict[str, Any]:
     with _LOCK:
         with history._connect() as db:
             _ensure_schema(db)
+            _begin_ownership_transaction(db)
             pending = db.execute("SELECT id, term FROM dictionary_writes").fetchall()
             for write_id, pending_term in pending:
                 if pending_term.casefold() == term_key:
                     db.execute("DELETE FROM dictionary_writes WHERE id = ?", (write_id,))
-            db.commit()
+            # Preserve the durable cancellation before the separate YAML write,
+            # then serialize the removal itself with other ownership mutations.
+            _begin_ownership_transaction(db)
             return dictionary.remove_term(term)
 
 
@@ -309,6 +340,7 @@ def act(suggestion_id: int, action: str) -> dict[str, Any]:
     with _LOCK, history._connect() as db:
         _ensure_schema(db)
         if action == "add":
+            _begin_ownership_transaction(db)
             _recover_dictionary_writes(db)
         row = db.execute(
             """SELECT id, produced, replacement, row_id, app_bundle_id, created_at, reason,
@@ -372,6 +404,7 @@ def auto_learn(
     with _LOCK:
         with history._connect() as db:
             _ensure_schema(db)
+            _begin_ownership_transaction(db)
             owner = db.execute(
                 "SELECT app_bundle_id FROM dictations WHERE id = ?", (row_id,)
             ).fetchone()
@@ -383,17 +416,28 @@ def auto_learn(
                     (client_token,),
                 ).fetchone()
                 if existing_action is not None:
+                    # A prior journal may have reached YAML while this token
+                    # was preparing. Recover it under the same ownership lock,
+                    # then re-read the action before completing it.
+                    _recover_dictionary_writes(db)
+                    existing_action = db.execute(
+                        "SELECT id, term, term_key, status, created_at FROM learning_actions WHERE client_token = ?",
+                        (client_token,),
+                    ).fetchone()
                     if existing_action[3] == "preparing":
-                        if _dictionary_term(existing_action[2]) is None:
-                            dictionary.add_term(existing_action[1])
-                        _activate_preparing_action(db, existing_action[0], existing_action[1])
+                        action_status = _complete_preparing_action(
+                            db, existing_action[0], existing_action[1]
+                        )
+                        db.commit()
+                    else:
+                        action_status = existing_action[3]
                     return {
                         "status": "learned",
                         "term": existing_action[1],
                         "action_id": existing_action[0],
                         "created_at": existing_action[4],
                         "client_token": client_token,
-                        "action_status": "active" if existing_action[3] == "preparing" else existing_action[3],
+                        "action_status": action_status,
                     }
             terms = dictionary.load_dictionary()["terms"]
             existing = next((term for term in terms if term.casefold() == term_key), None)
@@ -410,18 +454,17 @@ def auto_learn(
             # Journal the action before the separate YAML store. Reconciliation
             # can then tell whether the term reached disk after an interruption.
             db.commit()
-            dictionary.add_term(replacement)
-            # A user may remove a previously learned term directly. Do not
-            # let that stale action retain ownership of the new learning action
-            # or block its undo.
-            _activate_preparing_action(db, action_id, replacement)
+            _begin_ownership_transaction(db)
+            _recover_dictionary_writes(db)
+            action_status = _complete_preparing_action(db, action_id, replacement)
+            db.commit()
             return {
                 "status": "learned",
                 "term": replacement,
                 "action_id": action_id,
                 "created_at": created_at,
                 "client_token": client_token,
-                "action_status": "active",
+                "action_status": action_status,
             }
 
 
@@ -430,6 +473,8 @@ def lookup(client_token: str) -> dict[str, Any]:
     client_token = _client_token(client_token)
     with _LOCK, history._connect() as db:
         _ensure_schema(db)
+        _begin_ownership_transaction(db)
+        _recover_dictionary_writes(db)
         row = db.execute(
             "SELECT id, term, status, created_at FROM learning_actions WHERE client_token = ?",
             (client_token,),

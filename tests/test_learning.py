@@ -1,11 +1,53 @@
 from __future__ import annotations
 
+import multiprocessing as mp
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from undertone import dictionary, history, learning
+
+
+def _configure_learning_process(root):
+    """Point a spawned worker at the test's synthetic stores."""
+    root = Path(root)
+    history.HISTORY_DIR = root
+    history.HISTORY_PATH = root / "history.sqlite"
+    dictionary.DICTIONARY_DIR = root
+    dictionary.DICTIONARY_PATH = root / "dictionary.yaml"
+
+
+def _auto_learn_race_worker(root, row_id, ready, release, results):
+    try:
+        _configure_learning_process(root)
+
+        def gated_load():
+            data = dictionary._load_dictionary()
+            ready.set()
+            if not release.wait(10):
+                raise TimeoutError("race release timed out")
+            return data
+
+        dictionary.load_dictionary = gated_load
+        results.put(
+            ("auto", learning.auto_learn(
+                "Valora", "Velora", row_id, "com.example.editor",
+                enabled=True, client_token="race-auto-token",
+            ))
+        )
+    except BaseException as exc:  # pragma: no cover - surfaced by parent assertion
+        results.put(("auto_error", repr(exc)))
+
+
+def _explicit_add_race_worker(root, started, results):
+    try:
+        _configure_learning_process(root)
+        started.set()
+        results.put(("manual", learning.add_explicit_term("VELORA")))
+    except BaseException as exc:  # pragma: no cover - surfaced by parent assertion
+        results.put(("manual_error", repr(exc)))
 
 
 class LearningTests(unittest.TestCase):
@@ -343,6 +385,59 @@ class LearningTests(unittest.TestCase):
         learned = learning.auto_learn("Valora", "Velora", row_id, "com.example.editor", enabled=True)
         dictionary.remove_term("Velora")
         self.assertEqual(learning.undo(learned["action_id"])["status"], "absent")
+
+    def test_auto_learn_cannot_claim_concurrent_explicit_add(self):
+        """A concurrent explicit addition remains user-owned across auto handoff."""
+        row_id = self._row()
+        context = mp.get_context("spawn")
+        ready = context.Event()
+        release = context.Event()
+        manual_started = context.Event()
+        results = context.Queue()
+        root = str(self.temporary.name)
+        auto = context.Process(
+            target=_auto_learn_race_worker,
+            args=(root, row_id, ready, release, results),
+        )
+        manual = context.Process(
+            target=_explicit_add_race_worker,
+            args=(root, manual_started, results),
+        )
+        def stop_workers():
+            release.set()
+            for worker in (auto, manual):
+                if worker.pid is not None:
+                    worker.join(2)
+                    if worker.is_alive():
+                        worker.terminate()
+                        worker.join(2)
+            results.close()
+            results.join_thread()
+
+        self.addCleanup(stop_workers)
+        auto.start()
+        self.assertTrue(ready.wait(5), "auto worker did not reach the gated absence read")
+        # No competing writer can claim the term while absence is being read.
+        # This assertion deterministically fails on the pre-fix implementation.
+        with sqlite3.connect(Path(root) / "history.sqlite", timeout=0) as competing:
+            with self.assertRaisesRegex(sqlite3.OperationalError, "locked"):
+                competing.execute("BEGIN IMMEDIATE")
+        manual.start()
+        self.assertTrue(manual_started.wait(5), "manual worker did not start")
+        release.set()
+        auto.join(10)
+        manual.join(10)
+        self.assertFalse(auto.is_alive())
+        self.assertFalse(manual.is_alive())
+        messages = [results.get(timeout=2) for _ in range(2)]
+        errors = [message for message in messages if message[0].endswith("_error")]
+        self.assertEqual(errors, [])
+        auto_result = next(message[1] for message in messages if message[0] == "auto")
+        self.assertEqual(auto_result["status"], "learned")
+        self.assertEqual(learning.lookup("race-auto-token")["action_status"], "superseded")
+        self.assertEqual(dictionary.load_dictionary()["terms"][0], "VELORA")
+        self.assertEqual(learning.undo(auto_result["action_id"])["status"], "superseded")
+        self.assertIn("VELORA", dictionary.load_dictionary()["terms"])
 
 
 if __name__ == "__main__":

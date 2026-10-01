@@ -46,3 +46,5 @@ Reported symptoms: the right-edge overlay cuts off timing text, and correcting a
 - Add correction-observer diagnostics containing only history row IDs, field-availability flags, and event names. Never log dictated or corrected text.
 - Use a signed installed build and a fresh native correction to identify the observer failure before declaring correction learning accepted.
 - Keep the existing phase issue, branch, and PR. The previously authorized installation may be updated with a reversible application backup; merge remains gated on native acceptance and human approval.
+
+The existing PR review also identified a concurrent dictionary ownership race. Automatic learning now takes the SQLite writer lock before checking whether a term exists and rechecks ownership after its durable journal commit. Manual writes and recovery use the same lock order, so a simultaneous explicit addition keeps its spelling and cannot be removed by the automatic action's Undo. A spawned-process regression covers this boundary; its lock assertion fails on the prior code.

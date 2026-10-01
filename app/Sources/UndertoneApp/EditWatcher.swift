@@ -42,11 +42,11 @@ final class EditWatcher {
     private static let logger = Logger(subsystem: "com.undertone.app", category: "correction")
 
     static func logUnavailable(rowID: Int, target: TargetSnapshot) {
-        logger.info("correction: row=\(rowID, privacy: .public) unavailable element=\(target.element != nil, privacy: .public) value=\(target.value != nil, privacy: .public) range=\(target.selectedRange != nil, privacy: .public)")
+        logger.notice("correction: row=\(rowID, privacy: .public) unavailable element=\(target.element != nil, privacy: .public) value=\(target.value != nil, privacy: .public) range=\(target.selectedRange != nil, privacy: .public)")
     }
 
     private func log(_ reason: String, rowID: Int) {
-        Self.logger.info("correction: row=\(rowID, privacy: .public) event=\(reason, privacy: .public)")
+        Self.logger.notice("correction: row=\(rowID, privacy: .public) event=\(reason, privacy: .public)")
     }
 
     private let inserter: InsertionController
