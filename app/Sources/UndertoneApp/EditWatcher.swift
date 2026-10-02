@@ -49,6 +49,23 @@ final class EditWatcher {
         Self.logger.notice("correction: row=\(rowID, privacy: .public) event=\(reason, privacy: .public)")
     }
 
+    /// Diagnose the AX boundary without retaining field or transcript text.
+    private func logBoundaryMismatch(receipt: InsertionReceipt, current: String) {
+        let expected = Array(receipt.expectedValue.utf16)
+        let actual = Array(current.utf16)
+        let start = receipt.insertedRange.location
+        let end = start + receipt.insertedRange.length
+        guard start >= 0, end >= start, end <= expected.count else { return }
+        let prefix = Array(expected[..<start])
+        let suffix = Array(expected[end...])
+        let prefixMatches = Array(actual.prefix(prefix.count)) == prefix
+        let suffixMatches = Array(actual.suffix(suffix.count)) == suffix
+        let prefixBlank = String(decoding: prefix, as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let suffixBlank = String(decoding: suffix, as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let producedPresent = !receipt.produced.isEmpty && current.contains(receipt.produced)
+        Self.logger.notice("correction boundary: row=\(receipt.rowID, privacy: .public) before_units=\(receipt.target.value?.utf16.count ?? -1, privacy: .public) expected_units=\(expected.count, privacy: .public) current_units=\(actual.count, privacy: .public) start=\(start, privacy: .public) inserted_units=\(receipt.insertedRange.length, privacy: .public) prefix_matches=\(prefixMatches, privacy: .public) suffix_matches=\(suffixMatches, privacy: .public) prefix_blank=\(prefixBlank, privacy: .public) suffix_blank=\(suffixBlank, privacy: .public) produced_present=\(producedPresent, privacy: .public)")
+    }
+
     private let inserter: InsertionController
     private var task: Task<Void, Never>?
     private let interval: Duration
@@ -89,6 +106,7 @@ final class EditWatcher {
                 }
                 guard let edited = Self.isolatedEditedSpan(expected: receipt.expectedValue, current: value, range: receipt.insertedRange) else {
                     self.log("outside_inserted_span", rowID: receipt.rowID)
+                    self.logBoundaryMismatch(receipt: receipt, current: value)
                     return
                 }
                 guard edited != receipt.produced else {
