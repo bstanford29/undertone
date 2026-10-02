@@ -127,8 +127,12 @@ final class EditWatcher {
                     }
                 }
                 guard let edited = Self.isolatedEditedSpan(expected: baseline.expectedValue, current: value, range: baseline.insertedRange) else {
-                    self.log("outside_inserted_span", rowID: receipt.rowID)
-                    self.logBoundaryMismatch(receipt: baseline, current: value)
+                    if value.isEmpty {
+                        self.log("field_cleared", rowID: receipt.rowID)
+                    } else {
+                        self.log("outside_inserted_span", rowID: receipt.rowID)
+                        self.logBoundaryMismatch(receipt: baseline, current: value)
+                    }
                     return
                 }
                 guard edited != receipt.produced else {
@@ -166,6 +170,8 @@ final class EditWatcher {
     }
 
     nonisolated static func isolatedEditedSpan(expected: String, current: String, range: CFRange) -> String? {
+        // A sent or cleared composer ends this dictation's observation window.
+        guard !current.isEmpty else { return nil }
         let expectedUnits = Array(expected.utf16)
         let currentUnits = Array(current.utf16)
         guard range.location >= 0, range.length >= 0,

@@ -794,6 +794,14 @@ final class ProtocolTests: XCTestCase {
                                                       current: "Hi 🧭 Qwen", range: baseline.insertedRange), "Hi 🧭 Qwen")
     }
 
+    func testClearedComposerEndsWatchingInsteadOfLearningFromItsNextMessage() {
+        let range = CFRange(location: 0, length: "Okay.".utf16.count)
+        // With empty surrounding boundaries, this previously returned "" and
+        // left the watcher alive to compare an unrelated next message.
+        XCTAssertNil(EditWatcher.isolatedEditedSpan(expected: "Okay.", current: "", range: range))
+        XCTAssertEqual(EditWatcher.isolatedEditedSpan(expected: "Okay.", current: "Velora.", range: range), "Velora.")
+    }
+
     func testLearningCandidateUsesCapitalizedOrUnknownReplacement() {
         let candidate = EditWatcher.candidate(produced: "Please use Quinn", replacement: "Please use Qwen", knownTerms: [])
         XCTAssertEqual(candidate, LearningCandidate(produced: "Quinn", replacement: "Qwen", reason: "capitalized"))
