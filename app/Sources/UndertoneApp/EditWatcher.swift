@@ -11,6 +11,19 @@ struct InsertionReceipt {
     let insertedRange: CFRange
     let appBundleID: String
 
+    /// Some editors expose stale or placeholder AX text before insertion.
+    /// Re-anchor only when the first observed field is exactly our output.
+    /// A substring match or an already edited field is not sufficient proof.
+    func confirmedWholeFieldBaseline(current: String) -> InsertionReceipt? {
+        guard !produced.isEmpty, current == produced, current != expectedValue else { return nil }
+        return InsertionReceipt(
+            rowID: rowID, target: target, produced: produced,
+            expectedValue: current,
+            insertedRange: CFRange(location: 0, length: current.utf16.count),
+            appBundleID: appBundleID
+        )
+    }
+
     static func make(rowID: Int, produced: String, target: TargetSnapshot) -> InsertionReceipt? {
         guard let before = target.value, let selected = target.selectedRange,
               selected.location >= 0, selected.length >= 0 else { return nil }
@@ -91,6 +104,8 @@ final class EditWatcher {
         task = Task { [weak self] in
             guard let self else { return }
             let deadline = ContinuousClock.now + self.duration
+            var baseline = receipt
+            var isFirstObservation = true
             var stableEdit: String?
             var stableSince = ContinuousClock.now
             while !Task.isCancelled && ContinuousClock.now < deadline {
@@ -104,9 +119,16 @@ final class EditWatcher {
                     self.log("value_unavailable", rowID: receipt.rowID)
                     return
                 }
-                guard let edited = Self.isolatedEditedSpan(expected: receipt.expectedValue, current: value, range: receipt.insertedRange) else {
+                if isFirstObservation {
+                    isFirstObservation = false
+                    if let confirmed = receipt.confirmedWholeFieldBaseline(current: value) {
+                        baseline = confirmed
+                        self.log("whole_field_baseline_confirmed", rowID: receipt.rowID)
+                    }
+                }
+                guard let edited = Self.isolatedEditedSpan(expected: baseline.expectedValue, current: value, range: baseline.insertedRange) else {
                     self.log("outside_inserted_span", rowID: receipt.rowID)
-                    self.logBoundaryMismatch(receipt: receipt, current: value)
+                    self.logBoundaryMismatch(receipt: baseline, current: value)
                     return
                 }
                 guard edited != receipt.produced else {

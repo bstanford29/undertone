@@ -754,6 +754,46 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(EditWatcher.isolatedEditedSpan(expected: expected, current: "beforeQuinn changed", range: range))
     }
 
+    func testWholeFieldBaselineDropsStalePreInsertionAXValueOnlyAfterExactReadback() throws {
+        let produced = "Today was a good day."
+        let target = TargetSnapshot(bundleID: "fixture.app", element: nil, value: "Placeholder!",
+                                    selectedText: "", selectedRange: CFRange(location: 0, length: 0))
+        let receipt = try XCTUnwrap(InsertionReceipt.make(rowID: 1, produced: produced, target: target))
+        // The old expected boundary rejects even the unedited dictated text.
+        XCTAssertNil(EditWatcher.isolatedEditedSpan(expected: receipt.expectedValue, current: produced,
+                                                    range: receipt.insertedRange))
+        let baseline = try XCTUnwrap(receipt.confirmedWholeFieldBaseline(current: produced))
+        XCTAssertEqual(baseline.rowID, receipt.rowID)
+        XCTAssertEqual(baseline.appBundleID, receipt.appBundleID)
+        XCTAssertEqual(baseline.insertedRange.location, 0)
+        XCTAssertEqual(baseline.insertedRange.length, produced.utf16.count)
+        XCTAssertEqual(EditWatcher.isolatedEditedSpan(expected: baseline.expectedValue,
+                                                      current: "Today was a good Velora.",
+                                                      range: baseline.insertedRange), "Today was a good Velora.")
+        // Never infer a new boundary from an edit or a mere substring match.
+        XCTAssertNil(receipt.confirmedWholeFieldBaseline(current: "Today was a good Velora."))
+        XCTAssertNil(receipt.confirmedWholeFieldBaseline(current: "prefix " + produced))
+        XCTAssertNil(receipt.confirmedWholeFieldBaseline(current: produced + " suffix"))
+        XCTAssertNil(receipt.confirmedWholeFieldBaseline(current: "Today was"))
+        XCTAssertNil(receipt.confirmedWholeFieldBaseline(current: ""))
+    }
+
+    func testWholeFieldBaselinePreservesNormalBoundariesAndUTF16Ranges() throws {
+        let target = TargetSnapshot(bundleID: "fixture.app", element: nil, value: "before after",
+                                    selectedText: "", selectedRange: CFRange(location: 6, length: 0))
+        let receipt = try XCTUnwrap(InsertionReceipt.make(rowID: 2, produced: "Quinn", target: target))
+        XCTAssertNil(receipt.confirmedWholeFieldBaseline(current: receipt.expectedValue))
+        XCTAssertEqual(EditWatcher.isolatedEditedSpan(expected: receipt.expectedValue,
+                                                      current: "beforeQwen after", range: receipt.insertedRange), "Qwen")
+        XCTAssertNil(EditWatcher.isolatedEditedSpan(expected: receipt.expectedValue,
+                                                    current: "changedQwen after", range: receipt.insertedRange))
+        let emoji = try XCTUnwrap(InsertionReceipt.make(rowID: 3, produced: "Hi 🧭 Quinn", target: target))
+        let baseline = try XCTUnwrap(emoji.confirmedWholeFieldBaseline(current: emoji.produced))
+        XCTAssertEqual(baseline.insertedRange.length, emoji.produced.utf16.count)
+        XCTAssertEqual(EditWatcher.isolatedEditedSpan(expected: baseline.expectedValue,
+                                                      current: "Hi 🧭 Qwen", range: baseline.insertedRange), "Hi 🧭 Qwen")
+    }
+
     func testLearningCandidateUsesCapitalizedOrUnknownReplacement() {
         let candidate = EditWatcher.candidate(produced: "Please use Quinn", replacement: "Please use Qwen", knownTerms: [])
         XCTAssertEqual(candidate, LearningCandidate(produced: "Quinn", replacement: "Qwen", reason: "capitalized"))
