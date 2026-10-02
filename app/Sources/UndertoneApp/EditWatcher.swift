@@ -123,6 +123,10 @@ final class EditWatcher {
         }
         task = Task { [weak self] in
             guard let self else { return }
+            guard !Task.isCancelled else {
+                self.log("watch_cancelled", rowID: rowID)
+                return
+            }
             let deadline = ContinuousClock.now + self.duration
             let receipt: InsertionReceipt
             if let initialReceipt {
@@ -132,7 +136,14 @@ final class EditWatcher {
                 // One delayed read lets the typed events reach the app. Never
                 // keep searching for another field after a failed recovery.
                 try? await Task.sleep(for: self.interval)
-                guard !Task.isCancelled, ContinuousClock.now < deadline else { return }
+                guard !Task.isCancelled else {
+                    self.log("watch_cancelled", rowID: rowID)
+                    return
+                }
+                guard ContinuousClock.now < deadline else {
+                    self.log("recovery_deadline", rowID: rowID)
+                    return
+                }
                 let observed = self.inserter.snapshot(readTimeout: 0.25)
                 guard let confirmed = InsertionReceipt.confirmedAfterInsertion(
                     rowID: rowID, produced: produced, original: target, observed: observed
@@ -162,7 +173,7 @@ final class EditWatcher {
                 guard self.inserter.isCurrentTarget(receipt.target) else {
                     self.log("target_changed", rowID: receipt.rowID)
                     let state = self.inserter.correctionTargetDiagnostics(receipt.target)
-                    Self.logger.notice("correction target: row=\(receipt.rowID, privacy: .public) same_app=\(state.sameApp, privacy: .public) focused_present=\(state.focusedPresent, privacy: .public) same_element=\(state.sameElement, privacy: .public) original_role_error=\(state.originalRoleError, privacy: .public) focused_role_error=\(state.focusedRoleError, privacy: .public)")
+                    Self.logger.notice("correction target: row=\(receipt.rowID, privacy: .public) same_app=\(state.sameApp, privacy: .public) focused_present=\(state.focusedPresent, privacy: .public) same_element=\(state.sameElement, privacy: .public) original_role_error=\(state.originalRoleError, privacy: .public) focused_role_error=\(state.focusedRoleError, privacy: .public) roles_available=\(state.rolesAvailable, privacy: .public) same_role=\(state.sameRole, privacy: .public)")
                     return
                 }
                 guard let value = self.inserter.currentValue(of: receipt.target) else {
@@ -221,9 +232,16 @@ final class EditWatcher {
                 }
                 if !rejectionLogged {
                     rejectionLogged = true
-                    let producedWords = receipt.produced.split(whereSeparator: \.isWhitespace).count
-                    let editedWords = edited.split(whereSeparator: \.isWhitespace).count
-                    Self.logger.notice("correction: row=\(receipt.rowID, privacy: .public) event=edit_not_learnable produced_words=\(producedWords, privacy: .public) edited_words=\(editedWords, privacy: .public)")
+                    let oldWords = receipt.produced.split(whereSeparator: \.isWhitespace).map {
+                        String($0).trimmingCharacters(in: .punctuationCharacters)
+                    }
+                    let newWords = edited.split(whereSeparator: \.isWhitespace).map {
+                        String($0).trimmingCharacters(in: .punctuationCharacters)
+                    }
+                    let changedWords = zip(oldWords, newWords).filter {
+                        $0.caseInsensitiveCompare($1) != .orderedSame
+                    }.count
+                    Self.logger.notice("correction: row=\(receipt.rowID, privacy: .public) event=edit_not_learnable produced_words=\(oldWords.count, privacy: .public) edited_words=\(newWords.count, privacy: .public) changed_word_pairs=\(changedWords, privacy: .public)")
                 }
             }
             if !Task.isCancelled { self.log("watch_expired", rowID: receipt.rowID) }

@@ -280,19 +280,24 @@ final class InsertionController {
     /// AX role read errors distinguish a retired element from a focus change.
     func correctionTargetDiagnostics(_ target: TargetSnapshot) -> (
         sameApp: Bool, focusedPresent: Bool, sameElement: Bool,
-        originalRoleError: Int32, focusedRoleError: Int32
+        originalRoleError: Int32, focusedRoleError: Int32, rolesAvailable: Bool, sameRole: Bool
     ) {
         let sameApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleID
-        guard sameApp else { return (false, false, false, -1, -1) }
+        guard sameApp else { return (false, false, false, -1, -1, false, false) }
         let focused = focusedElement()
-        func roleError(_ element: AXUIElement?) -> Int32 {
-            guard let element else { return -1 }
+        func readRole(_ element: AXUIElement?) -> (Int32, String?) {
+            guard let element else { return (-1, nil) }
             _ = AXUIElementSetMessagingTimeout(element, 0.25)
             var role: CFTypeRef?
-            return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role).rawValue
+            let error = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
+            return (error.rawValue, error == .success ? role as? String : nil)
         }
         let sameElement = focused.map { current in target.element.map { CFEqual(current, $0) } ?? false } ?? false
-        return (true, focused != nil, sameElement, roleError(target.element), roleError(focused))
+        let originalRole = readRole(target.element)
+        let focusedRole = readRole(focused)
+        let rolesAvailable = originalRole.1 != nil && focusedRole.1 != nil
+        return (true, focused != nil, sameElement, originalRole.0, focusedRole.0,
+                rolesAvailable, rolesAvailable && originalRole.1 == focusedRole.1)
     }
 
     static func exactReplacementRange(inserted: String, value: String, originalRange: CFRange, currentRange: CFRange) -> CFRange? {
