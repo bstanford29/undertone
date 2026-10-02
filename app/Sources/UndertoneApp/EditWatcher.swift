@@ -24,6 +24,21 @@ struct InsertionReceipt {
         )
     }
 
+    /// Recover a missing pre-insertion snapshot only from exact whole-field
+    /// readback in the original app. Preserve element identity when known.
+    static func confirmedAfterInsertion(
+        rowID: Int, produced: String, original: TargetSnapshot, observed: TargetSnapshot
+    ) -> InsertionReceipt? {
+        guard let bundleID = original.bundleID, !bundleID.isEmpty,
+              observed.bundleID == bundleID, let element = observed.element,
+              !produced.isEmpty, observed.value == produced else { return nil }
+        if let originalElement = original.element, !CFEqual(originalElement, element) { return nil }
+        return InsertionReceipt(
+            rowID: rowID, target: observed, produced: produced, expectedValue: produced,
+            insertedRange: CFRange(location: 0, length: produced.utf16.count), appBundleID: bundleID
+        )
+    }
+
     static func make(rowID: Int, produced: String, target: TargetSnapshot) -> InsertionReceipt? {
         guard let before = target.value, let selected = target.selectedRange,
               selected.location >= 0, selected.length >= 0 else { return nil }
@@ -95,15 +110,42 @@ final class EditWatcher {
         task = nil
     }
 
-    func start(receipt: InsertionReceipt, knownTerms: Set<String>, onCandidate: @escaping (LearningCandidate, String) -> Void) {
+    func start(
+        rowID: Int, produced: String, target: TargetSnapshot, knownTerms: Set<String>,
+        onCandidate: @escaping (LearningCandidate, String, InsertionReceipt) -> Void
+    ) {
         cancel()
-        log("watch_started", rowID: receipt.rowID)
-        if let element = receipt.target.element {
+        let initialReceipt = target.element == nil ? nil : InsertionReceipt.make(rowID: rowID, produced: produced, target: target)
+        if let element = target.element {
             _ = AXUIElementSetMessagingTimeout(element, 0.25)
         }
         task = Task { [weak self] in
             guard let self else { return }
             let deadline = ContinuousClock.now + self.duration
+            let receipt: InsertionReceipt
+            if let initialReceipt {
+                receipt = initialReceipt
+            } else {
+                Self.logUnavailable(rowID: rowID, target: target)
+                // One delayed read lets the typed events reach the app. Never
+                // keep searching for another field after a failed recovery.
+                try? await Task.sleep(for: self.interval)
+                guard !Task.isCancelled, ContinuousClock.now < deadline else { return }
+                let observed = self.inserter.snapshot()
+                guard let confirmed = InsertionReceipt.confirmedAfterInsertion(
+                    rowID: rowID, produced: produced, original: target, observed: observed
+                ) else {
+                    Self.logUnavailable(rowID: rowID, target: observed)
+                    self.log("snapshot_recovery_rejected", rowID: rowID)
+                    return
+                }
+                receipt = confirmed
+                if let element = receipt.target.element {
+                    _ = AXUIElementSetMessagingTimeout(element, 0.25)
+                }
+                self.log("snapshot_recovered", rowID: rowID)
+            }
+            self.log("watch_started", rowID: rowID)
             var baseline = receipt
             var isFirstObservation = true
             var stableEdit: String?
@@ -150,7 +192,7 @@ final class EditWatcher {
                         }
                     }
                     self.log("candidate_accepted", rowID: receipt.rowID)
-                    onCandidate(candidate, edited)
+                    onCandidate(candidate, edited, receipt)
                     return
                 }
                 // A term already in the dictionary is still an accepted edit
@@ -161,7 +203,7 @@ final class EditWatcher {
                     produced: receipt.produced, replacement: edited, knownTerms: knownTerms
                 ) {
                     self.log("already_known", rowID: receipt.rowID)
-                    onCandidate(knownCandidate, edited)
+                    onCandidate(knownCandidate, edited, receipt)
                     return
                 }
             }

@@ -802,6 +802,43 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(EditWatcher.isolatedEditedSpan(expected: "Okay.", current: "Velora.", range: range), "Velora.")
     }
 
+    func testMissingSnapshotRecoversOnlyFromExactWholeFieldInOriginalApp() throws {
+        let original = TargetSnapshot(bundleID: "fixture.app", element: nil, value: nil, selectedText: nil, selectedRange: nil)
+        let element = AXUIElementCreateApplication(getpid())
+        let produced = "I met Nora 🧭 today."
+        func observed(_ value: String?, bundle: String? = "fixture.app", hasElement: Bool = true) -> TargetSnapshot {
+            TargetSnapshot(bundleID: bundle, element: hasElement ? element : nil, value: value,
+                           selectedText: nil, selectedRange: nil)
+        }
+        let receipt = try XCTUnwrap(InsertionReceipt.confirmedAfterInsertion(
+            rowID: 4, produced: produced, original: original, observed: observed(produced)))
+        XCTAssertEqual(receipt.rowID, 4)
+        XCTAssertEqual(receipt.appBundleID, "fixture.app")
+        XCTAssertTrue(CFEqual(try XCTUnwrap(receipt.target.element), element))
+        XCTAssertEqual(receipt.insertedRange.location, 0)
+        XCTAssertEqual(receipt.insertedRange.length, produced.utf16.count)
+        XCTAssertEqual(EditWatcher.isolatedEditedSpan(expected: receipt.expectedValue,
+                                                      current: "I met Zelvoriax 🧭 today.", range: receipt.insertedRange),
+                       "I met Zelvoriax 🧭 today.")
+        for value in [nil, "", "I met", "prefix " + produced, produced + " suffix", "I met Zelvoriax 🧭 today."] as [String?] {
+            XCTAssertNil(InsertionReceipt.confirmedAfterInsertion(rowID: 4, produced: produced, original: original, observed: observed(value)))
+        }
+        XCTAssertNil(InsertionReceipt.confirmedAfterInsertion(rowID: 4, produced: produced, original: original, observed: observed(produced, bundle: "other.app")))
+        XCTAssertNil(InsertionReceipt.confirmedAfterInsertion(rowID: 4, produced: produced, original: original, observed: observed(produced, hasElement: false)))
+        let unknownApp = TargetSnapshot(bundleID: nil, element: nil, value: nil, selectedText: nil, selectedRange: nil)
+        XCTAssertNil(InsertionReceipt.confirmedAfterInsertion(rowID: 4, produced: produced, original: unknownApp, observed: observed(produced)))
+    }
+
+    func testSnapshotRecoveryPreservesKnownElementIdentity() {
+        let element = AXUIElementCreateApplication(getpid())
+        let other = AXUIElementCreateApplication(0)
+        let original = TargetSnapshot(bundleID: "fixture.app", element: element, value: nil, selectedText: nil, selectedRange: nil)
+        let same = TargetSnapshot(bundleID: "fixture.app", element: element, value: "Nora", selectedText: nil, selectedRange: nil)
+        let changed = TargetSnapshot(bundleID: "fixture.app", element: other, value: "Nora", selectedText: nil, selectedRange: nil)
+        XCTAssertNotNil(InsertionReceipt.confirmedAfterInsertion(rowID: 5, produced: "Nora", original: original, observed: same))
+        XCTAssertNil(InsertionReceipt.confirmedAfterInsertion(rowID: 5, produced: "Nora", original: original, observed: changed))
+    }
+
     func testLearningCandidateUsesCapitalizedOrUnknownReplacement() {
         let candidate = EditWatcher.candidate(produced: "Please use Quinn", replacement: "Please use Qwen", knownTerms: [])
         XCTAssertEqual(candidate, LearningCandidate(produced: "Quinn", replacement: "Qwen", reason: "capitalized"))

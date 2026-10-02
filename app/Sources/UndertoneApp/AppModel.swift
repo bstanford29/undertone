@@ -907,12 +907,10 @@ final class AppModel: ObservableObject {
                 lastInsertedText = text
                 lastInsertedRawText = commandMode ? selectedText : raw
                 lastInsertedRowID = rowID
-                if !commandMode, let receipt = InsertionReceipt.make(rowID: rowID, produced: text, target: target) {
-                    editWatcher.start(receipt: receipt, knownTerms: knownTerms) { [weak self] candidate, edited in
+                if !commandMode {
+                    editWatcher.start(rowID: rowID, produced: text, target: target, knownTerms: knownTerms) { [weak self] candidate, edited, receipt in
                         self?.handleEdit(candidate: candidate, editedText: edited, receipt: receipt)
                     }
-                } else if !commandMode {
-                    EditWatcher.logUnavailable(rowID: rowID, target: target)
                 }
             }
             var historyUpdateFailed = false
