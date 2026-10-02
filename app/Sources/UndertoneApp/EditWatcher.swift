@@ -151,12 +151,18 @@ final class EditWatcher {
             var baseline = receipt
             var isFirstObservation = true
             var stableEdit: String?
+            var rejectionLogged = false
             var stableSince = ContinuousClock.now
             while !Task.isCancelled && ContinuousClock.now < deadline {
                 try? await Task.sleep(for: self.interval)
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled else {
+                    self.log("watch_cancelled", rowID: receipt.rowID)
+                    return
+                }
                 guard self.inserter.isCurrentTarget(receipt.target) else {
                     self.log("target_changed", rowID: receipt.rowID)
+                    let state = self.inserter.correctionTargetDiagnostics(receipt.target)
+                    Self.logger.notice("correction target: row=\(receipt.rowID, privacy: .public) same_app=\(state.sameApp, privacy: .public) focused_present=\(state.focusedPresent, privacy: .public) same_element=\(state.sameElement, privacy: .public) original_role_error=\(state.originalRoleError, privacy: .public) focused_role_error=\(state.focusedRoleError, privacy: .public)")
                     return
                 }
                 guard let value = self.inserter.currentValue(of: receipt.target) else {
@@ -183,7 +189,12 @@ final class EditWatcher {
                     stableEdit = nil
                     continue
                 }
-                if edited != stableEdit { stableEdit = edited; stableSince = .now; continue }
+                if edited != stableEdit {
+                    stableEdit = edited
+                    stableSince = .now
+                    rejectionLogged = false
+                    continue
+                }
                 guard ContinuousClock.now - stableSince >= .seconds(1) else { continue }
                 if let candidate = Self.candidate(produced: receipt.produced, replacement: edited, knownTerms: knownTerms) {
                     if candidate.reason == "unknown" {
@@ -207,6 +218,12 @@ final class EditWatcher {
                     self.log("already_known", rowID: receipt.rowID)
                     onCandidate(knownCandidate, edited, receipt)
                     return
+                }
+                if !rejectionLogged {
+                    rejectionLogged = true
+                    let producedWords = receipt.produced.split(whereSeparator: \.isWhitespace).count
+                    let editedWords = edited.split(whereSeparator: \.isWhitespace).count
+                    Self.logger.notice("correction: row=\(receipt.rowID, privacy: .public) event=edit_not_learnable produced_words=\(producedWords, privacy: .public) edited_words=\(editedWords, privacy: .public)")
                 }
             }
             if !Task.isCancelled { self.log("watch_expired", rowID: receipt.rowID) }

@@ -276,6 +276,25 @@ final class InsertionController {
         isSameElement(target)
     }
 
+    /// Metadata only, sampled after the watcher has already decided to stop.
+    /// AX role read errors distinguish a retired element from a focus change.
+    func correctionTargetDiagnostics(_ target: TargetSnapshot) -> (
+        sameApp: Bool, focusedPresent: Bool, sameElement: Bool,
+        originalRoleError: Int32, focusedRoleError: Int32
+    ) {
+        let sameApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleID
+        guard sameApp else { return (false, false, false, -1, -1) }
+        let focused = focusedElement()
+        func roleError(_ element: AXUIElement?) -> Int32 {
+            guard let element else { return -1 }
+            _ = AXUIElementSetMessagingTimeout(element, 0.25)
+            var role: CFTypeRef?
+            return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role).rawValue
+        }
+        let sameElement = focused.map { current in target.element.map { CFEqual(current, $0) } ?? false } ?? false
+        return (true, focused != nil, sameElement, roleError(target.element), roleError(focused))
+    }
+
     static func exactReplacementRange(inserted: String, value: String, originalRange: CFRange, currentRange: CFRange) -> CFRange? {
         let insertedUnits = Array(inserted.utf16)
         let valueUnits = Array(value.utf16)
