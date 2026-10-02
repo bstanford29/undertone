@@ -93,6 +93,9 @@ final class InsertionController {
     func snapshot() -> TargetSnapshot {
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let element = focusedElement()
+        if let element {
+            _ = AXUIElementSetMessagingTimeout(element, 0.25)
+        }
         return TargetSnapshot(bundleID: bundleID, element: element, value: value(of: element), selectedText: selectedText(element), selectedRange: selectedRange(element))
     }
 

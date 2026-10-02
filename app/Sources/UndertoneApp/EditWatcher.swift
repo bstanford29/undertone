@@ -5,6 +5,8 @@ import os
 
 struct InsertionReceipt {
     let rowID: Int
+    // Used for focused-element identity, not for text replacement. Recovery
+    // receipts retain the observed post-insertion snapshot.
     let target: TargetSnapshot
     let produced: String
     let expectedValue: String
@@ -69,8 +71,8 @@ struct LearningCandidate: Equatable, Sendable {
 final class EditWatcher {
     private static let logger = Logger(subsystem: "com.undertone.app", category: "correction")
 
-    static func logUnavailable(rowID: Int, target: TargetSnapshot) {
-        logger.notice("correction: row=\(rowID, privacy: .public) unavailable element=\(target.element != nil, privacy: .public) value=\(target.value != nil, privacy: .public) range=\(target.selectedRange != nil, privacy: .public)")
+    static func logUnavailable(rowID: Int, target: TargetSnapshot, stage: String = "before_insertion") {
+        logger.notice("correction: row=\(rowID, privacy: .public) capture=\(stage, privacy: .public) unavailable element=\(target.element != nil, privacy: .public) value=\(target.value != nil, privacy: .public) range=\(target.selectedRange != nil, privacy: .public)")
     }
 
     private func log(_ reason: String, rowID: Int) {
@@ -91,7 +93,7 @@ final class EditWatcher {
         let prefixBlank = String(decoding: prefix, as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let suffixBlank = String(decoding: suffix, as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         let producedPresent = !receipt.produced.isEmpty && current.contains(receipt.produced)
-        Self.logger.notice("correction boundary: row=\(receipt.rowID, privacy: .public) before_units=\(receipt.target.value?.utf16.count ?? -1, privacy: .public) expected_units=\(expected.count, privacy: .public) current_units=\(actual.count, privacy: .public) start=\(start, privacy: .public) inserted_units=\(receipt.insertedRange.length, privacy: .public) prefix_matches=\(prefixMatches, privacy: .public) suffix_matches=\(suffixMatches, privacy: .public) prefix_blank=\(prefixBlank, privacy: .public) suffix_blank=\(suffixBlank, privacy: .public) produced_present=\(producedPresent, privacy: .public)")
+        Self.logger.notice("correction boundary: row=\(receipt.rowID, privacy: .public) snapshot_units=\(receipt.target.value?.utf16.count ?? -1, privacy: .public) expected_units=\(expected.count, privacy: .public) current_units=\(actual.count, privacy: .public) start=\(start, privacy: .public) inserted_units=\(receipt.insertedRange.length, privacy: .public) prefix_matches=\(prefixMatches, privacy: .public) suffix_matches=\(suffixMatches, privacy: .public) prefix_blank=\(prefixBlank, privacy: .public) suffix_blank=\(suffixBlank, privacy: .public) produced_present=\(producedPresent, privacy: .public)")
     }
 
     private let inserter: InsertionController
@@ -135,7 +137,7 @@ final class EditWatcher {
                 guard let confirmed = InsertionReceipt.confirmedAfterInsertion(
                     rowID: rowID, produced: produced, original: target, observed: observed
                 ) else {
-                    Self.logUnavailable(rowID: rowID, target: observed)
+                    Self.logUnavailable(rowID: rowID, target: observed, stage: "recovery")
                     self.log("snapshot_recovery_rejected", rowID: rowID)
                     return
                 }
