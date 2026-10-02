@@ -90,11 +90,11 @@ final class InsertionController {
         return axFirstBundleIDs.contains(bundleID)
     }
 
-    func snapshot() -> TargetSnapshot {
+    func snapshot(readTimeout: Float? = nil) -> TargetSnapshot {
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let element = focusedElement()
-        if let element {
-            _ = AXUIElementSetMessagingTimeout(element, 0.25)
+        if let element, let readTimeout {
+            _ = AXUIElementSetMessagingTimeout(element, readTimeout)
         }
         return TargetSnapshot(bundleID: bundleID, element: element, value: value(of: element), selectedText: selectedText(element), selectedRange: selectedRange(element))
     }

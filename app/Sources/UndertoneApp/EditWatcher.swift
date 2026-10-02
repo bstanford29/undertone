@@ -133,7 +133,7 @@ final class EditWatcher {
                 // keep searching for another field after a failed recovery.
                 try? await Task.sleep(for: self.interval)
                 guard !Task.isCancelled, ContinuousClock.now < deadline else { return }
-                let observed = self.inserter.snapshot()
+                let observed = self.inserter.snapshot(readTimeout: 0.25)
                 guard let confirmed = InsertionReceipt.confirmedAfterInsertion(
                     rowID: rowID, produced: produced, original: target, observed: observed
                 ) else {
