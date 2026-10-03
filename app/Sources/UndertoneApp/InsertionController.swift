@@ -90,12 +90,9 @@ final class InsertionController {
         return axFirstBundleIDs.contains(bundleID)
     }
 
-    func snapshot(readTimeout: Float? = nil) -> TargetSnapshot {
+    func snapshot() -> TargetSnapshot {
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let element = focusedElement()
-        if let element, let readTimeout {
-            _ = AXUIElementSetMessagingTimeout(element, readTimeout)
-        }
         return TargetSnapshot(bundleID: bundleID, element: element, value: value(of: element), selectedText: selectedText(element), selectedRange: selectedRange(element))
     }
 
@@ -267,37 +264,18 @@ final class InsertionController {
         return .failed(.axRejected)
     }
 
-    func currentValue(of target: TargetSnapshot) -> String? {
-        guard isSameElement(target) else { return nil }
-        return value(of: target.element)
-    }
-
-    func isCurrentTarget(_ target: TargetSnapshot) -> Bool {
-        isSameElement(target)
-    }
-
-    /// Metadata only, sampled after the watcher has already decided to stop.
-    /// AX role read errors distinguish a retired element from a focus change.
-    func correctionTargetDiagnostics(_ target: TargetSnapshot) -> (
-        sameApp: Bool, focusedPresent: Bool, sameElement: Bool,
-        originalRoleError: Int32, focusedRoleError: Int32, rolesAvailable: Bool, sameRole: Bool
-    ) {
-        let sameApp = NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleID
-        guard sameApp else { return (false, false, false, -1, -1, false, false) }
-        let focused = focusedElement()
-        func readRole(_ element: AXUIElement?) -> (Int32, String?) {
-            guard let element else { return (-1, nil) }
-            _ = AXUIElementSetMessagingTimeout(element, 0.25)
-            var role: CFTypeRef?
-            let error = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role)
-            return (error.rawValue, error == .success ? role as? String : nil)
-        }
-        let sameElement = focused.map { current in target.element.map { CFEqual(current, $0) } ?? false } ?? false
-        let originalRole = readRole(target.element)
-        let focusedRole = readRole(focused)
-        let rolesAvailable = originalRole.1 != nil && focusedRole.1 != nil
-        return (true, focused != nil, sameElement, originalRole.0, focusedRole.0,
-                rolesAvailable, rolesAvailable && originalRole.1 == focusedRole.1)
+    /// Read only the focused field in the expected process. Do not collect
+    /// selected text, clipboard data, or values from another app while paused.
+    @MainActor func correctionSnapshot(in bundleID: String) -> TargetSnapshot? {
+        guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == bundleID,
+              let element = focusedElement() else { return nil }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier else { return nil }
+        _ = AXUIElementSetMessagingTimeout(element, 0.25)
+        guard let currentValue = value(of: element),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
+        return TargetSnapshot(bundleID: bundleID, element: element, value: currentValue,
+                              selectedText: nil, selectedRange: nil)
     }
 
     static func exactReplacementRange(inserted: String, value: String, originalRange: CFRange, currentRange: CFRange) -> CFRange? {
