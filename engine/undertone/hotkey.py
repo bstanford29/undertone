@@ -24,6 +24,17 @@ HOLD_KEY_MAP = {
 }
 
 
+def describe_recovery(stats: dict[str, int] | None) -> str | None:
+    """Short history note for segment retries; None when whisper needed none."""
+    if not stats or not (stats.get("retried") or stats.get("dropped")):
+        return None
+    return "retried={retried} recovered={recovered} dropped={dropped}".format(
+        retried=stats.get("retried", 0),
+        recovered=stats.get("recovered", 0),
+        dropped=stats.get("dropped", 0),
+    )
+
+
 def run_dictation_cycle(
     audio,
     transcriber: Transcriber,
@@ -41,7 +52,13 @@ def run_dictation_cycle(
 
     t0 = time.perf_counter()
     vocab = vocab_prompt(dictionary)
-    raw_text = raw_text_override if raw_text_override is not None else transcriber.transcribe(audio, vocab=vocab)
+    stt_recovery = None
+    if raw_text_override is not None:
+        raw_text = raw_text_override
+    else:
+        detailed = transcriber.transcribe_detailed(audio, vocab=vocab)
+        raw_text = detailed["text"]
+        stt_recovery = describe_recovery(detailed.get("segments"))
     stt_ms = stt_ms_override + (0.0 if raw_text_override is not None else (time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
@@ -81,6 +98,7 @@ def run_dictation_cycle(
         guard_fired=result["guard_fired"],
         model=result["model"],
         audio_path=audio_path,
+        stt_recovery=stt_recovery,
     )
 
     return {
@@ -94,6 +112,7 @@ def run_dictation_cycle(
         "guard_fired": result["guard_fired"],
         "model": result["model"],
         "audio_path": audio_path,
+        "stt_recovery": stt_recovery,
     }
 
 

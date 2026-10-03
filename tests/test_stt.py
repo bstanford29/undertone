@@ -164,5 +164,153 @@ class VocabEchoTests(unittest.TestCase):
         self.assertFalse(result["no_speech"])
 
 
+class ScriptedWhisper:
+    """Fake mlx_whisper whose answer depends on the slice length and temperature."""
+
+    def __init__(self, script):
+        # script(audio_seconds, temperature) -> result dict
+        self.script = script
+        self.calls: list[tuple[float, float, str | None]] = []
+
+    def transcribe(self, audio, *, temperature=0.0, initial_prompt=None, **_kwargs):
+        seconds = round(len(audio) / SAMPLE_RATE, 3)
+        self.calls.append((seconds, temperature, initial_prompt))
+        return self.script(seconds, temperature)
+
+
+def _segment(text, start, end, *, ratio=1.0, no_speech=0.1):
+    return {"text": text, "start": start, "end": end, "compression_ratio": ratio, "no_speech_prob": no_speech}
+
+
+def _loud(seconds, seed=10):
+    rng = np.random.default_rng(seed)
+    return (rng.standard_normal(int(SAMPLE_RATE * seconds)) * 0.2).astype(np.float32)
+
+
+class SegmentRetryTests(unittest.TestCase):
+    def test_compression_failure_is_recovered_at_higher_temperature(self):
+        def script(seconds, temperature):
+            if seconds == 6.0:
+                return {"text": "", "segments": [
+                    _segment("first part", 0.0, 3.0),
+                    _segment("loop loop loop loop loop loop loop loop loop", 3.0, 6.0, ratio=3.1),
+                ]}
+            if seconds == 3.0 and temperature == 0.2:
+                return {"text": "second part", "segments": [_segment("second part", 0.0, 3.0)]}
+            raise AssertionError(f"unexpected call {seconds}s at {temperature}")
+
+        fake = ScriptedWhisper(script)
+        transcriber = _transcriber()
+        transcriber._warm = True
+        with patch.dict(sys.modules, {"mlx_whisper": fake}):
+            result = transcriber.transcribe_detailed(_loud(6.0), vocab=VOCAB)
+        self.assertEqual(result["text"], "first part second part")
+        self.assertFalse(result["no_speech"])
+        self.assertEqual(result["segments"], {"total": 2, "retried": 1, "recovered": 1, "dropped": 0})
+        self.assertEqual([(s, t) for s, t, _ in fake.calls], [(6.0, 0.0), (3.0, 0.2)])
+        # The retry keeps the same prompt so proper nouns still get their hint.
+        self.assertEqual(fake.calls[1][2], VOCAB)
+
+    def test_second_temperature_then_halves_are_tried_before_dropping(self):
+        def script(seconds, temperature):
+            if seconds == 6.0:
+                return {"text": "", "segments": [
+                    _segment("intro", 0.0, 2.0),
+                    _segment("the the the the the the the the the the", 2.0, 6.0, ratio=4.0),
+                ]}
+            if seconds == 4.0:
+                # Both hotter retries still loop on the whole slice.
+                return {"text": "", "segments": [_segment("the the the the the the the the", 0.0, 4.0, ratio=3.5)]}
+            if seconds == 2.0:
+                return {"text": "", "segments": [_segment("left half words" if temperature == 0.2 else "x", 0.0, 2.0)]}
+            raise AssertionError(f"unexpected call {seconds}s at {temperature}")
+
+        fake = ScriptedWhisper(script)
+        transcriber = _transcriber()
+        transcriber._warm = True
+        with patch.dict(sys.modules, {"mlx_whisper": fake}):
+            result = transcriber.transcribe_detailed(_loud(6.0, seed=11), vocab="")
+        self.assertEqual(result["text"], "intro left half words left half words")
+        self.assertEqual(result["segments"], {"total": 2, "retried": 1, "recovered": 1, "dropped": 0})
+        temps = [(s, t) for s, t, _ in fake.calls]
+        self.assertEqual(temps, [(6.0, 0.0), (4.0, 0.2), (4.0, 0.4), (2.0, 0.2), (2.0, 0.2)])
+
+    def test_segment_is_dropped_only_when_every_retry_still_loops(self):
+        def script(seconds, temperature):
+            if seconds == 5.0:
+                return {"text": "", "segments": [
+                    _segment("real words here", 0.0, 2.0),
+                    _segment("ha ha ha ha ha ha ha ha ha ha", 2.0, 5.0, ratio=5.0),
+                ]}
+            # Every retry at every size keeps looping.
+            return {"text": "", "segments": [_segment("ha ha ha ha ha ha ha ha ha ha", 0.0, seconds, ratio=5.0)]}
+
+        fake = ScriptedWhisper(script)
+        transcriber = _transcriber()
+        transcriber._warm = True
+        with patch.dict(sys.modules, {"mlx_whisper": fake}):
+            result = transcriber.transcribe_detailed(_loud(5.0, seed=12), vocab="")
+        self.assertEqual(result["text"], "real words here")
+        self.assertEqual(result["segments"]["retried"], 1)
+        self.assertEqual(result["segments"]["recovered"], 0)
+        self.assertEqual(result["segments"]["dropped"], 1)
+        # 3 s slice: two temperatures, then halves of 1.5 s (two temps each),
+        # and the halves are below the 2 s split floor so recursion stops.
+        self.assertEqual(len(fake.calls), 1 + 2 + 2 * 2)
+
+    def test_retry_that_passes_compression_but_repeats_text_is_rejected(self):
+        def script(seconds, temperature):
+            if seconds == 4.0:
+                return {"text": "", "segments": [_segment("bad bad bad bad bad bad bad bad", 0.0, 4.0, ratio=3.0)]}
+            # Whisper reports a fine ratio but the words are still a loop.
+            return {"text": "go go go go go go go go go go", "segments": []}
+
+        fake = ScriptedWhisper(script)
+        transcriber = _transcriber()
+        transcriber._warm = True
+        with patch.dict(sys.modules, {"mlx_whisper": fake}):
+            result = transcriber.transcribe_detailed(_loud(4.0, seed=13), vocab="")
+        self.assertTrue(result["no_speech"])
+        self.assertEqual(result["reason"], "no_speech_segments")
+        self.assertEqual(result["segments"]["dropped"], 1)
+
+    def test_no_speech_segments_are_not_retried(self):
+        fake = ScriptedWhisper(lambda seconds, temperature: {"text": "", "segments": [
+            _segment("kept", 0.0, 1.5),
+            _segment("noise", 1.5, 3.0, no_speech=0.95),
+        ]})
+        transcriber = _transcriber()
+        transcriber._warm = True
+        with patch.dict(sys.modules, {"mlx_whisper": fake}):
+            result = transcriber.transcribe_detailed(_loud(3.0, seed=14), vocab="")
+        self.assertEqual(result["text"], "kept")
+        self.assertEqual(result["segments"], {"total": 2, "retried": 0, "recovered": 0, "dropped": 1})
+        self.assertEqual(len(fake.calls), 1)
+
+
+class InitialPromptTests(unittest.TestCase):
+    def test_context_goes_before_vocab_and_is_not_part_of_echo_check(self):
+        from undertone.stt import build_initial_prompt
+
+        self.assertEqual(build_initial_prompt("Ollama, Qwen", "we said this"), "we said this Ollama, Qwen")
+        self.assertIsNone(build_initial_prompt("", ""))
+        long_context = " ".join(f"w{i}" for i in range(200))
+        prompt = build_initial_prompt("Ollama", long_context)
+        self.assertTrue(prompt.endswith(" Ollama"))
+        self.assertLess(len(prompt), 320)
+
+        # Speech that repeats common words from the context must not be
+        # mistaken for the vocabulary echo.
+        fake = ScriptedWhisper(lambda seconds, temperature: {"text": "the report the report", "segments": [
+            _segment("the report the report", 0.0, 3.0),
+        ]})
+        transcriber = _transcriber()
+        transcriber._warm = True
+        with patch.dict(sys.modules, {"mlx_whisper": fake}):
+            result = transcriber.transcribe_detailed(_loud(3.0, seed=15), vocab="Qwen", context="send the report")
+        self.assertEqual(result["text"], "the report the report")
+        self.assertEqual(fake.calls[0][2], "send the report Qwen")
+
+
 if __name__ == "__main__":
     unittest.main()

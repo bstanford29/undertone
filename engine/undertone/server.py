@@ -358,6 +358,7 @@ class Engine:
                 "model": cfg["stt_model"],
                 "no_speech": detailed["no_speech"],
                 "reason": detailed["reason"],
+                "segments": detailed.get("segments", {}),
             }
         if op in {"clean", "clean.stream"}:
             from .cleanup import clean_result, stream_clean_result
