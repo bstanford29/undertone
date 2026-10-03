@@ -600,3 +600,20 @@ class ContextRegressionTests(unittest.TestCase):
         self.assertIn("untrusted read-only reference", model.call_args.args[0])
         raw = cleanup.clean_result(sentence, "none", {"terms":[], "replacements":{}}, dict(DEFAULTS), context=context)
         self.assertEqual(raw["clean_text"], sentence)
+
+
+class PromptlessSttHintTests(unittest.TestCase):
+    DICTIONARY = {"terms": ["Ollama", "Qwen"], "replacements": {}}
+
+    def test_parakeet_adds_the_misheard_name_hint(self):
+        prompt = cleanup._prompt_for(self.DICTIONARY, {"stt_backend": "parakeet"}, None)
+        self.assertIn(cleanup.PROMPTLESS_STT_HINT, prompt)
+
+    def test_whisper_prompt_is_unchanged(self):
+        prompt = cleanup._prompt_for(self.DICTIONARY, {"stt_backend": "whisper"}, None)
+        self.assertNotIn(cleanup.PROMPTLESS_STT_HINT, prompt)
+        self.assertTrue(prompt.endswith("Ollama, Qwen."))
+
+    def test_no_hint_without_terms(self):
+        prompt = cleanup._prompt_for({"terms": []}, {"stt_backend": "parakeet"}, None)
+        self.assertNotIn(cleanup.PROMPTLESS_STT_HINT, prompt)

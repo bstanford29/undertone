@@ -14,10 +14,11 @@ dependencies = [
   "pyobjc-framework-ApplicationServices>=10.0",
   "pyobjc-framework-Cocoa>=10.0",
   "pyobjc-framework-Quartz>=10.0",
+  "parakeet-mlx>=0.5; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 
 [project.optional-dependencies]
-# Alternative STT backend (stt_backend: parakeet). Apple Silicon only.
+# Kept so `.[parakeet]` installs keep working; the base install now includes it on Apple Silicon.
 parakeet = ["parakeet-mlx>=0.5"]
 
 [project.scripts]

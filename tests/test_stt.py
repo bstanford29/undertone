@@ -342,19 +342,37 @@ class FakeParakeetModules:
 
 
 class BackendSwitchTests(unittest.TestCase):
-    def test_default_backend_is_whisper(self):
+    def test_default_backend_is_parakeet_when_installed(self):
+        from undertone.stt import ParakeetTranscriber, make_transcriber
+
+        with patch("undertone.stt._resolve_model", return_value="/cached/parakeet"), \
+                patch("undertone.stt.importlib.util.find_spec", return_value=object()):
+            transcriber = make_transcriber({})
+        self.assertIsInstance(transcriber, ParakeetTranscriber)
+        self.assertEqual(transcriber.backend, "parakeet")
+
+    def test_default_falls_back_to_whisper_without_parakeet(self):
         from undertone.stt import make_transcriber
 
-        with patch("undertone.stt._resolve_model", return_value="/cached/whisper"):
+        with patch("undertone.stt._resolve_model", return_value="/cached/whisper"), \
+                patch("undertone.stt.importlib.util.find_spec", return_value=None):
             transcriber = make_transcriber({"stt_model": "org/whisper"})
         self.assertIsInstance(transcriber, Transcriber)
         self.assertEqual(transcriber.backend, "whisper")
+
+    def test_whisper_backend_when_asked(self):
+        from undertone.stt import make_transcriber
+
+        with patch("undertone.stt._resolve_model", return_value="/cached/whisper"):
+            transcriber = make_transcriber({"stt_backend": "whisper", "stt_model": "org/whisper"})
+        self.assertIsInstance(transcriber, Transcriber)
 
     def test_parakeet_backend_resolves_cached_model_and_transcribes(self):
         from undertone.stt import ParakeetTranscriber, make_transcriber
 
         fake = FakeParakeetModules()
-        with patch("undertone.stt._resolve_model", return_value="/cached/parakeet") as resolve:
+        with patch("undertone.stt._resolve_model", return_value="/cached/parakeet") as resolve, \
+                patch("undertone.stt.importlib.util.find_spec", return_value=object()):
             transcriber = make_transcriber({"stt_backend": "parakeet", "parakeet_model": "org/parakeet"})
         self.assertIsInstance(transcriber, ParakeetTranscriber)
         resolve.assert_called_once_with("org/parakeet", local_files_only=True)

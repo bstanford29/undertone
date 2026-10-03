@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import re
 from pathlib import Path
 from typing import Any
@@ -110,12 +111,16 @@ def _speech_gate(
 
 
 def make_transcriber(config: dict[str, Any] | None = None, *, local_files_only: bool = True):
-    """Build the configured STT backend. Whisper unless stt_backend says parakeet."""
+    """Build the configured STT backend: parakeet by default, whisper when asked
+    or when parakeet-mlx is not installed."""
     config = config or {}
-    backend = config.get("stt_backend", "whisper") or "whisper"
+    backend = config.get("stt_backend", "parakeet") or "parakeet"
     if backend == "whisper":
         return Transcriber(model=config.get("stt_model"), local_files_only=local_files_only)
     if backend == "parakeet":
+        if importlib.util.find_spec("parakeet_mlx") is None:
+            # Not Apple Silicon or the extra is missing: keep dictating on whisper.
+            return Transcriber(model=config.get("stt_model"), local_files_only=local_files_only)
         return ParakeetTranscriber(model=config.get("parakeet_model"), local_files_only=local_files_only)
     raise ValueError(f"Unknown stt_backend: {backend}")
 
@@ -311,7 +316,7 @@ class ParakeetTranscriber:
 
     Same interface and silence gates as ``Transcriber``. Parakeet has no
     initial_prompt, so ``vocab`` and ``context`` are accepted and ignored;
-    proper nouns rely on the dictionary replacements applied after cleanup.
+    proper nouns rely on the cleanup prompt hint and dictionary replacements.
     The optional ``parakeet`` extra installs the package.
     """
 
