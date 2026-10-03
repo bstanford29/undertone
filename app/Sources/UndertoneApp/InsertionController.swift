@@ -277,6 +277,7 @@ final class InsertionController {
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier else { return nil }
         _ = AXUIElementSetMessagingTimeout(element, 0.25)
+        defer { _ = AXUIElementSetMessagingTimeout(element, 0) }
         var subrole: CFTypeRef?
         let subroleResult = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
         guard subroleResult == .success || subroleResult == .attributeUnsupported || subroleResult == .noValue,

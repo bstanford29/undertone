@@ -61,6 +61,7 @@ extension InsertionController: CorrectionFieldReading {
     @MainActor func correctionReferenceIsRetired(_ target: TargetSnapshot) -> Bool {
         guard let element = target.element else { return false }
         _ = AXUIElementSetMessagingTimeout(element, 0.25)
+        defer { _ = AXUIElementSetMessagingTimeout(element, 0) }
         var role: CFTypeRef?
         return AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &role) == .invalidUIElement
     }
@@ -72,6 +73,7 @@ extension InsertionController: CorrectionFieldReading {
 
     private static func readCorrectionAnchor(_ element: AXUIElement) -> CorrectionFieldAnchor? {
         _ = AXUIElementSetMessagingTimeout(element, 0.25)
+        defer { _ = AXUIElementSetMessagingTimeout(element, 0) }
         func attribute(_ name: CFString, from source: AXUIElement) -> CFTypeRef? {
             var value: CFTypeRef?
             guard AXUIElementCopyAttributeValue(source, name, &value) == .success else { return nil }
@@ -89,6 +91,7 @@ extension InsertionController: CorrectionFieldReading {
             for _ in 0..<8 {
                 guard let current = ancestor else { break }
                 _ = AXUIElementSetMessagingTimeout(current, 0.25)
+                defer { _ = AXUIElementSetMessagingTimeout(current, 0) }
                 if attribute(kAXRoleAttribute as CFString, from: current) as? String == kAXWindowRole {
                     window = current
                     break
@@ -113,6 +116,7 @@ extension InsertionController: CorrectionFieldReading {
         }
         guard identifier?.isEmpty == false || frame != nil else { return nil }
         _ = AXUIElementSetMessagingTimeout(window, 0.25)
+        defer { _ = AXUIElementSetMessagingTimeout(window, 0) }
         return CorrectionFieldAnchor(window: window, role: role, identifier: identifier, frame: frame,
                                      placeholder: attribute(kAXPlaceholderValueAttribute as CFString, from: element) as? String,
                                      description: attribute(kAXDescriptionAttribute as CFString, from: element) as? String,
