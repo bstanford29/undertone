@@ -275,12 +275,11 @@ struct DictationSettingsTab: View {
         return microphone ?? "No input device"
     }
 
-    static let shortcuts: [(String, String)] = [
-        ("Dictate", "hold fn"), ("Lock dictation", "fn fn"),
-        ("Meeting notes", "⌥M"), ("Quick note", "⌥S"),
-        ("Insert last again", "⌥⇧V"), ("Undo AI edit", "⌥⇧Z"),
-        ("Copy last transcript", "⌥⇧C"), ("History", "⌥⇧H"),
-    ]
+    /// The two fn gestures, then every global chord the tap claims, read from
+    /// `HotkeyMonitor.chordRoster` so this list cannot drift from the tap.
+    static let shortcuts: [(String, String)] =
+        [("Dictate", "hold fn"), ("Lock dictation", "fn fn")]
+        + HotkeyMonitor.chordRoster.map { ($0.action, $0.chord) }
 
     @ViewBuilder
     private func shortcutCell(_ item: (String, String)) -> some View {

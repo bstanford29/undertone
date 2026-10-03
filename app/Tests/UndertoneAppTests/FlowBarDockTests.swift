@@ -974,6 +974,12 @@ final class OptionShortcutTests: XCTestCase {
         XCTAssertTrue(chords.contains("⌥M"))
         XCTAssertTrue(chords.contains("⌥S"))
     }
+
+    func testSettingsListsOnlyChordsTheTapHandles() {
+        let chords = DictationSettingsTab.shortcuts.map(\.1).filter { $0.hasPrefix("⌥") }
+        XCTAssertEqual(chords, HotkeyMonitor.chordRoster.map(\.chord))
+        XCTAssertFalse(chords.contains("⌥⇧H"))
+    }
 }
 
 // MARK: - The click toggle
