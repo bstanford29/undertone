@@ -16,6 +16,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var batteryMenuItem: NSMenuItem!
     private var cleanupMenuItem: NSMenuItem!
     private var meetingMenuItem: NSMenuItem!
+    private var showPillMenuItem: NSMenuItem!
     private var subscriptions = Set<AnyCancellable>()
 
     override init() {
@@ -133,6 +134,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateMeetingMenu(state)
         }.store(in: &subscriptions)
         updateMeetingMenu(model.meetings.state)
+        model.$pillHiddenUntil.receive(on: RunLoop.main).sink { [weak self] until in
+            self?.showPillMenuItem?.isHidden = until == nil
+        }.store(in: &subscriptions)
         model.start()
         showInitialWindow()
     }
@@ -202,6 +206,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(meeting)
         menu.addItem(item: "Meetings…", action: #selector(openMeetings))
         menu.addItem(item: "Setup…", action: #selector(openSetup))
+        let showPill = NSMenuItem(title: "Show the pill again", action: #selector(showPill), keyEquivalent: "")
+        showPill.target = self
+        showPill.isHidden = true
+        showPillMenuItem = showPill
+        menu.addItem(showPill)
         menu.addItem(item: "Settings…", action: #selector(openSettings), key: ",", modifiers: [.command])
         menu.addItem(.separator())
         menu.addItem(item: "Quit Undertone", action: #selector(NSApplication.terminate(_:)), key: "q", modifiers: [.command])
@@ -211,7 +220,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func insertLast() { model.insertLast() }
     @objc private func insertRaw() { model.insertLast(raw: true) }
     @objc private func copyLast() { model.copyLast() }
-    @objc func openSettings() { model.showApp(.settings) }
+    @objc func openSettings() { model.openSettings() }
+    @objc private func showPill() { model.showPillNow() }
     @objc private func openHome() { model.showApp(.home) }
     @objc private func openHistory() { model.showApp(.history) }
     @objc private func openDictionary() { model.showApp(.dictionary) }

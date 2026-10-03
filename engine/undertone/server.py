@@ -116,6 +116,8 @@ class Engine:
         self._meetings: meeting.MeetingService | None = None
         self.whisper_status = "loading"
         self.cleanup_status = "loading"
+        # The High model loads on first use, so it starts cold, not loading.
+        self.high_status = "cold"
         self.error = None
 
     @property
@@ -199,8 +201,11 @@ class Engine:
 
     def dispatch(self, r: dict[str, Any], emit: Any = None) -> dict[str, Any]:
         if r.get("op") == "status":
+            cfg = settings.load_config()
             return {"whisper": self.whisper_status, "cleanup": self.cleanup_status,
-                    "model": settings.load_config()["cleanup_model"], "error_message": self.error}
+                    "model": cfg["cleanup_model"], "error_message": self.error,
+                    "high": self.high_status, "high_model": cfg.get("cleanup_high_model"),
+                    "keep_alive": str(cfg.get("ollama_keep_alive", "60m"))}
         if isinstance(r.get("op"), str) and (r["op"].startswith("learning.") or r["op"].startswith("learned.")):
             # These operations use their own local lock and do not need either
             # model, so recovery remains available during model warm-up.
@@ -275,8 +280,10 @@ class Engine:
             return {"config": settings.load_config()}
         if op == "config.update":
             changes = r.get("config")
-            booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert", "learn_from_corrections"}
-            allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset"}
+            booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert",
+                        "double_tap_lock", "learn_from_corrections"}
+            allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset",
+                                  "app_prompt_variants"}
             if not isinstance(changes, dict) or set(changes) - allowed:
                 raise ValueError("Unsupported settings")
             for key, choices in (
@@ -288,6 +295,10 @@ class Engine:
                     raise ValueError("Invalid setting")
             if any(not isinstance(changes[key], bool) for key in booleans & changes.keys()):
                 raise ValueError("Boolean setting required")
+            if "app_prompt_variants" in changes and not settings.valid_app_prompt_variants(
+                changes["app_prompt_variants"]
+            ):
+                raise ValueError("app_prompt_variants must map app ids to style text")
             if "pill_offset" in changes:
                 offset = changes["pill_offset"]
                 if isinstance(offset, bool) or not isinstance(offset, (int, float)) or not (0.0 <= float(offset) <= 1.0):
@@ -375,7 +386,10 @@ class Engine:
                 )
             data = result if isinstance(result, dict) else vars(result)
             if data.get("model"):
-                self.cleanup_status = "warm"
+                if level == "high" and data.get("model") == cfg.get("cleanup_high_model"):
+                    self.high_status = "warm"
+                else:
+                    self.cleanup_status = "warm"
                 if self.whisper_status == "warm":
                     self.error = None
             response = {

@@ -86,31 +86,23 @@ final class PillPlacementTests: XCTestCase {
         XCTAssertEqual(vertical.minX, 0, accuracy: 0.0001)
     }
 
-    func testDockPanelSizeMatchesEdgeOrientation() {
-        // The dock panel is placed flush with the edge and draws its own 6 and
-        // 10 point insets, so it never appears sideways when it opens.
-        let open = FlowBarViewState.stack(hovered: nil, labelWidth: 0)
+    func testTheHoverCapsulePanelRunsAlongTheBottomEdge() {
+        // The panel is placed flush with the edge and draws its own 10 point
+        // inset, so the capsule sits 10 up from the edge.
+        let open = FlowBarViewState.hover(nil)
         let bottom = PillPlacement.frame(size: FlowBarDock.panelSize(for: open, edge: .bottom),
                                          edge: .bottom, offset: 0.5, inset: 0, in: screen)
-        XCTAssertEqual(bottom.width, 184, "160 of controls plus shadow room, running along the edge")
-        XCTAssertEqual(bottom.height, 62, "10 inset, 40 of control, 12 of shadow room")
-
-        let right = PillPlacement.frame(size: FlowBarDock.panelSize(for: open, edge: .right),
-                                        edge: .right, offset: 0.5, inset: 0, in: screen)
-        XCTAssertEqual(right.height, 184, "The same 184 now runs up the side")
-        XCTAssertEqual(right.width, 62)
-        XCTAssertEqual(right.maxX, screen.maxX, accuracy: 0.0001)
+        XCTAssertEqual(bottom.width, 148, "124 of capsule plus 12 of shadow room each side")
+        XCTAssertEqual(bottom.height, 58, "10 inset, 36 of capsule, 12 of shadow room")
     }
 
-    func testTheDictationCapsulePanelStandsOnEndOnTheSideDocks() {
-        let listening = FlowBarViewState.level(locked: false, commandWidth: nil)
-        let flat = FlowBarDock.panelSize(for: listening, edge: .bottom)
-        XCTAssertEqual(flat.width, 144, "120 of capsule plus shadow room")
-        XCTAssertEqual(flat.height, 62, "10 inset, 40 of capsule, 12 of shadow room")
-
-        let side = FlowBarDock.panelSize(for: listening, edge: .right)
-        XCTAssertEqual(side.width, 62)
-        XCTAssertEqual(side.height, 144)
+    func testOnASideDockTheCapsuleStandsOnEnd() {
+        let open = FlowBarViewState.hover(nil)
+        let right = PillPlacement.frame(size: FlowBarDock.panelSize(for: open, edge: .right),
+                                        edge: .right, offset: 0.5, inset: 0, in: screen)
+        XCTAssertEqual(right.width, 58, "10 inset, 36 of capsule, 12 of shadow room")
+        XCTAssertEqual(right.height, 148, "124 of capsule plus shadow room above and below")
+        XCTAssertEqual(right.maxX, screen.maxX, accuracy: 0.0001)
     }
 }
 
@@ -153,10 +145,10 @@ final class PillDropZoneTests: XCTestCase {
         let standing = PillPlacement.dropZones(pillSize: nub, inset: FlowBarMetrics.nubInset,
                                                in: screen, matchEdgeOrientation: true)
         let byEdge = Dictionary(uniqueKeysWithValues: standing.map { ($0.edge, $0.rect.size) })
-        XCTAssertEqual(byEdge[.bottom], CGSize(width: 48, height: 8))
-        XCTAssertEqual(byEdge[.top], CGSize(width: 48, height: 8))
-        XCTAssertEqual(byEdge[.left], CGSize(width: 8, height: 48))
-        XCTAssertEqual(byEdge[.right], CGSize(width: 8, height: 48))
+        XCTAssertEqual(byEdge[.bottom], CGSize(width: 44, height: 6))
+        XCTAssertEqual(byEdge[.top], CGSize(width: 44, height: 6))
+        XCTAssertEqual(byEdge[.left], CGSize(width: 6, height: 44))
+        XCTAssertEqual(byEdge[.right], CGSize(width: 6, height: 44))
         XCTAssertEqual(standing.first { $0.edge == .bottom }?.rect.minY ?? -1, 6, accuracy: 0.0001)
     }
 

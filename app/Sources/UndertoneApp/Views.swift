@@ -32,12 +32,15 @@ enum PreviewDockState: String, CaseIterable, Identifiable {
     case hover
     case resume
     case listening
+    case locked
+    case command
     case working
     case holdkey
     case inserted
     case guarded
     case error
     case saved
+    case learned
     case recording
     case meetingEnded
     case meeting
@@ -50,12 +53,15 @@ enum PreviewDockState: String, CaseIterable, Identifiable {
         case .hover: return "Hover"
         case .resume: return "Resume"
         case .listening: return "Dictating"
+        case .locked: return "Locked"
+        case .command: return "Command"
         case .working: return "Working"
         case .holdkey: return "Release fn"
         case .inserted: return "Inserted"
         case .guarded: return "Kept raw"
         case .error: return "Error"
         case .saved: return "Saved"
+        case .learned: return "Learned"
         case .recording: return "Recording"
         case .meetingEnded: return "Meeting ended"
         case .meeting: return "Meeting detected"
@@ -96,7 +102,7 @@ struct FlowBarPreviewStage: View {
 
     var body: some View {
         let state = FlowBarState.viewState(model: model, hovered: chrome.hovered, open: chrome.open)
-        let size = FlowBarDock.panelSize(for: state, edge: model.pillEdge)
+        let size = FlowBarDock.panelSize(for: state, edge: model.pillEdge, newNote: model.newNoteAction)
         ZStack(alignment: alignment) {
             wall
             FlowBarDockView(chrome: chrome)
@@ -209,7 +215,7 @@ struct PreviewView: View {
                         HStack {
                             Button("Open History window") { model.openWindow("History Preview") { HistoryView() } }
                             Button("Open Meetings window") { model.openWindow("Meetings Preview") { MeetingView() } }
-                            Button("Open Settings window") { model.openWindow("Settings Preview") { SettingsView() } }
+                            Button("Open Settings window") { model.openWindow("Settings Preview") { SettingsWindowView() } }
                         }
                         .task(id: speechDemo) {
                             guard speechDemo else { return }
@@ -234,7 +240,7 @@ struct PreviewView: View {
                         MeetingRecordingPanelView()
                     }
                 case .settings:
-                    SettingsView()
+                    SettingsWindowView(tab: SettingsTab.initial())
                 case .setup:
                     SetupView()
                 case .app:
@@ -272,6 +278,7 @@ struct PreviewView: View {
         speechDemo = false
         model.commandMode = false
         model.workingNote = nil
+        model.setPreviewFlags(locked: false, errorRetry: false)
         dockChrome.open = false
         dockChrome.hovered = nil
         switch state {
@@ -290,6 +297,12 @@ struct PreviewView: View {
             dockChrome.hovered = .newNote
         case .listening:
             model.pillState = .listening(level: 0.7)
+        case .locked:
+            model.setPreviewFlags(locked: true, errorRetry: false)
+            model.pillState = .listening(level: 0.5)
+        case .command:
+            model.commandMode = true
+            model.pillState = .listening(level: 0.6)
         case .working:
             model.pillState = .working
         case .holdkey:
@@ -300,9 +313,12 @@ struct PreviewView: View {
         case .guarded:
             model.pillState = .guarded(totalMS: 957)
         case .error:
-            model.pillState = .error("Insertion failed: app changed")
+            model.setPreviewFlags(locked: false, errorRetry: true)
+            model.pillState = .error(AppModel.pillFailureMessage(.appChanged, appName: "Messages"))
         case .saved:
             model.pillState = .notice("Saved")
+        case .learned:
+            model.pillState = .notice(AppModel.learningNotice(for: "Velora"))
         case .recording:
             model.pillState = .recording(elapsed: PreviewFixtures.recordingElapsed)
         case .meetingEnded:
@@ -318,155 +334,6 @@ struct PreviewView: View {
         guard let index = arguments.firstIndex(of: "--platform"),
               arguments.indices.contains(index + 1) else { return PreviewFixtures.detectedMeeting }
         return PreviewFixtures.detectedMeeting(named: arguments[index + 1].lowercased())
-    }
-}
-
-struct SettingsView: View {
-    @EnvironmentObject private var model: AppModel
-    @State private var level = "medium"
-    @State private var vaultPath = ""
-    @State private var errorMessage: String?
-
-    var body: some View {
-        Form {
-            Section("Permissions") {
-                HStack {
-                    Text("Check microphone, keyboard, and screen capture access.")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Open Permissions") { model.appPage = .permissions }
-                }
-            }
-            Section("General") {
-                Picker("Cleanup", selection: $level) {
-                    Text("None").tag("none")
-                    Text("Light").tag("light")
-                    Text("Medium").tag("medium")
-                    Text("High").tag("high")
-                }
-                Toggle("Tick on start and insert", isOn: $model.soundsEnabled)
-                    .onChange(of: model.soundsEnabled) { _, value in
-                        guard !model.previewMode else { return }
-                        model.updateConfig("sounds", .bool(value))
-                    }
-                Toggle("Type text as it is cleaned", isOn: $model.streamInsert)
-                    .onChange(of: model.streamInsert) { _, value in
-                        guard !model.previewMode else { return }
-                        model.updateConfig("stream_insert", .bool(value))
-                    }
-                Toggle("Whisper mode", isOn: $model.whisperMode)
-                    .onChange(of: model.whisperMode) { _, value in
-                        guard !model.previewMode else { return }
-                        model.updateConfig("whisper_mode", .bool(value))
-                    }
-                Toggle("Learn from my corrections", isOn: $model.learnFromCorrections)
-                    .onChange(of: model.learnFromCorrections) { _, value in
-                        guard !model.previewMode else { return }
-                        model.updateConfig(CorrectionLearningSetting.key, .bool(value))
-                    }
-                LabeledContent("Hold key", value: "fn / F13")
-            }
-            Section("Models") {
-                LabeledContent("Speech", value: "whisper-large-v3-turbo")
-                LabeledContent("Cleanup", value: "qwen3.5 · fast")
-                Text("High uses gemma4:31b").foregroundStyle(.secondary)
-            }
-            Section("Tone by app") {
-                LabeledContent("Codex, Claude, Ghostty", value: "Neutral")
-                LabeledContent("Messages", value: "Casual")
-                LabeledContent("Mail", value: "Formal")
-            }
-            Section("Pill") {
-                Picker("Edge", selection: $model.pillEdge) {
-                    Text("Bottom").tag(PillEdge.bottom)
-                    Text("Top").tag(PillEdge.top)
-                    Text("Left").tag(PillEdge.left)
-                    Text("Right").tag(PillEdge.right)
-                }
-                .onChange(of: model.pillEdge) { _, value in
-                    guard !model.previewMode else { return }
-                    model.setPillDock(edge: value, offset: model.pillOffset)
-                }
-                Toggle("Keep pill on screen when idle", isOn: $model.pillPersistent)
-                    .onChange(of: model.pillPersistent) { _, value in
-                        guard !model.previewMode else { return }
-                        model.updateConfig("pill_persistent", .bool(value))
-                    }
-                Toggle("Detect calls automatically", isOn: $model.detectCallsEnabled)
-                    .onChange(of: model.detectCallsEnabled) { _, value in
-                        model.setDetectCallsEnabled(value)
-                    }
-                Text("When a call app takes the microphone, the dock offers to start meeting notes. Turn this off and it stays quiet.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Text("Opt+M meeting notes · Opt+S quick note")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Reset position") { model.resetPillPosition() }
-            }
-            Section("Meeting notes") {
-                HStack {
-                    Text(vaultPath.isEmpty ? "No Obsidian vault selected" : vaultPath)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(vaultPath.isEmpty ? .secondary : .primary)
-                    Spacer()
-                    Button("Choose vault…") { chooseVault() }
-                        .disabled(model.previewMode)
-                }
-                Text("Choose a vault explicitly before exporting meeting summaries. Undertone never guesses this folder.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            if let message = model.configError ?? errorMessage {
-                Text(message).foregroundStyle(.red)
-            }
-        }
-        .formStyle(.grouped)
-        .padding()
-        .onAppear {
-            if model.previewMode {
-                if case .string(let value) = PreviewFixtures.config["cleanup_level"] { level = value }
-                if case .bool(let value) = PreviewFixtures.config["sounds"] { model.soundsEnabled = value }
-                if case .bool(let value) = PreviewFixtures.config["stream_insert"] { model.streamInsert = value }
-                if case .bool(let value) = PreviewFixtures.config["whisper_mode"] { model.whisperMode = value }
-                model.learnFromCorrections = CorrectionLearningSetting.value(from: PreviewFixtures.config)
-                if case .string(let value) = PreviewFixtures.config["obsidian_vault_path"] { vaultPath = value }
-                return
-            }
-            Task { await loadConfig() }
-        }
-        .onChange(of: level) { _, value in
-            model.cleanupLevel = value
-            guard !model.previewMode else { return }
-            model.updateConfig("cleanup_level", .string(value))
-        }
-    }
-
-    private func loadConfig() async {
-        do {
-            let response = try await model.engine.request(op: "config.get")
-            guard let config = response.config else { return }
-            if case .string(let value) = config["cleanup_level"] { level = value; model.cleanupLevel = value }
-            if case .bool(let value) = config["sounds"] { model.soundsEnabled = value }
-            if case .bool(let value) = config["stream_insert"] { model.streamInsert = value }
-            if case .bool(let value) = config["whisper_mode"] { model.whisperMode = value }
-            model.learnFromCorrections = CorrectionLearningSetting.value(from: config)
-            if case .string(let value) = config["obsidian_vault_path"] { vaultPath = value }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-    }
-
-    private func chooseVault() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = false
-        panel.canChooseDirectories = true
-        panel.allowsMultipleSelection = false
-        panel.prompt = "Choose Vault"
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        vaultPath = url.path
-        model.updateConfig("obsidian_vault_path", .string(url.path))
     }
 }
 
@@ -569,6 +436,10 @@ struct HistoryView: View {
             }
         }
         .task { await load() }
+        .onChange(of: model.historyFocusRowID) { _, focus in
+            guard focus != nil else { return }
+            Task { await load() }
+        }
         .onChange(of: query) { _, _ in Task { await load() } }
         .onChange(of: appFilter) { _, _ in Task { await load() } }
         .onChange(of: dateFilter) { _, _ in Task { await load() } }
@@ -584,6 +455,15 @@ struct HistoryView: View {
             rows = PreviewFixtures.rows
             if selectedID == nil { selectedID = rows.first?.id }
             return
+        }
+        // Why? on a Kept raw ribbon opens History on that row, so clear any
+        // filter that could hide it.
+        if let focus = model.historyFocusRowID {
+            query = ""
+            appFilter = "All apps"
+            dateFilter = .all
+            selectedID = focus
+            model.historyFocusRowID = nil
         }
         var fields: [String: JSONValue] = [
             "limit": .number(100),

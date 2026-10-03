@@ -32,6 +32,7 @@ DEFAULTS: dict[str, Any] = {
     "min_speech_seconds": 0.4,
     "min_speech_rms": 0.004,
     "toggle_mode": False,
+    "double_tap_lock": True,
     "streaming": False,
     "sounds": True,
     "whisper_mode": False,
@@ -44,6 +45,24 @@ DEFAULTS: dict[str, Any] = {
 }
 
 VALID_PILL_EDGES = {"bottom", "top", "left", "right"}
+
+MAX_APP_VARIANTS = 50
+MAX_APP_ID_CHARS = 300
+MAX_VARIANT_CHARS = 2000
+
+
+def valid_app_prompt_variants(value: Any) -> bool:
+    """True when `value` is a bundle id -> style text map the cleaner can use."""
+    if not isinstance(value, dict) or len(value) > MAX_APP_VARIANTS:
+        return False
+    for key, text in value.items():
+        if not isinstance(key, str) or not key.strip() or len(key) > MAX_APP_ID_CHARS:
+            return False
+        if any(ord(char) < 32 or ord(char) == 127 for char in key):
+            return False
+        if not isinstance(text, str) or not text.strip() or len(text) > MAX_VARIANT_CHARS:
+            return False
+    return True
 
 
 def _write_defaults() -> None:
@@ -77,6 +96,9 @@ def load_config() -> dict[str, Any]:
         offset = DEFAULTS["pill_offset"]
     config["pill_offset"] = min(1.0, max(0.0, offset))
     config["pill_persistent"] = bool(config.get("pill_persistent", DEFAULTS["pill_persistent"]))
+    config["double_tap_lock"] = bool(config.get("double_tap_lock", DEFAULTS["double_tap_lock"]))
+    if not valid_app_prompt_variants(config.get("app_prompt_variants")):
+        config["app_prompt_variants"] = dict(DEFAULTS["app_prompt_variants"])
     if not isinstance(config.get("learn_from_corrections"), bool):
         config["learn_from_corrections"] = DEFAULTS["learn_from_corrections"]
 
