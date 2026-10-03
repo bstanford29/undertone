@@ -148,7 +148,15 @@ fails, audio, rows, and the NDJSON transcript remain available for retry.
 {"id":9,"op":"dictionary.replace","phrase":"btw","replacement":"by the way"}
 ```
 
-`dictionary.add` accepts a non-empty term up to 200 characters. `dictionary.remove` accepts a term up to 200 characters. `dictionary.replace` accepts a non-empty phrase up to 1,000 characters and a replacement up to 10,000 characters. Responses contain the current `terms` and `replacements` maps.
+`dictionary.add` accepts a non-empty term up to 200 characters. It journals the
+manual ownership change before writing the local dictionary and finishes any
+interrupted write when the engine restarts or the next manual add is handled.
+If startup recovery cannot access either local store, the engine remains
+available and retains the journal for a later retry. `dictionary.remove`
+accepts a term up to 200 characters and cancels a matching pending add before
+removing it. `dictionary.replace` accepts a non-empty phrase up to 1,000
+characters and a replacement up to 10,000 characters. Responses contain the
+current `terms` and `replacements` maps.
 
 ## History
 
@@ -214,9 +222,52 @@ to 200 characters and 12 words and control characters are rejected.
 previously suppressed produced phrase. A new suggestion contains only `id`,
 `produced`, `replacement`, `row_id`, `app_bundle_id`, `created_at`, and
 `reason`. `learned.list` returns pending suggestions in newest-first order.
-Only `learned.add` writes the replacement term to the personal dictionary;
-ignore and never-ask do not. Every action is persisted locally and is safe to
-retry with the same outcome. No suggestion text is included in errors or logs.
+Within these suggestion actions, only `learned.add` writes the replacement term
+to the personal dictionary. It uses the same local write journal as
+`dictionary.add`. Ignore and never-ask do not write terms. Every action is
+persisted locally and is safe to retry with the same outcome. No suggestion
+text is included in errors or logs.
+
+## Correction learning
+
+Correction learning is enabled only by the persisted `learn_from_corrections`
+setting. The app sends a client-generated opaque `client_token` (1 to 128 ASCII
+letters, numbers, `_`, or `-`) with each `learning.auto_learn` request. The
+token contains no candidate text and makes a repeated request idempotent.
+
+```json
+{"id":30,"op":"learning.auto_learn","produced":"Valora","replacement":"Velora","row_id":1,"app_bundle_id":"com.example.editor","client_token":"velora-token"}
+```
+
+The response is `status:"learned"` with `action_id`, `term`,
+`client_token`, and `action_status:"active"`; `already_known` and `disabled`
+are non-learning outcomes. The server never trusts a request-supplied enabled
+flag. If a response is lost, the client performs this reconciliation lookup:
+
+```json
+{"id":31,"op":"learning.lookup","client_token":"velora-token"}
+```
+
+The lookup never creates a dictionary term. It only finishes or discards the
+journaled action based on whether that term reached the local dictionary.
+
+Lookup returns `status:"learned"` with the same action ID, term, and
+`action_status`, or `status:"not_found"`. An active action can be shown as a
+new Undo notice. `superseded` and `undone` actions do not create a new Undo
+notice. The token is retained locally until lookup definitively finds or does
+not find the action.
+
+Undo is action-scoped and safe to repeat:
+
+```json
+{"id":32,"op":"learning.undo","action_id":12}
+```
+
+Semantic statuses are `removed` (the term was removed), `absent` (it was
+already removed), `preserved` (another active learning action owns the term),
+`superseded` (a later explicit dictionary action owns it), and `undone` (the
+action was already consumed). These operations change only the vocabulary
+term owned by the action; edited destination text is unaffected.
 
 ## Error responses
 

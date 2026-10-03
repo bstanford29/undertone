@@ -201,11 +201,34 @@ final class FlowBarCapsuleTests: XCTestCase {
     private let side = PillEdge.right
     private let flat = PillEdge.bottom
 
+    @MainActor
+    func testPublishedStateResizesTheActualPanelAfterAssignment() async throws {
+        let model = AppModel(previewMode: true)
+        model.pillEdge = .right
+        let controller = PillPanelController(model: model)
+        model.pillState = .working
+        try await Task.sleep(for: .milliseconds(50))
+
+        model.pillState = .notice("Learned Velora · Undo")
+        try await Task.sleep(for: .milliseconds(50))
+
+        let expected = FlowBarDock.panelSize(
+            for: FlowBarState.viewState(model: model, hovered: nil, open: false),
+            edge: .right
+        )
+        XCTAssertEqual(controller.panelFrameForTesting.size, expected)
+    }
+
     func testInsertedDropsTheWordAndKeepsTheReading() {
         let capsule = FlowBarDock.textCapsule(for: .inserted(totalMS: 742), workingNote: nil)
         XCTAssertEqual(capsule?.glyph, .check)
         XCTAssertEqual(capsule?.text, "")
         XCTAssertEqual(capsule?.mono, "742 ms")
+    }
+
+    func testLearningNoticeHasSixSecondsForUndo() {
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Learned Velora · Undo")), .seconds(6))
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Saved")), FlowBarMetrics.transientHold)
     }
 
     func testGuardedAndErrorCarryTheirOwnGlyphs() {

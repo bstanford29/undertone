@@ -1,14 +1,30 @@
 import Foundation
 import AppKit
 import ApplicationServices
+import os
 
 struct InsertionReceipt {
     let rowID: Int
+    // Used for focused-element identity, not for text replacement. Recovery
+    // receipts retain the observed post-insertion snapshot.
     let target: TargetSnapshot
     let produced: String
     let expectedValue: String
     let insertedRange: CFRange
     let appBundleID: String
+
+    /// Some editors expose stale or placeholder AX text before insertion.
+    /// Re-anchor only when the first observed field is exactly our output.
+    /// A substring match or an already edited field is not sufficient proof.
+    func confirmedWholeFieldBaseline(current: String) -> InsertionReceipt? {
+        guard !produced.isEmpty, current == produced, current != expectedValue else { return nil }
+        return InsertionReceipt(
+            rowID: rowID, target: target, produced: produced,
+            expectedValue: current,
+            insertedRange: CFRange(location: 0, length: current.utf16.count),
+            appBundleID: appBundleID
+        )
+    }
 
     static func make(rowID: Int, produced: String, target: TargetSnapshot) -> InsertionReceipt? {
         guard let before = target.value, let selected = target.selectedRange,
@@ -38,15 +54,45 @@ struct LearningCandidate: Equatable, Sendable {
 
 @MainActor
 final class EditWatcher {
-    private let inserter: InsertionController
+    private static let logger = Logger(subsystem: "com.undertone.app", category: "correction")
+
+    static func logUnavailable(rowID: Int, target: TargetSnapshot, stage: String = "before_insertion") {
+        logger.notice("correction: row=\(rowID, privacy: .public) capture=\(stage, privacy: .public) unavailable element=\(target.element != nil, privacy: .public) value=\(target.value != nil, privacy: .public) range=\(target.selectedRange != nil, privacy: .public)")
+    }
+
+    private func log(_ reason: String, rowID: Int) {
+        Self.logger.notice("correction: row=\(rowID, privacy: .public) event=\(reason, privacy: .public)")
+    }
+
+    /// Diagnose the AX boundary without retaining field or transcript text.
+    private func logBoundaryMismatch(receipt: InsertionReceipt, current: String) {
+        let expected = Array(receipt.expectedValue.utf16)
+        let actual = Array(current.utf16)
+        let start = receipt.insertedRange.location
+        let end = start + receipt.insertedRange.length
+        guard start >= 0, end >= start, end <= expected.count else { return }
+        let prefix = Array(expected[..<start])
+        let suffix = Array(expected[end...])
+        let prefixMatches = Array(actual.prefix(prefix.count)) == prefix
+        let suffixMatches = Array(actual.suffix(suffix.count)) == suffix
+        let prefixBlank = String(decoding: prefix, as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let suffixBlank = String(decoding: suffix, as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let producedPresent = !receipt.produced.isEmpty && current.contains(receipt.produced)
+        Self.logger.notice("correction boundary: row=\(receipt.rowID, privacy: .public) snapshot_units=\(receipt.target.value?.utf16.count ?? -1, privacy: .public) expected_units=\(expected.count, privacy: .public) current_units=\(actual.count, privacy: .public) start=\(start, privacy: .public) inserted_units=\(receipt.insertedRange.length, privacy: .public) prefix_matches=\(prefixMatches, privacy: .public) suffix_matches=\(suffixMatches, privacy: .public) prefix_blank=\(prefixBlank, privacy: .public) suffix_blank=\(suffixBlank, privacy: .public) produced_present=\(producedPresent, privacy: .public)")
+    }
+
+    private let inserter: any CorrectionFieldReading
     private var task: Task<Void, Never>?
     private let interval: Duration
     private let duration: Duration
+    private let stability: Duration
 
-    init(inserter: InsertionController, interval: Duration = .milliseconds(500), duration: Duration = .seconds(20)) {
+    init(inserter: any CorrectionFieldReading, interval: Duration = .milliseconds(500),
+         duration: Duration = .seconds(20), stability: Duration = .seconds(1)) {
         self.inserter = inserter
         self.interval = interval
         self.duration = duration
+        self.stability = stability
     }
 
     func cancel() {
@@ -54,40 +100,208 @@ final class EditWatcher {
         task = nil
     }
 
-    func start(receipt: InsertionReceipt, knownTerms: Set<String>, onCandidate: @escaping (LearningCandidate, String) -> Void) {
+    func start(
+        rowID: Int, produced: String, target: TargetSnapshot, knownTerms: Set<String>,
+        onCandidate: @escaping (LearningCandidate, String, InsertionReceipt) -> Void
+    ) {
         cancel()
-        if let element = receipt.target.element {
-            _ = AXUIElementSetMessagingTimeout(element, 0.25)
-        }
+        let startedAt = ContinuousClock.now
+        let initialReceipt = target.element == nil ? nil : InsertionReceipt.make(rowID: rowID, produced: produced, target: target)
+        let originalAnchor = inserter.correctionAnchor(for: target)
+        Self.logger.notice("correction identity: row=\(rowID, privacy: .public) anchor_available=\(originalAnchor != nil, privacy: .public)")
         task = Task { [weak self] in
             guard let self else { return }
-            let deadline = ContinuousClock.now + self.duration
+            guard !Task.isCancelled else {
+                self.log("watch_cancelled", rowID: rowID)
+                return
+            }
+            guard let appBundleID = target.bundleID, !appBundleID.isEmpty else {
+                Self.logUnavailable(rowID: rowID, target: target)
+                return
+            }
+            let deadline = startedAt + self.duration
+            // A missing initial snapshot may only be recovered from exact,
+            // unedited whole-field output during this short startup window.
+            let recoveryDeadline = min(deadline, startedAt + .seconds(2))
+            var baseline = initialReceipt
+            var watchedTarget = target
+            var lastObservedValue = initialReceipt?.expectedValue
+            var anchor = originalAnchor
+            var isFirstObservation = true
+            var paused = false
+            self.log("watch_started", rowID: rowID)
             var stableEdit: String?
+            var rejectionLogged = false
             var stableSince = ContinuousClock.now
             while !Task.isCancelled && ContinuousClock.now < deadline {
                 try? await Task.sleep(for: self.interval)
-                guard !Task.isCancelled, self.inserter.isCurrentTarget(receipt.target) else { return }
-                guard let value = self.inserter.currentValue(of: receipt.target),
-                      let edited = Self.isolatedEditedSpan(expected: receipt.expectedValue, current: value, range: receipt.insertedRange) else { return }
+                guard !Task.isCancelled else {
+                    self.log("watch_cancelled", rowID: rowID)
+                    return
+                }
+                guard ContinuousClock.now < deadline else { break }
+                guard let observation = self.inserter.correctionObservation(in: appBundleID),
+                      observation.target.bundleID == appBundleID,
+                      let element = observation.target.element, let value = observation.target.value else {
+                    stableEdit = nil
+                    if !paused { self.log("watch_paused_unavailable", rowID: rowID); paused = true }
+                    if baseline == nil && ContinuousClock.now >= recoveryDeadline {
+                        self.log("snapshot_recovery_rejected", rowID: rowID)
+                        return
+                    }
+                    continue
+                }
+                guard ContinuousClock.now < deadline else { break }
+                let sameElement = watchedTarget.element.map { CFEqual($0, element) } ?? false
+                let sameEditor = anchor.map { prior in observation.anchor.map(prior.matches) ?? false } ?? false
+                // When the original reference vanished before the first poll,
+                // exact unedited output can establish the insertion's field.
+                let confirmedInitialValue = isFirstObservation && ContinuousClock.now < recoveryDeadline
+                    && (value == baseline?.expectedValue || (!produced.isEmpty && value == produced))
+                let canEstablishInitialField = confirmedInitialValue && anchor == nil
+                    && (target.element == nil || self.inserter.correctionReferenceIsRetired(target))
+                // Geometry can be reused by another chat. Require unchanged
+                // readback or a narrow correction with at least two unchanged
+                // words as textual continuity before adopting a new reference.
+                let continuousRebind = sameEditor && (
+                    (confirmedInitialValue && value == produced) || lastObservedValue.map {
+                        Self.hasRebindContinuity(previous: $0, current: value)
+                    } == true)
+                if let anchor, let observedAnchor = observation.anchor,
+                   (sameElement || anchor.hasSameLocation(as: observedAnchor)),
+                   !anchor.hasSameContext(as: observedAnchor) {
+                    self.log("watch_ended_context_changed", rowID: rowID)
+                    return
+                }
+                if !sameElement && sameEditor && !continuousRebind {
+                    self.log("watch_ended_ambiguous_rebind", rowID: rowID)
+                    return
+                }
+                guard sameElement || continuousRebind || canEstablishInitialField else {
+                    stableEdit = nil
+                    if !paused { self.log("watch_paused_identity", rowID: rowID); paused = true }
+                    if baseline == nil && ContinuousClock.now >= recoveryDeadline {
+                        self.log("snapshot_recovery_rejected", rowID: rowID)
+                        return
+                    }
+                    continue
+                }
+                if baseline == nil {
+                    guard confirmedInitialValue, value == produced else {
+                        self.log("snapshot_recovery_rejected", rowID: rowID)
+                        return
+                    }
+                    baseline = InsertionReceipt(rowID: rowID, target: observation.target, produced: produced,
+                                                expectedValue: produced,
+                                                insertedRange: CFRange(location: 0, length: produced.utf16.count),
+                                                appBundleID: appBundleID)
+                    self.log("snapshot_recovered", rowID: rowID)
+                }
+                guard var receipt = baseline else { return }
+                if isFirstObservation {
+                    isFirstObservation = false
+                    if let confirmed = receipt.confirmedWholeFieldBaseline(current: value) {
+                        receipt = confirmed
+                        self.log("whole_field_baseline_confirmed", rowID: rowID)
+                    }
+                }
+                if !sameElement { self.log("logical_target_rebound", rowID: rowID) }
+                watchedTarget = observation.target
+                lastObservedValue = value
+                // Refresh geometry only after field identity or exact initial
+                // output has established continuity with the original editor.
+                if (sameElement || anchor == nil), let observedAnchor = observation.anchor { anchor = observedAnchor }
+                receipt = InsertionReceipt(rowID: rowID, target: watchedTarget, produced: produced,
+                                           expectedValue: receipt.expectedValue, insertedRange: receipt.insertedRange,
+                                           appBundleID: appBundleID)
+                baseline = receipt
+                if paused { self.log("watch_resumed", rowID: rowID); paused = false }
+                if receipt.expectedValue == produced, value != produced, value == target.value {
+                    self.log("field_cleared", rowID: rowID)
+                    return
+                }
+                guard let edited = Self.isolatedEditedSpan(expected: receipt.expectedValue, current: value, range: receipt.insertedRange) else {
+                    if value.isEmpty {
+                        self.log("field_cleared", rowID: receipt.rowID)
+                    } else {
+                        self.log("outside_inserted_span", rowID: receipt.rowID)
+                        self.logBoundaryMismatch(receipt: receipt, current: value)
+                    }
+                    return
+                }
                 guard edited != receipt.produced else {
                     stableEdit = nil
                     continue
                 }
-                if edited != stableEdit { stableEdit = edited; stableSince = .now; continue }
-                guard ContinuousClock.now - stableSince >= .seconds(1) else { continue }
+                if edited != stableEdit {
+                    stableEdit = edited
+                    stableSince = .now
+                    rejectionLogged = false
+                    continue
+                }
+                guard ContinuousClock.now - stableSince >= self.stability else { continue }
                 if let candidate = Self.candidate(produced: receipt.produced, replacement: edited, knownTerms: knownTerms) {
                     if candidate.reason == "unknown" {
                         let misspelling = NSSpellChecker.shared.checkSpelling(of: candidate.replacement, startingAt: 0)
-                        guard misspelling.location != NSNotFound else { return }
+                        guard misspelling.location != NSNotFound else {
+                            self.log("spelled_correctly", rowID: receipt.rowID)
+                            return
+                        }
                     }
-                    onCandidate(candidate, edited)
+                    self.log("candidate_accepted", rowID: receipt.rowID)
+                    onCandidate(candidate, edited, receipt)
                     return
                 }
+                // A term already in the dictionary is still an accepted edit
+                // for history, but it must not create a suggestion or learning
+                // action. Keep the public candidate classifier's old nil
+                // result for callers that only want new vocabulary.
+                if let knownCandidate = Self.alreadyKnownCandidate(
+                    produced: receipt.produced, replacement: edited, knownTerms: knownTerms
+                ) {
+                    self.log("already_known", rowID: receipt.rowID)
+                    onCandidate(knownCandidate, edited, receipt)
+                    return
+                }
+                if !rejectionLogged {
+                    rejectionLogged = true
+                    let oldWords = receipt.produced.split(whereSeparator: \.isWhitespace).map {
+                        String($0).trimmingCharacters(in: .punctuationCharacters)
+                    }
+                    let newWords = edited.split(whereSeparator: \.isWhitespace).map {
+                        String($0).trimmingCharacters(in: .punctuationCharacters)
+                    }
+                    let changedWords = zip(oldWords, newWords).filter {
+                        $0.caseInsensitiveCompare($1) != .orderedSame
+                    }.count
+                    Self.logger.notice("correction: row=\(receipt.rowID, privacy: .public) event=edit_not_learnable produced_words=\(oldWords.count, privacy: .public) edited_words=\(newWords.count, privacy: .public) changed_word_pairs=\(changedWords, privacy: .public)")
+                }
             }
+            if !Task.isCancelled { self.log("watch_expired", rowID: rowID) }
         }
     }
 
+    /// A changed AX object plus an unrelated one-word draft is ambiguous.
+    /// Identical readback or a one-word edit retaining two exact words supplies
+    /// continuity; field metadata must also match before this rule is used.
+    nonisolated static func hasRebindContinuity(previous: String, current: String) -> Bool {
+        if previous == current { return true }
+        let before = previous.split(whereSeparator: \.isWhitespace)
+        let after = current.split(whereSeparator: \.isWhitespace)
+        var prefix = 0
+        while prefix < min(before.count, after.count), before[prefix] == after[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < min(before.count, after.count) - prefix,
+              before[before.count - suffix - 1] == after[after.count - suffix - 1] { suffix += 1 }
+        // Selecting/deleting the old word can be observed before typing the
+        // replacement. Preserve that gap while retaining two exact words.
+        return prefix + suffix >= 2
+            && before.count - prefix - suffix <= 1 && after.count - prefix - suffix <= 1
+    }
+
     nonisolated static func isolatedEditedSpan(expected: String, current: String, range: CFRange) -> String? {
+        // A sent or cleared composer ends this dictation's observation window.
+        guard !current.isEmpty else { return nil }
         let expectedUnits = Array(expected.utf16)
         let currentUnits = Array(current.utf16)
         guard range.location >= 0, range.length >= 0,
@@ -122,5 +336,17 @@ final class EditWatcher {
             return LearningCandidate(produced: oldWord, replacement: clean, reason: first.isUppercase ? "capitalized" : "unknown")
         }
         return nil
+    }
+
+    nonisolated static func alreadyKnownCandidate(
+        produced: String, replacement: String, knownTerms: Set<String>
+    ) -> LearningCandidate? {
+        guard let candidate = candidate(produced: produced, replacement: replacement, knownTerms: []) else {
+            return nil
+        }
+        guard knownTerms.contains(candidate.replacement.lowercased()) else { return nil }
+        return LearningCandidate(produced: candidate.produced,
+                                 replacement: candidate.replacement,
+                                 reason: "already_known")
     }
 }

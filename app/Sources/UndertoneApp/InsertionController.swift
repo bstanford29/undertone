@@ -264,13 +264,28 @@ final class InsertionController {
         return .failed(.axRejected)
     }
 
-    func currentValue(of target: TargetSnapshot) -> String? {
-        guard isSameElement(target) else { return nil }
-        return value(of: target.element)
-    }
-
-    func isCurrentTarget(_ target: TargetSnapshot) -> Bool {
-        isSameElement(target)
+    /// Read only the focused field in the expected process. Do not collect
+    /// selected text, clipboard data, or values from another app while paused.
+    @MainActor func correctionSnapshot(in bundleID: String) -> TargetSnapshot? {
+        guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == bundleID else { return nil }
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        _ = AXUIElementSetMessagingTimeout(application, 0.25)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = focused as! AXUIElement
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier else { return nil }
+        _ = AXUIElementSetMessagingTimeout(element, 0.25)
+        defer { _ = AXUIElementSetMessagingTimeout(element, 0) }
+        var subrole: CFTypeRef?
+        let subroleResult = AXUIElementCopyAttributeValue(element, kAXSubroleAttribute as CFString, &subrole)
+        guard subroleResult == .success || subroleResult == .attributeUnsupported || subroleResult == .noValue,
+              (subrole as? String) != kAXSecureTextFieldSubrole else { return nil }
+        guard let currentValue = value(of: element),
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
+        return TargetSnapshot(bundleID: bundleID, element: element, value: currentValue,
+                              selectedText: nil, selectedRange: nil)
     }
 
     static func exactReplacementRange(inserted: String, value: String, originalRange: CFRange, currentRange: CFRange) -> CFRange? {

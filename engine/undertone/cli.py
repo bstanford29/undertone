@@ -8,9 +8,10 @@ import time
 from . import insert
 from .audio import load_wav
 from .config import load_config
-from .dictionary import add_term, load_dictionary
+from .dictionary import load_dictionary
 from .doctor import cmd_doctor
 from .hotkey import listen, run_dictation_cycle
+from .learning import add_explicit_term
 from .stt import Transcriber
 
 
@@ -56,7 +57,7 @@ def cmd_insert_test(args: argparse.Namespace) -> None:
 
 
 def cmd_dictionary_add(args: argparse.Namespace) -> None:
-    dictionary = add_term(args.term)
+    dictionary = add_explicit_term(args.term)
     print(f"added '{args.term}'. terms: {dictionary['terms']}")
 
 
