@@ -91,7 +91,7 @@ extension InsertionController: CorrectionFieldReading {
             for _ in 0..<8 {
                 guard let current = ancestor else { break }
                 _ = AXUIElementSetMessagingTimeout(current, 0.25)
-                defer { _ = AXUIElementSetMessagingTimeout(current, 0) }
+                defer { if !CFEqual(current, element) { _ = AXUIElementSetMessagingTimeout(current, 0) } }
                 if attribute(kAXRoleAttribute as CFString, from: current) as? String == kAXWindowRole {
                     window = current
                     break
