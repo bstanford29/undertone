@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS dictations (
     guard_fired INTEGER NOT NULL DEFAULT 0,
     model TEXT,
     audio_path TEXT,
-    edited_text TEXT
+    edited_text TEXT,
+    stt_recovery TEXT
 )
 """
 
@@ -33,7 +34,7 @@ def _connect() -> sqlite3.Connection:
     conn = sqlite3.connect(HISTORY_PATH)
     conn.execute(SCHEMA)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(dictations)")}
-    for name, kind in {"guard_fired": "INTEGER NOT NULL DEFAULT 0", "model": "TEXT", "audio_path": "TEXT", "edited_text": "TEXT", "kind": "TEXT NOT NULL DEFAULT 'dictation'", "instruction_text": "TEXT"}.items():
+    for name, kind in {"guard_fired": "INTEGER NOT NULL DEFAULT 0", "model": "TEXT", "audio_path": "TEXT", "edited_text": "TEXT", "kind": "TEXT NOT NULL DEFAULT 'dictation'", "instruction_text": "TEXT", "stt_recovery": "TEXT"}.items():
         if name not in columns:
             conn.execute(f"ALTER TABLE dictations ADD COLUMN {name} {kind}")
     conn.commit()
@@ -65,6 +66,7 @@ def record(
     audio_path: str | None = None,
     kind: str = "dictation",
     instruction_text: str | None = None,
+    stt_recovery: str | None = None,
 ) -> int:
     if kind not in {"dictation", "command"}:
         raise ValueError("Invalid history kind")
@@ -72,8 +74,8 @@ def record(
     with _connect() as conn:
         cursor = conn.execute(
             """INSERT INTO dictations
-            (ts, app_bundle_id, raw_text, clean_text, stt_ms, llm_ms, insert_ms, total_ms, insert_mode, audio_seconds, guard_fired, model, audio_path, kind, instruction_text)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ts, app_bundle_id, raw_text, clean_text, stt_ms, llm_ms, insert_ms, total_ms, insert_mode, audio_seconds, guard_fired, model, audio_path, kind, instruction_text, stt_recovery)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 time.time(),
                 app_bundle_id,
@@ -90,6 +92,7 @@ def record(
                 audio_path,
                 kind,
                 instruction_text,
+                stt_recovery,
             ),
         )
         return cursor.lastrowid

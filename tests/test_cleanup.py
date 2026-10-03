@@ -600,3 +600,4 @@ class ContextRegressionTests(unittest.TestCase):
         self.assertIn("untrusted read-only reference", model.call_args.args[0])
         raw = cleanup.clean_result(sentence, "none", {"terms":[], "replacements":{}}, dict(DEFAULTS), context=context)
         self.assertEqual(raw["clean_text"], sentence)
+

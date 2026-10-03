@@ -133,12 +133,12 @@ class Engine:
 
     def _meeting_transcribe(self, audio_path: str) -> str:
         from .audio import load_wav
-        from .stt import Transcriber
+        from .stt import make_transcriber
 
         with self.lock:
             cfg = settings.load_config()
             if self.transcriber is None:
-                self.transcriber = Transcriber(cfg.get("stt_model"))
+                self.transcriber = make_transcriber(cfg)
             data = dictionary.load_dictionary()
             vocab = dictionary.vocab_prompt(data)
             text = self.transcriber.transcribe(load_wav(audio_path), vocab=vocab)
@@ -170,13 +170,13 @@ class Engine:
 
     def warm(self) -> None:
         try:
-            from .stt import Transcriber
+            from .stt import make_transcriber
             from .cleanup import _call_ollama
             with self.lock:
                 cfg = settings.load_config()
                 if not local_ollama_url(cfg["ollama_url"]):
                     raise RuntimeError("Ollama must use localhost")
-                self.transcriber = Transcriber(cfg.get("stt_model"))
+                self.transcriber = make_transcriber(cfg)
                 self.transcriber.warm_up()
                 self.whisper_status = "warm"
                 _call_ollama(
@@ -343,7 +343,7 @@ class Engine:
                 return dictionary.set_replacement(phrase, text_field(r, "replacement", 10000))
         if op == "transcribe":
             from .audio import load_wav
-            from .stt import Transcriber
+            from .stt import make_transcriber
             cfg = settings.load_config()
             path = Path(text_field(r, "audio_path", 4096)).expanduser()
             if not path.is_absolute() or not path.is_file():
@@ -352,7 +352,7 @@ class Engine:
             if not isinstance(extra, list) or len(extra) > 100 or not all(isinstance(x, str) and len(x) <= 200 for x in extra):
                 raise ValueError("Invalid temporary vocabulary")
             if self.transcriber is None:
-                self.transcriber = Transcriber(cfg.get("stt_model"))
+                self.transcriber = make_transcriber(cfg)
             data = dictionary.load_dictionary()
             vocab = dictionary.vocab_prompt({"terms": extra + data["terms"]})
             started = time.perf_counter()
@@ -366,9 +366,11 @@ class Engine:
             return {
                 "raw": detailed["text"],
                 "stt_ms": (time.perf_counter() - started) * 1000,
-                "model": cfg["stt_model"],
+                "model": getattr(self.transcriber, "model", cfg["stt_model"]),
+                "backend": getattr(self.transcriber, "backend", "whisper"),
                 "no_speech": detailed["no_speech"],
                 "reason": detailed["reason"],
+                "segments": detailed.get("segments", {}),
             }
         if op in {"clean", "clean.stream"}:
             from .cleanup import clean_result, stream_clean_result

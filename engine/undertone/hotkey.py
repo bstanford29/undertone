@@ -13,7 +13,7 @@ from . import history, insert
 from .audio import Recorder, SAMPLE_RATE
 from .cleanup import clean_result
 from .dictionary import load_dictionary, vocab_prompt
-from .stt import Transcriber
+from .stt import Transcriber, make_transcriber
 
 logger = logging.getLogger("undertone.hotkey")
 
@@ -22,6 +22,17 @@ HOLD_KEY_MAP = {
     "right_option": keyboard.Key.alt_r,
     "right_cmd": keyboard.Key.cmd_r,
 }
+
+
+def describe_recovery(stats: dict[str, int] | None) -> str | None:
+    """Short history note for segment retries; None when whisper needed none."""
+    if not stats or not (stats.get("retried") or stats.get("dropped")):
+        return None
+    return "retried={retried} recovered={recovered} dropped={dropped}".format(
+        retried=stats.get("retried", 0),
+        recovered=stats.get("recovered", 0),
+        dropped=stats.get("dropped", 0),
+    )
 
 
 def run_dictation_cycle(
@@ -41,7 +52,13 @@ def run_dictation_cycle(
 
     t0 = time.perf_counter()
     vocab = vocab_prompt(dictionary)
-    raw_text = raw_text_override if raw_text_override is not None else transcriber.transcribe(audio, vocab=vocab)
+    stt_recovery = None
+    if raw_text_override is not None:
+        raw_text = raw_text_override
+    else:
+        detailed = transcriber.transcribe_detailed(audio, vocab=vocab)
+        raw_text = detailed["text"]
+        stt_recovery = describe_recovery(detailed.get("segments"))
     stt_ms = stt_ms_override + (0.0 if raw_text_override is not None else (time.perf_counter() - t0) * 1000)
 
     t0 = time.perf_counter()
@@ -81,6 +98,7 @@ def run_dictation_cycle(
         guard_fired=result["guard_fired"],
         model=result["model"],
         audio_path=audio_path,
+        stt_recovery=stt_recovery,
     )
 
     return {
@@ -94,6 +112,7 @@ def run_dictation_cycle(
         "guard_fired": result["guard_fired"],
         "model": result["model"],
         "audio_path": audio_path,
+        "stt_recovery": stt_recovery,
     }
 
 
@@ -110,8 +129,8 @@ def save_audio(audio) -> str:
 
 def listen(config: dict[str, Any]) -> None:
     """Temporary F13 listener; the native app owns fn and insertion in Phase 3."""
-    from .streaming import StreamingTranscriber
-    transcriber = Transcriber(model=config.get("stt_model"))
+    from .streaming import PauseSplitTranscriber, StreamingTranscriber
+    transcriber = make_transcriber(config)
     transcriber.warm_up()
     recorder = Recorder()
     hold_key = HOLD_KEY_MAP.get(config.get("hold_key", "f13"), keyboard.Key.f13)
@@ -119,8 +138,11 @@ def listen(config: dict[str, Any]) -> None:
     stop_timer = threading.Event()
     dictionary = load_dictionary()
 
+    # Pause-split only runs a cheap VAD per snapshot, so it can look more often.
+    snapshot_interval = 1 if config.get("streaming_mode", "cumulative") == "pause" else 5
+
     def snapshots(stream, vocab) -> None:
-        while not stop_timer.wait(5):
+        while not stop_timer.wait(snapshot_interval):
             try:
                 stream.submit_snapshot(recorder.snapshot(), vocab=vocab)
             except RuntimeError:
@@ -136,7 +158,10 @@ def listen(config: dict[str, Any]) -> None:
         state["recording"] = True
         stop_timer.clear()
         if config.get("streaming", False):
-            stream = StreamingTranscriber(transcriber)
+            if config.get("streaming_mode", "cumulative") == "pause":
+                stream = PauseSplitTranscriber(transcriber)
+            else:
+                stream = StreamingTranscriber(transcriber)
             stream.start()
             state["stream"] = stream
             timer = threading.Thread(target=snapshots, args=(stream, vocab_prompt(dictionary)), daemon=True)

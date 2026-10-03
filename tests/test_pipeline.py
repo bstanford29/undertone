@@ -10,7 +10,10 @@ from undertone import hotkey
 class PipelineTests(unittest.TestCase):
     def test_focus_change_retains_transcript_and_guard_without_insertion(self):
         model = Mock()
-        model.transcribe.return_value = 'Keep all these words'
+        model.transcribe_detailed.return_value = {
+            'text': 'Keep all these words', 'no_speech': False, 'reason': '',
+            'segments': {'total': 2, 'retried': 1, 'recovered': 1, 'dropped': 0},
+        }
         result = {'clean_text':'Keep all these words.', 'guard_fired':True, 'model':None}
         with patch.object(hotkey, 'save_audio', return_value='/tmp/fixture.wav'), \
              patch.object(hotkey, 'clean_result', return_value=result), \
@@ -23,6 +26,7 @@ class PipelineTests(unittest.TestCase):
         self.assertTrue(record.call_args.kwargs['guard_fired'])
         self.assertEqual(record.call_args.kwargs['audio_path'], '/tmp/fixture.wav')
         self.assertEqual(record.call_args.kwargs['app_bundle_id'], 'target.app')
+        self.assertEqual(record.call_args.kwargs['stt_recovery'], 'retried=1 recovered=1 dropped=0')
 
     def test_completed_stream_does_not_invoke_stt_again(self):
         model = Mock()
@@ -32,6 +36,7 @@ class PipelineTests(unittest.TestCase):
             result = hotkey.run_dictation_cycle(np.ones(16), model, {}, {'terms':['Fixture']}, False,
                                                app_bundle_id='target.app', raw_text_override='Full recording', stt_ms_override=123)
         model.transcribe.assert_not_called()
+        model.transcribe_detailed.assert_not_called()
         self.assertEqual(result['stt_ms'], 123)
         self.assertEqual(result['insert_mode'], 'skipped')
 

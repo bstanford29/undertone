@@ -112,7 +112,8 @@ class ServerTests(unittest.TestCase):
             def warm_up(self):
                 pass
 
-        with patch("undertone.stt.Transcriber", FakeTranscriber):
+        with patch("undertone.stt.Transcriber", FakeTranscriber), \
+                patch("undertone.stt.ParakeetTranscriber", FakeTranscriber):
             with patch(
                 "undertone.cleanup._call_ollama",
                 side_effect=cleanup.OllamaModelNotFoundError(

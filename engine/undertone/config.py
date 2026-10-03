@@ -15,6 +15,8 @@ VALID_CLEANUP_LEVELS = {"none", "light", "medium", "high"}
 DEFAULTS: dict[str, Any] = {
     "hold_key": "f13",
     "stt_model": "mlx-community/whisper-large-v3-turbo",
+    "stt_backend": "parakeet",
+    "parakeet_model": "mlx-community/parakeet-tdt-0.6b-v3",
     "cleanup_model": "qwen3.5:latest",
     "cleanup_fallback_model": "",
     "cleanup_high_model": "gemma4:31b",
@@ -34,6 +36,7 @@ DEFAULTS: dict[str, Any] = {
     "toggle_mode": False,
     "double_tap_lock": True,
     "streaming": False,
+    "streaming_mode": "cumulative",
     "sounds": True,
     "whisper_mode": False,
     "stream_insert": True,
