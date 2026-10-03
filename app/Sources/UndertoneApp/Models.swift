@@ -236,6 +236,10 @@ struct EngineResponse: Codable, Equatable, Sendable {
     let whisper: String?
     let cleanup: String?
     let errorMessage: String?
+    /// The High cleanup model: `cold` until it has run once, then `warm`.
+    let high: String?
+    let highModel: String?
+    let keepAlive: String?
     let guardFired: Bool?
     let rowID: Int?
     let row: HistoryRow?
@@ -273,6 +277,7 @@ struct EngineResponse: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, raw, clean, cleanText = "clean_text", rewrite, sttMS = "stt_ms", llmMS = "llm_ms", model, whisper, cleanup
         case errorMessage = "error_message"
+        case high, highModel = "high_model", keepAlive = "keep_alive"
         case guardFired = "guard_fired", rowID = "row_id", row, rows, terms, replacements, config, suggestions, suggestion
         case session, sessions, sessionID = "session_id", title, startedAt = "started_at", endedAt = "ended_at"
         case summary, notePath = "note_path", transcriptPath = "transcript_path", chunkCount = "chunk_count", chunks

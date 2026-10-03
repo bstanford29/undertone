@@ -9,6 +9,8 @@ struct HotkeyStateMachine {
     enum ReleaseAction: Equatable { case stopImmediately, stopAfterDelay, none }
 
     private(set) var locked = false
+    /// When false a double tap is two separate dictations, never a lock.
+    var doubleTapLock = true
     private var lastDown: TimeInterval?
     private var pressStartedAt: TimeInterval?
     private var awaitingDelayedStop = false
@@ -27,7 +29,7 @@ struct HotkeyStateMachine {
             lastDown = nil
             return .stop
         }
-        let isDoubleTap = lastDown.map { now - $0 < doubleTapWindow } ?? false
+        let isDoubleTap = doubleTapLock && (lastDown.map { now - $0 < doubleTapWindow } ?? false)
         lastDown = now
         if isDoubleTap {
             locked = true
@@ -45,7 +47,8 @@ struct HotkeyStateMachine {
         guard !locked else { return .none }
         guard let started = pressStartedAt else { return .none }
         pressStartedAt = nil
-        if now - started >= doubleTapWindow {
+        // Without lock there is no second tap to wait for.
+        if !doubleTapLock || now - started >= doubleTapWindow {
             lastDown = nil
             return .stopImmediately
         }
@@ -122,6 +125,12 @@ final class HotkeyMonitor: @unchecked Sendable {
     private var source: CFRunLoopSource?
     private var pressed = false
     private var state = HotkeyStateMachine()
+
+    /// Settings' Double-tap to lock. Off, a double tap never latches.
+    var doubleTapLockEnabled: Bool {
+        get { state.doubleTapLock }
+        set { state.doubleTapLock = newValue }
+    }
     private var pendingRelease: DispatchWorkItem?
     private var consumedKeys = Set<Int64>()
     private(set) var isRunning = false

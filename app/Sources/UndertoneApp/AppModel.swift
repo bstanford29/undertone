@@ -6,6 +6,28 @@ import Foundation
 import os
 import SwiftUI
 
+/// What the engine's `status` op last reported, for the Settings status strip
+/// and the idle nub's pinhole.
+struct EngineHealth: Equatable {
+    var reachable = false
+    var whisper = "loading"
+    var cleanup = "loading"
+    var model: String?
+    var high = "cold"
+    var highModel: String?
+    var keepAlive: String?
+    var errorMessage: String?
+
+    /// Both models the dictation path needs are loaded.
+    var warm: Bool { reachable && whisper == "warm" && cleanup == "warm" }
+
+    /// "qwen3.5:latest" reads as "qwen3.5" on the pill.
+    static func shortName(_ model: String?) -> String? {
+        guard let model, !model.isEmpty else { return nil }
+        return model.hasSuffix(":latest") ? String(model.dropLast(":latest".count)) : model
+    }
+}
+
 struct PermissionSnapshot: Equatable {
     let microphoneGranted: Bool
     let microphoneUndetermined: Bool
@@ -15,6 +37,11 @@ struct PermissionSnapshot: Equatable {
 
     var dictationReady: Bool {
         microphoneGranted && accessibilityGranted && inputMonitoringGranted
+    }
+
+    /// How many of the three dictation permissions are granted.
+    var grantedCount: Int {
+        [microphoneGranted, accessibilityGranted, inputMonitoringGranted].filter { $0 }.count
     }
 
     static func current() -> Self {
@@ -76,6 +103,27 @@ final class AppModel: ObservableObject {
     /// Whether the hold key has latched into lock mode. Drives the lock
     /// glyph on the pill.
     @Published private(set) var dictationLocked = false
+    /// When lock mode engaged, for the locked ribbon's clock.
+    @Published private(set) var lockedSince: Date?
+    /// The app the current dictation will type into, for the ribbon chip.
+    @Published private(set) var dictationTargetBundleID: String?
+    /// Bundle id to style text, the engine's `app_prompt_variants`.
+    @Published var appPromptVariants: [String: String] = ToneCatalog.defaults
+    /// A double tap of the hold key locks dictation on.
+    @Published var doubleTapLock = true
+    @Published private(set) var engineHealth = EngineHealth()
+    /// The last error came from a failed insertion whose text is saved, so
+    /// Insert again (⌥⇧V) can retry it.
+    @Published private(set) var errorOffersRetry = false
+    /// The History row the 60% guard last kept raw, for the Why? button.
+    @Published private(set) var lastGuardRowID: Int?
+    /// The History row the History screen should select when it opens.
+    @Published var historyFocusRowID: Int?
+    /// Set by Hide for an hour. The nub stays away until then; dictation
+    /// and meeting states still show.
+    @Published private(set) var pillHiddenUntil: Date?
+    private var pillHovered = false
+    private var pillUnhideTask: Task<Void, Never>?
     let previewMode: Bool
     private var target: TargetSnapshot?
     // The target captured before an Undertone window takes focus. It remains
@@ -154,6 +202,9 @@ final class AppModel: ObservableObject {
         if previewMode {
             slowerOnBattery = PreviewFixtures.slowerOnBattery
             detectedMeeting = PreviewFixtures.detectedMeeting
+            engineHealth = PreviewFixtures.engineHealth
+            dictationTargetBundleID = PreviewFixtures.targetBundleID
+            lastRow = PreviewFixtures.rows.first
             pillState = .working
         }
     }
@@ -195,7 +246,10 @@ final class AppModel: ObservableObject {
         }
         hotkey.onStart = { [weak self] in self?.beginDictation() }
         hotkey.onStop = { [weak self] in self?.endDictation() }
-        hotkey.onLockChange = { [weak self] locked in self?.dictationLocked = locked }
+        hotkey.onLockChange = { [weak self] locked in
+            self?.dictationLocked = locked
+            self?.lockedSince = locked ? Date() : nil
+        }
         installLockEscapeMonitors()
         hotkey.onDiagnosticsChange = { [weak self] tapActive, lastSeen in
             self?.shortcutTapActive = tapActive
@@ -247,6 +301,13 @@ final class AppModel: ObservableObject {
             if case .string(let value) = config["pill_edge"], let edge = PillEdge(rawValue: value) { pillEdge = edge }
             if case .number(let value) = config["pill_offset"] { pillOffset = value }
             if case .string(let value) = config["obsidian_vault_path"] { obsidianVaultPath = value }
+            if case .bool(let value) = config["double_tap_lock"] {
+                doubleTapLock = value
+                hotkey.doubleTapLockEnabled = value
+            }
+            if case .object(let value) = config["app_prompt_variants"] {
+                appPromptVariants = value.compactMapValues { if case .string(let text) = $0 { return text } else { return nil } }
+            }
         }
         Task { await refreshLearnedSuggestions() }
         Task { await meetings.loadSessions() }
@@ -361,6 +422,7 @@ final class AppModel: ObservableObject {
         pillResetTask = nil
         workingNote = nil
         target = inserter.snapshot()
+        dictationTargetBundleID = target?.bundleID
         let hasSelectionText = Self.hasCommandSelection(target?.selectedText)
         let hasSelectionRange = (target?.selectedRange?.length ?? 0) > 0
         if hasSelectionText || hasSelectionRange {
@@ -474,15 +536,25 @@ final class AppModel: ObservableObject {
 
     func refreshStatus() async {
         refreshPermissionsAndHotkey()
+        guard !previewMode else { return }
         do {
             let response = try await engine.request(op: "status")
+            engineHealth = EngineHealth(
+                reachable: response.error == nil,
+                whisper: response.whisper ?? "loading", cleanup: response.cleanup ?? "loading",
+                model: response.model, high: response.high ?? "cold", highModel: response.highModel,
+                keepAlive: response.keepAlive, errorMessage: response.errorMessage
+            )
             if let error = response.error { setEngineStatus(error.message) }
             else if response.whisper == "error" || response.cleanup == "error" {
                 setEngineStatus(response.errorMessage ?? "Engine error")
             } else if response.whisper == "warm" && response.cleanup == "warm" {
                 setEngineStatus("Whisper and \(response.model ?? "cleanup") warm · ready")
             } else { setEngineStatus("Engine loading…") }
-        } catch { setEngineStatus("Engine unavailable") }
+        } catch {
+            engineHealth = EngineHealth()
+            setEngineStatus("Engine unavailable")
+        }
     }
 
     private func process(audioPath: URL, target: TargetSnapshot) async {
@@ -653,11 +725,13 @@ final class AppModel: ObservableObject {
             }
             self.commandMode = false
             if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+            lastGuardRowID = keptRaw ? rowID : nil
             if case .failed(let reason) = outcome {
                 statusText = historyUpdateFailed
                     ? "Insertion failed, history update unknown"
                     : Self.failureMessage(reason)
-                showTransientError(statusText)
+                showTransientError(Self.pillFailureMessage(reason, appName: ToneCatalog.appName(for: target.bundleID)),
+                                   retry: !commandMode && reason != .notTrusted)
             } else if historyUpdateFailed {
                 statusText = "Inserted, history update unknown"
                 showTransientState(keptRaw ? .guarded(totalMS: total) : .inserted(totalMS: total))
@@ -669,7 +743,7 @@ final class AppModel: ObservableObject {
             // The watchdog already reported the timeout and reset the pill.
         } catch {
             commandMode = false
-            showTransientError(error.localizedDescription, duration: .milliseconds(2200))
+            showTransientError(error.localizedDescription)
         }
     }
 
@@ -823,6 +897,18 @@ final class AppModel: ObservableObject {
         case .elementChanged: return "Insertion failed: element changed"
         case .axRejected: return "Insertion failed: Accessibility rejected"
         case .typeFailed: return "Insertion failed: typing failed"
+        }
+    }
+
+    /// The pill's words for a failed insertion. The text is in History either
+    /// way, so the message says so and Insert again can retry it.
+    nonisolated static func pillFailureMessage(_ reason: InsertFailure, appName: String?) -> String {
+        switch reason {
+        case .notTrusted: return failureMessage(reason)
+        case .emptyText: return "Nothing to insert"
+        default:
+            guard let appName, !appName.isEmpty else { return "Couldn't type it in. Text saved." }
+            return "Couldn't type into \(appName). Text saved."
         }
     }
 
@@ -1162,30 +1248,196 @@ final class AppModel: ObservableObject {
     }
 
     private func showTransientError(_ message: String) {
-        showTransientError(message, duration: FlowBarMetrics.transientHold)
+        showTransientError(message, duration: FlowBarMetrics.errorHold)
     }
 
-    private func showTransientError(_ message: String, duration: Duration) {
+    private func showTransientError(_ message: String, retry: Bool = false, duration: Duration = FlowBarMetrics.errorHold) {
+        errorOffersRetry = retry
         pillState = .error(message)
         schedulePillReset(from: .error(message), after: duration)
     }
 
-    /// Inserted is a receipt, not a warning, so it leaves twice as fast as
-    /// Kept raw and Error do.
-    private func showTransientState(_ state: PillState) {
-        pillState = state
-        let hold: Duration
-        if case .inserted = state { hold = FlowBarMetrics.insertedHold } else { hold = FlowBarMetrics.transientHold }
-        schedulePillReset(from: state, after: hold)
+    /// How long a settled state holds before the pill folds back to the nub.
+    nonisolated static func hold(for state: PillState) -> Duration {
+        switch state {
+        case .inserted: return FlowBarMetrics.insertedHold
+        case .guarded: return FlowBarMetrics.guardedHold
+        case .error: return FlowBarMetrics.errorHold
+        default: return FlowBarMetrics.transientHold
+        }
     }
 
+    private func showTransientState(_ state: PillState) {
+        pillState = state
+        schedulePillReset(from: state, after: Self.hold(for: state))
+    }
+
+    /// Folds the pill back to idle after `duration`, but never while the
+    /// pointer is on it: a hovered Undo or Insert again stays reachable.
     private func schedulePillReset(from expected: PillState, after duration: Duration) {
         pillResetTask?.cancel()
         pillResetTask = Task { [weak self] in
             do { try await Task.sleep(for: duration) } catch { return }
+            while let self, self.pillHovered, self.pillState == expected {
+                do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
+            }
             guard let self, self.pillState == expected else { return }
             self.pillState = .idle
             self.pillResetTask = nil
+        }
+    }
+
+    // MARK: - Ribbon
+
+    /// The pointer is over a settled ribbon, so its hold must not run out.
+    func setPillHovered(_ hovered: Bool) {
+        pillHovered = hovered
+    }
+
+    /// Undo AI edit is possible: there is an insertion with a raw version.
+    var canUndoLastInsert: Bool {
+        lastInsertedText != nil && lastInsertTarget != nil && lastInsertedRawText != nil
+    }
+
+    /// "Messages · Casual" for the app the dictation will type into.
+    var targetChip: String? {
+        let tone = ToneCatalog.tone(for: dictationTargetBundleID, variants: appPromptVariants)
+        let name = previewMode
+            ? dictationTargetBundleID.map(ToneCatalog.fallbackName(for:))
+            : ToneCatalog.appName(for: dictationTargetBundleID)
+        return ToneCatalog.chip(appName: name, tone: tone)
+    }
+
+    /// The model the current cleanup level runs on, for the Cleaning ribbon.
+    var workingModelName: String? {
+        switch cleanupLevel {
+        case "high": return EngineHealth.shortName(engineHealth.highModel ?? "gemma4:31b")
+        case "medium": return EngineHealth.shortName(engineHealth.model ?? "qwen3.5:latest")
+        case "light": return "rules"
+        default: return nil
+        }
+    }
+
+    var ribbonInputs: FlowBarDock.RibbonInputs {
+        FlowBarDock.RibbonInputs(
+            pillState: pillState, locked: dictationLocked, lockedSince: lockedSince,
+            commandMode: commandMode, targetChip: targetChip, workingNote: workingNote,
+            workingModel: workingModelName, canUndo: canUndoLastInsert || previewMode,
+            canExplainGuard: lastGuardRowID != nil || previewMode, errorOffersRetry: errorOffersRetry
+        )
+    }
+
+    /// Runs a ribbon button. Each one reuses a path that already exists.
+    func performRibbonAction(_ action: RibbonAction) {
+        guard !previewMode else { return }
+        switch action {
+        case .undo: insertLast(raw: true)
+        case .insertAgain: insertLast()
+        case .why: openHistory(rowID: lastGuardRowID)
+        case .stop: toggleMeetingCapture()
+        }
+    }
+
+    /// Opens History on one row, used by Why? on a Kept raw ribbon.
+    func openHistory(rowID: Int?) {
+        historyFocusRowID = rowID
+        showApp(.history)
+    }
+
+    func setCleanupLevel(_ level: String) {
+        guard FlowMenu.cleanupLevels.contains(where: { $0.id == level }) else { return }
+        cleanupLevel = level
+        guard !previewMode else { return }
+        updateConfig("cleanup_level", .string(level))
+    }
+
+    func setDoubleTapLock(_ enabled: Bool) {
+        doubleTapLock = enabled
+        hotkey.doubleTapLockEnabled = enabled
+        guard !previewMode else { return }
+        updateConfig("double_tap_lock", .bool(enabled))
+    }
+
+    func setTone(_ tone: ToneCatalog.Tone, for bundleID: String) {
+        appPromptVariants = ToneCatalog.setting(tone, for: bundleID, in: appPromptVariants)
+        guard !previewMode else { return }
+        updateConfig("app_prompt_variants", .object(appPromptVariants.mapValues(JSONValue.string)))
+    }
+
+    var pillHidden: Bool {
+        guard let pillHiddenUntil else { return false }
+        return pillHiddenUntil > Date()
+    }
+
+    /// Hide for an hour: the nub leaves the screen until then.
+    func hidePill(for interval: TimeInterval = 3600) {
+        pillHiddenUntil = Date().addingTimeInterval(interval)
+        pillUnhideTask?.cancel()
+        pillUnhideTask = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(interval)) } catch { return }
+            self?.pillHiddenUntil = nil
+        }
+    }
+
+    func showPillNow() {
+        pillUnhideTask?.cancel()
+        pillHiddenUntil = nil
+    }
+
+    /// Opens the Settings scene, the same window ⌘, opens.
+    func openSettings() {
+        if !previewMode { externalTarget = captureExternalTarget() }
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+
+    /// Preview only: pins the lock and the retry offer for a screenshot.
+    func setPreviewFlags(locked: Bool, errorRetry: Bool) {
+        guard previewMode else { return }
+        dictationLocked = locked
+        lockedSince = locked ? Date().addingTimeInterval(-42) : nil
+        errorOffersRetry = errorRetry
+    }
+
+    /// Writes one setting through to the engine. Preview mode writes nothing.
+    func saveSetting(_ key: String, _ value: JSONValue) {
+        guard !previewMode else { return }
+        updateConfig(key, value)
+    }
+
+    /// Fills the Settings window: config, engine status, and the last
+    /// dictation for the cleanup preview.
+    func loadSettings() async {
+        guard !previewMode else { return }
+        if let response = try? await engine.request(op: "config.get"), let config = response.config {
+            if case .string(let value) = config["cleanup_level"] { cleanupLevel = value }
+            if case .bool(let value) = config["sounds"] { soundsEnabled = value }
+            if case .bool(let value) = config["stream_insert"] { streamInsert = value }
+            if case .bool(let value) = config["whisper_mode"] { whisperMode = value }
+            if case .bool(let value) = config["pill_persistent"] { pillPersistent = value }
+            if case .string(let value) = config["obsidian_vault_path"] { obsidianVaultPath = value }
+            if case .bool(let value) = config["double_tap_lock"] {
+                doubleTapLock = value
+                hotkey.doubleTapLockEnabled = value
+            }
+            if case .object(let value) = config["app_prompt_variants"] {
+                appPromptVariants = value.compactMapValues { if case .string(let text) = $0 { return text } else { return nil } }
+            }
+        }
+        await refreshStatus()
+        if lastRow == nil, let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+    }
+
+    func runFlowMenu(_ command: FlowMenu.Command) {
+        switch command {
+        case .insertLast: insertLast()
+        case .copyLast: copyLast()
+        case .setCleanup(let level): setCleanupLevel(level)
+        case .hideForAnHour: hidePill()
+        case .openSettings: openSettings()
+        case .openSoundSettings:
+            guard let url = URL(string: "x-apple.systempreferences:com.apple.Sound-Settings.extension") else { return }
+            NSWorkspace.shared.open(url)
         }
     }
 
