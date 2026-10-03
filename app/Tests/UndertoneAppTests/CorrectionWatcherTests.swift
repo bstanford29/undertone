@@ -82,6 +82,12 @@ final class CorrectionWatcherTests: XCTestCase {
         XCTAssertEqual(result.count, 1)
     }
 
+    func testRebindSurvivesDeletingAWordBeforeTypingItsReplacement() async {
+        let result = await run([field("Please call Nora"), field("Please call", newElement: true),
+                                field("Please call Zelvoriax")], produced: "Please call Nora")
+        XCTAssertEqual(result.first?.replacement, "Zelvoriax")
+    }
+
     func testSamePositionUnrelatedSingleWordDraftDoesNotLearn() async {
         let result = await run([field("Okay"), field("Thanks", newElement: true)], produced: "Okay")
         XCTAssertTrue(result.isEmpty)

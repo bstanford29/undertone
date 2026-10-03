@@ -286,8 +286,15 @@ final class EditWatcher {
         if previous == current { return true }
         let before = previous.split(whereSeparator: \.isWhitespace)
         let after = current.split(whereSeparator: \.isWhitespace)
-        guard before.count >= 3, before.count == after.count else { return false }
-        return zip(before, after).filter { $0 != $1 }.count == 1
+        var prefix = 0
+        while prefix < min(before.count, after.count), before[prefix] == after[prefix] { prefix += 1 }
+        var suffix = 0
+        while suffix < min(before.count, after.count) - prefix,
+              before[before.count - suffix - 1] == after[after.count - suffix - 1] { suffix += 1 }
+        // Selecting/deleting the old word can be observed before typing the
+        // replacement. Preserve that gap while retaining two exact words.
+        return prefix + suffix >= 2
+            && before.count - prefix - suffix <= 1 && after.count - prefix - suffix <= 1
     }
 
     nonisolated static func isolatedEditedSpan(expected: String, current: String, range: CFRange) -> String? {
