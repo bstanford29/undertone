@@ -267,8 +267,13 @@ final class InsertionController {
     /// Read only the focused field in the expected process. Do not collect
     /// selected text, clipboard data, or values from another app while paused.
     @MainActor func correctionSnapshot(in bundleID: String) -> TargetSnapshot? {
-        guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == bundleID,
-              let element = focusedElement(timeout: 0.25) else { return nil }
+        guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == bundleID else { return nil }
+        let application = AXUIElementCreateApplication(app.processIdentifier)
+        _ = AXUIElementSetMessagingTimeout(application, 0.25)
+        var focused: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(application, kAXFocusedUIElementAttribute as CFString, &focused) == .success,
+              let focused, CFGetTypeID(focused) == AXUIElementGetTypeID() else { return nil }
+        let element = focused as! AXUIElement
         var pid: pid_t = 0
         guard AXUIElementGetPid(element, &pid) == .success, pid == app.processIdentifier else { return nil }
         _ = AXUIElementSetMessagingTimeout(element, 0.25)
@@ -325,9 +330,8 @@ final class InsertionController {
         return value as? String
     }
 
-    private func focusedElement(timeout: Float? = nil) -> AXUIElement? {
+    private func focusedElement() -> AXUIElement? {
         let system = AXUIElementCreateSystemWide()
-        if let timeout { _ = AXUIElementSetMessagingTimeout(system, timeout) }
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(system, kAXFocusedUIElementAttribute as CFString, &value) == .success,
               let value,

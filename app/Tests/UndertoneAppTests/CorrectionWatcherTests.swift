@@ -32,8 +32,8 @@ final class CorrectionWatcherTests: XCTestCase {
     private let window = AXUIElementCreateApplication(201)
     private let otherWindow = AXUIElementCreateApplication(202)
 
-    private func anchor(y: CGFloat = 40, identifier: String? = nil, otherWindow: Bool = false) -> CorrectionFieldAnchor {
-        CorrectionFieldAnchor(window: otherWindow ? self.otherWindow : window, role: kAXTextAreaRole,
+    private func anchor(y: CGFloat = 40, identifier: String? = nil, otherWindow: Bool = false, role: String = kAXTextAreaRole) -> CorrectionFieldAnchor {
+        CorrectionFieldAnchor(window: otherWindow ? self.otherWindow : window, role: role,
                               identifier: identifier, frame: CGRect(x: 20, y: y, width: 400, height: 60))
     }
 
@@ -80,6 +80,23 @@ final class CorrectionWatcherTests: XCTestCase {
         ], produced: "Please call Nora")
         XCTAssertEqual(result.first?.replacement, "Zelvoriax")
         XCTAssertEqual(result.count, 1)
+    }
+
+    func testCopyFromDifferentRoleMetadataOrWindowPausesThenLearnsOnReturn() async {
+        var otherPlaceholder = anchor(y: 300)
+        otherPlaceholder.placeholder = "Search"
+        let sources = [otherPlaceholder, anchor(y: 300, role: kAXTextFieldRole), anchor(otherWindow: true)]
+        for source in sources {
+            let result = await run([field("Please call Nora"), field("Copied source", newElement: true, anchor: source),
+                                    field("Please call Zelvoriax", newElement: true)], produced: "Please call Nora")
+            XCTAssertEqual(result.first?.replacement, "Zelvoriax")
+        }
+    }
+
+    func testShortExactFirstReadCanRepairStaleValueWithReplacedReference() async {
+        let result = await run([field("Nora", newElement: true), field("Zelvoriax", newElement: true)],
+                               target: original(value: "Message"))
+        XCTAssertEqual(result.first?.replacement, "Zelvoriax")
     }
 
     func testRebindSurvivesDeletingAWordBeforeTypingItsReplacement() async {
@@ -162,20 +179,20 @@ final class CorrectionWatcherTests: XCTestCase {
     }
 
     func testClearingComposerStopsBeforeAnUnrelatedNextMessage() async {
-        let result = await run([field("Nora"), field("", newElement: true), field("Zelvoriax", newElement: true)])
+        let result = await run([field("Nora"), field(""), field("Zelvoriax")])
         XCTAssertTrue(result.isEmpty)
     }
 
     func testReturningToPreInsertionPlaceholderAlsoEndsWatching() async {
-        let result = await run([field("Nora"), field("Message", newElement: true), field("Zelvoriax", newElement: true)],
+        let result = await run([field("Nora"), field("Message"), field("Zelvoriax")],
                                target: original(value: "Message"))
         XCTAssertTrue(result.isEmpty)
     }
 
     func testReboundEditorStillRejectsChangesOutsideDictatedSpan() async {
-        let result = await run([field("beforeNora after"), field("changedZelvoriax after", newElement: true),
-                                field("beforeZelvoriax after", newElement: true)],
-                               target: original(value: "before after", location: 6))
+        let result = await run([field("Before: Please call Nora after"), field("Changed: Please call Nora after", newElement: true),
+                                field("Before: Please call Zelvoriax after", newElement: true)],
+                               target: original(value: "Before:  after", location: 8), produced: "Please call Nora")
         XCTAssertTrue(result.isEmpty)
     }
 
@@ -194,7 +211,7 @@ final class CorrectionWatcherTests: XCTestCase {
 
     func testPausedWatchDoesNotExtendItsDeadline() async {
         let observations = [field("Nora")] + Array<CorrectionFieldObservation?>(repeating: nil, count: 90)
-            + [field("Zelvoriax", newElement: true)]
+            + [field("Zelvoriax")]
         // A broken extended deadline would reach the late edit around 280ms.
         // Keep the harness alive well beyond that point so it cannot hide it.
         let result = await run(observations, wait: .milliseconds(650))

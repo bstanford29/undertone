@@ -19,7 +19,11 @@ struct CorrectionFieldAnchor {
     }
 
     func matches(_ other: CorrectionFieldAnchor) -> Bool {
-        guard hasSameContext(as: other) else { return false }
+        hasSameContext(as: other) && hasSameLocation(as: other)
+    }
+
+    func hasSameLocation(as other: CorrectionFieldAnchor) -> Bool {
+        guard CFEqual(window, other.window) else { return false }
         let hasIdentifier = identifier?.isEmpty == false
         let otherHasIdentifier = other.identifier?.isEmpty == false
         guard hasIdentifier == otherHasIdentifier,

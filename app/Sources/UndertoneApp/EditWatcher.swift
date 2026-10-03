@@ -163,10 +163,12 @@ final class EditWatcher {
                 // Geometry can be reused by another chat. Require unchanged
                 // readback or a narrow correction with at least two unchanged
                 // words as textual continuity before adopting a new reference.
-                let continuousRebind = sameEditor && lastObservedValue.map {
-                    Self.hasRebindContinuity(previous: $0, current: value)
-                } == true
+                let continuousRebind = sameEditor && (
+                    (confirmedInitialValue && value == produced) || lastObservedValue.map {
+                        Self.hasRebindContinuity(previous: $0, current: value)
+                    } == true)
                 if let anchor, let observedAnchor = observation.anchor,
+                   (sameElement || anchor.hasSameLocation(as: observedAnchor)),
                    !anchor.hasSameContext(as: observedAnchor) {
                     self.log("watch_ended_context_changed", rowID: rowID)
                     return
@@ -177,7 +179,7 @@ final class EditWatcher {
                 }
                 guard sameElement || continuousRebind || canEstablishInitialField else {
                     stableEdit = nil
-                    if !paused { self.log(sameEditor ? "watch_paused_text_continuity" : "watch_paused_identity", rowID: rowID); paused = true }
+                    if !paused { self.log("watch_paused_identity", rowID: rowID); paused = true }
                     if baseline == nil && ContinuousClock.now >= recoveryDeadline {
                         self.log("snapshot_recovery_rejected", rowID: rowID)
                         return
