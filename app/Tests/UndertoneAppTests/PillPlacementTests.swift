@@ -96,12 +96,12 @@ final class PillPlacementTests: XCTestCase {
         XCTAssertEqual(bottom.height, 58, "10 inset, 36 of capsule, 12 of shadow room")
     }
 
-    func testOnASideDockTheCapsuleStaysHorizontalAndGrowsInward() {
+    func testOnASideDockTheCapsuleStandsOnEnd() {
         let open = FlowBarViewState.hover(nil)
         let right = PillPlacement.frame(size: FlowBarDock.panelSize(for: open, edge: .right),
                                         edge: .right, offset: 0.5, inset: 0, in: screen)
-        XCTAssertEqual(right.width, 146, "10 inset, 124 of capsule, 12 of shadow room, reaching inward")
-        XCTAssertEqual(right.height, 60, "36 tall plus shadow room above and below")
+        XCTAssertEqual(right.width, 58, "10 inset, 36 of capsule, 12 of shadow room")
+        XCTAssertEqual(right.height, 148, "124 of capsule plus shadow room above and below")
         XCTAssertEqual(right.maxX, screen.maxX, accuracy: 0.0001)
     }
 }

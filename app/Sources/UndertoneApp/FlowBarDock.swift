@@ -22,6 +22,8 @@ enum FlowBarViewState: Equatable {
     case hover(DockControl?)
     /// The live ribbon: one 36 point capsule holding the pieces of a state.
     case ribbon(RibbonSpec)
+    /// The listening capsule standing on end on a side dock.
+    case column(ColumnSpec)
     /// The meeting card, which the pill grows into.
     case nudge(DetectedMeeting)
 }
@@ -239,6 +241,44 @@ struct RibbonSpec: Equatable, Sendable {
         case .commandChip: return RibbonMetrics.commandHeight
         case .button: return RibbonMetrics.buttonHeight
         default: return RibbonMetrics.height
+        }
+    }
+}
+
+/// The side-dock listening capsule: 36 points wide, its pieces stacked top
+/// to bottom. Words never turn, so the Command chip sits beside it.
+struct ColumnSpec: Equatable, Sendable {
+    let pieces: [RibbonPiece]
+    let commandLabel: Bool
+
+    static let padding: CGFloat = 12
+    static let gap: CGFloat = 8
+
+    /// How long a piece runs down the column.
+    static func length(of piece: RibbonPiece) -> CGFloat {
+        RibbonSpec.width(of: piece)
+    }
+
+    var capsuleLength: CGFloat {
+        let content = pieces.map(Self.length(of:)).reduce(0, +)
+        return 2 * Self.padding + content + CGFloat(max(0, pieces.count - 1)) * Self.gap
+    }
+
+    /// The capsule plus, for Command, the gap and the chip beside it.
+    var size: CGSize {
+        let label = commandLabel ? RibbonMetrics.labelGap + RibbonSpec.width(of: .commandChip) : 0
+        return CGSize(width: RibbonMetrics.height + label, height: capsuleLength)
+    }
+
+    /// Each piece's frame inside the capsule, top-left origin, top to bottom.
+    var pieceFrames: [CGRect] {
+        var y = Self.padding
+        return pieces.map { piece in
+            let length = Self.length(of: piece)
+            let across = piece == .waveform ? 16 : length
+            let frame = CGRect(x: (RibbonMetrics.height - across) / 2, y: y, width: across, height: length)
+            y += length + Self.gap
+            return frame
         }
     }
 }
@@ -563,57 +603,94 @@ enum FlowBarDock {
         FlowBarText.labelTextWidth(for: control, newNote: action) + 2 * RibbonMetrics.labelPadding
     }
 
-    /// The hover content: the capsule centered, widened when the hovered
-    /// label hangs past either end of it.
-    static func hoverContentSize(hovered: DockControl?, newNote action: NewNoteAction) -> CGSize {
+    /// A segment's frame inside the capsule, in AppKit (bottom-left origin)
+    /// capsule coordinates. On a side dock the capsule stands on end and the
+    /// segments run top to bottom, Dictate first.
+    static func segmentFrame(_ control: DockControl, vertical: Bool) -> CGRect {
+        let flat = segmentFrame(control)
+        guard vertical else { return flat }
+        return CGRect(x: (RibbonMetrics.height - RibbonMetrics.segmentHeight) / 2, y: capsuleWidth - flat.maxX,
+                      width: RibbonMetrics.segmentHeight, height: flat.width)
+    }
+
+    /// The capsule's own size: 124 along the edge, 36 across it.
+    static func capsuleSize(edge: PillEdge) -> CGSize {
+        edge.isHorizontal ? CGSize(width: capsuleWidth, height: RibbonMetrics.height)
+            : CGSize(width: RibbonMetrics.height, height: capsuleWidth)
+    }
+
+    /// The hover content. On the top and bottom docks the capsule is
+    /// centered and widened when the hovered label hangs past either end. On
+    /// a side dock the label sits beside the capsule, toward the interior.
+    static func hoverContentSize(hovered: DockControl?, newNote action: NewNoteAction,
+                                 edge: PillEdge = .bottom) -> CGSize {
+        guard edge.isHorizontal else {
+            let label = hovered.map { RibbonMetrics.labelGap + labelWidth(for: $0, newNote: action) } ?? 0
+            return CGSize(width: RibbonMetrics.height + label, height: capsuleWidth)
+        }
         guard let hovered else { return CGSize(width: capsuleWidth, height: RibbonMetrics.height) }
         let offset = abs(segmentFrame(hovered).midX - capsuleWidth / 2)
         let width = max(capsuleWidth, 2 * (offset + labelWidth(for: hovered, newNote: action) / 2))
         return CGSize(width: width, height: RibbonMetrics.height)
     }
 
-    static func labelRoom(hovered: DockControl?) -> CGFloat {
-        hovered == nil ? 0 : RibbonMetrics.labelGap + RibbonMetrics.labelHeight
+    /// Room above (or below, on the top dock) for the hover label. Side docks
+    /// put the label beside the capsule, inside the content, so need none.
+    static func labelRoom(hovered: DockControl?, edge: PillEdge = .bottom) -> CGFloat {
+        guard edge.isHorizontal, hovered != nil else { return 0 }
+        return RibbonMetrics.labelGap + RibbonMetrics.labelHeight
     }
 
     /// The capsule in panel coordinates.
     static func capsuleRect(hovered: DockControl?, newNote action: NewNoteAction,
                             edge: PillEdge, panelSize: CGSize) -> CGRect {
         let content = RibbonLayout.contentRect(
-            content: hoverContentSize(hovered: hovered, newNote: action), edge: edge, panelSize: panelSize
+            content: hoverContentSize(hovered: hovered, newNote: action, edge: edge), edge: edge, panelSize: panelSize
         )
-        return CGRect(x: content.midX - capsuleWidth / 2, y: content.minY,
-                      width: capsuleWidth, height: RibbonMetrics.height)
+        let size = capsuleSize(edge: edge)
+        switch edge {
+        case .bottom, .top:
+            return CGRect(x: content.midX - size.width / 2, y: content.minY, width: size.width, height: size.height)
+        case .left:
+            return CGRect(origin: CGPoint(x: content.minX, y: content.minY), size: size)
+        case .right:
+            return CGRect(origin: CGPoint(x: content.maxX - size.width, y: content.minY), size: size)
+        }
     }
 
     /// A segment in panel coordinates.
     static func segmentRect(_ control: DockControl, hovered: DockControl?, newNote action: NewNoteAction,
                             edge: PillEdge, panelSize: CGSize) -> CGRect {
         let capsule = capsuleRect(hovered: hovered, newNote: action, edge: edge, panelSize: panelSize)
-        return segmentFrame(control).offsetBy(dx: capsule.minX, dy: capsule.minY)
+        return segmentFrame(control, vertical: !edge.isHorizontal).offsetBy(dx: capsule.minX, dy: capsule.minY)
     }
 
-    /// The hovered segment's label: centred on it, above the capsule, or
-    /// below it on the top dock where above is off screen.
+    /// The hovered segment's label. It always reads left to right: above the
+    /// capsule (below on the top dock), or beside it on a side dock.
     static func labelRect(_ control: DockControl, newNote action: NewNoteAction,
                           edge: PillEdge, panelSize: CGSize) -> CGRect {
         let capsule = capsuleRect(hovered: control, newNote: action, edge: edge, panelSize: panelSize)
-        let segment = segmentFrame(control).offsetBy(dx: capsule.minX, dy: capsule.minY)
+        let segment = segmentFrame(control, vertical: !edge.isHorizontal).offsetBy(dx: capsule.minX, dy: capsule.minY)
         let width = labelWidth(for: control, newNote: action)
-        let y = edge == .top
-            ? capsule.minY - RibbonMetrics.labelGap - RibbonMetrics.labelHeight
-            : capsule.maxY + RibbonMetrics.labelGap
-        return CGRect(x: segment.midX - width / 2, y: y, width: width, height: RibbonMetrics.labelHeight)
+        let height = RibbonMetrics.labelHeight
+        let gap = RibbonMetrics.labelGap
+        switch edge {
+        case .bottom: return CGRect(x: segment.midX - width / 2, y: capsule.maxY + gap, width: width, height: height)
+        case .top: return CGRect(x: segment.midX - width / 2, y: capsule.minY - gap - height, width: width, height: height)
+        case .left: return CGRect(x: capsule.maxX + gap, y: segment.midY - height / 2, width: width, height: height)
+        case .right: return CGRect(x: capsule.minX - gap - width, y: segment.midY - height / 2, width: width, height: height)
+        }
     }
 
-    /// The segment under `point`. Each segment owns the full capsule height
+    /// The segment under `point`. Each segment owns the full capsule depth
     /// and half of each gap, so there is no dead strip between them.
     static func control(at point: CGPoint, hovered: DockControl?, newNote action: NewNoteAction,
                         edge: PillEdge, panelSize: CGSize) -> DockControl? {
         let capsule = capsuleRect(hovered: hovered, newNote: action, edge: edge, panelSize: panelSize)
         let hitArea = capsule.insetBy(dx: -FlowBarMetrics.hitPadding, dy: -FlowBarMetrics.hitPadding)
         guard hitArea.contains(point) else { return nil }
-        let localX = point.x - capsule.minX
+        // Distance along the capsule from its first segment's end.
+        let along = edge.isHorizontal ? point.x - capsule.minX : capsule.maxY - point.y
         for control in DockControl.allCases {
             let frame = segmentFrame(control)
             let half = RibbonMetrics.segmentGap / 2
@@ -621,9 +698,38 @@ enum FlowBarDock {
             let isLast = control == DockControl.allCases.last
             let minX = isFirst ? -.infinity : frame.minX - half
             let maxX = isLast ? .infinity : frame.maxX + half
-            if localX >= minX, localX < maxX { return control }
+            if along >= minX, along < maxX { return control }
         }
         return nil
+    }
+
+    // MARK: - Side-dock column
+
+    /// The listening capsule on a side dock: 36 wide, the dot on top, the
+    /// waveform running down, the lock below. Command puts its chip beside
+    /// the capsule, toward the interior, reading left to right.
+    static func column(for inputs: RibbonInputs) -> ColumnSpec? {
+        guard case .listening = inputs.pillState else { return nil }
+        var pieces: [RibbonPiece] = inputs.commandMode ? [] : [.dot(.listening)]
+        pieces.append(.waveform)
+        if inputs.locked { pieces.append(.glyph(.lock)) }
+        return ColumnSpec(pieces: pieces, commandLabel: inputs.commandMode)
+    }
+
+    static func columnCapsuleRect(_ column: ColumnSpec, edge: PillEdge, panelSize: CGSize) -> CGRect {
+        let content = RibbonLayout.contentRect(content: column.size, edge: edge, panelSize: panelSize)
+        let x = edge == .right ? content.maxX - RibbonMetrics.height : content.minX
+        return CGRect(x: x, y: content.minY, width: RibbonMetrics.height, height: column.capsuleLength)
+    }
+
+    /// The Command chip beside the column, centered on it.
+    static func columnLabelRect(_ column: ColumnSpec, edge: PillEdge, panelSize: CGSize) -> CGRect? {
+        guard column.commandLabel else { return nil }
+        let capsule = columnCapsuleRect(column, edge: edge, panelSize: panelSize)
+        let width = RibbonSpec.width(of: .commandChip)
+        let height = RibbonMetrics.commandHeight
+        let x = edge == .right ? capsule.minX - RibbonMetrics.labelGap - width : capsule.maxX + RibbonMetrics.labelGap
+        return CGRect(x: x, y: capsule.midY - height / 2, width: width, height: height)
     }
 
     // MARK: - Panel
@@ -635,8 +741,10 @@ enum FlowBarDock {
         case .nub:
             return DockAxis.size(edge: edge, depth: FlowBarMetrics.nubHitDepth, along: FlowBarMetrics.nubHitAlong)
         case .hover(let hovered):
-            return RibbonLayout.panelSize(content: hoverContentSize(hovered: hovered, newNote: action),
-                                          edge: edge, labelRoom: labelRoom(hovered: hovered))
+            return RibbonLayout.panelSize(content: hoverContentSize(hovered: hovered, newNote: action, edge: edge),
+                                          edge: edge, labelRoom: labelRoom(hovered: hovered, edge: edge))
+        case .column(let column):
+            return RibbonLayout.panelSize(content: column.size, edge: edge)
         case .ribbon(let spec):
             return RibbonLayout.panelSize(content: spec.size, edge: edge)
         case .nudge:

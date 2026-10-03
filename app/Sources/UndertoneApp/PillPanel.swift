@@ -216,6 +216,11 @@ enum FlowBarState {
         case .meetingDetected(let detected):
             return .nudge(detected)
         default:
+            // Side docks stand the listening capsule on end. States that
+            // carry words stay horizontal so the words never turn.
+            if !model.pillEdge.isHorizontal, let column = FlowBarDock.column(for: model.ribbonInputs) {
+                return .column(column)
+            }
             guard let spec = FlowBarDock.ribbon(for: model.ribbonInputs) else { return .nub }
             return .ribbon(spec)
         }
@@ -384,6 +389,8 @@ final class PillPanelController {
             let rect = FlowBarDock.ribbonRect(spec, edge: model.pillEdge, panelSize: panelSize)
             model.setPillHovered(rect.insetBy(dx: -FlowBarMetrics.hitPadding, dy: -FlowBarMetrics.hitPadding)
                 .contains(point))
+        case .column:
+            model.setPillHovered(false)
         case .nub, .hover:
             model.setNudgeHovered(false)
             applyHoverEffect(intent.pointerEntered())
@@ -535,6 +542,11 @@ final class PillPanelController {
                 // A click anywhere on the learned-word ribbon undoes it, as
                 // the notice did before the ribbon.
                 model.undoPendingLearning()
+            }
+        case .column(let column):
+            let rect = FlowBarDock.columnCapsuleRect(column, edge: model.pillEdge, panelSize: panelSize)
+            if rect.insetBy(dx: -FlowBarMetrics.hitPadding, dy: -FlowBarMetrics.hitPadding).contains(point) {
+                model.toggleDictationFromDock()
             }
         case .nub:
             // A click on the nub opens the capsule without waiting out the
@@ -813,6 +825,8 @@ struct FlowBarDockView: View {
             capsule(panelSize: panelSize)
         case .ribbon(let spec):
             ribbon(spec, panelSize: panelSize)
+        case .column(let column):
+            columnView(column, panelSize: panelSize)
         case .nudge(let detected):
             card(detected, panelSize: panelSize)
         }
@@ -857,10 +871,11 @@ struct FlowBarDockView: View {
         ZStack(alignment: .topLeading) {
             Color.clear
             ForEach(DockControl.allCases) { control in
-                let frame = FlowBarDock.segmentFrame(control)
+                // AppKit capsule frame to SwiftUI's top-left origin.
+                let frame = FlowBarDock.segmentFrame(control, vertical: !edge.isHorizontal)
                 segment(control, hovered: hovered == control)
                     .frame(width: frame.width, height: frame.height)
-                    .offset(x: frame.minX, y: frame.minY)
+                    .offset(x: frame.minX, y: rect.height - frame.maxY)
             }
         }
         .frame(width: rect.width, height: rect.height, alignment: .topLeading)
@@ -985,6 +1000,38 @@ struct FlowBarDockView: View {
         .accessibilityLabel(ribbonAccessibilityLabel)
     }
 
+    /// The side-dock listening capsule: dot on top, waveform running down,
+    /// lock below. Command's chip sits beside it, reading left to right.
+    @ViewBuilder
+    private func columnView(_ column: ColumnSpec, panelSize: CGSize) -> some View {
+        let rect = FlowBarDock.columnCapsuleRect(column, edge: edge, panelSize: panelSize)
+        ZStack(alignment: .topLeading) {
+            Color.clear
+            ForEach(Array(zip(column.pieces, column.pieceFrames).enumerated()), id: \.offset) { _, item in
+                Group {
+                    if item.0 == .waveform {
+                        FlowingWaveform(level: model.listeningLevel, isHorizontal: false)
+                    } else {
+                        pieceView(item.0)
+                    }
+                }
+                .frame(width: item.1.width, height: item.1.height)
+                .offset(x: item.1.minX, y: item.1.minY)
+            }
+        }
+        .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+        .background(ribbonBackground(radius: RibbonMetrics.radius))
+        .place(rect, in: panelSize)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(ribbonAccessibilityLabel)
+        if let label = FlowBarDock.columnLabelRect(column, edge: edge, panelSize: panelSize) {
+            pieceView(.commandChip)
+                .frame(width: label.width, height: label.height)
+                .shadow(color: .black.opacity(0.30), radius: 6, y: 3)
+                .place(label, in: panelSize)
+        }
+    }
+
     private var ribbonAccessibilityLabel: String {
         switch model.pillState {
         case .listening: return model.dictationLocked ? "Dictating, locked" : "Dictating"
@@ -1061,9 +1108,10 @@ struct FlowBarDockView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(FlowBarPalette.failure)
         case .lock:
-            Image(systemName: "lock")
+            // White, so the lock reads apart from the cyan waveform.
+            Image(systemName: "lock.fill")
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(FlowBarPalette.cyan)
+                .foregroundStyle(FlowBarPalette.glyph)
                 .accessibilityLabel("Locked")
         }
     }

@@ -385,7 +385,7 @@ final class RibbonGeometryTests: XCTestCase {
         XCTAssertEqual(panel.height - rect.maxY, 10)
     }
 
-    func testOnTheSideDocksTheRibbonStaysHorizontalAndGrowsInward() {
+    func testOnTheSideDocksAWordRibbonStaysHorizontalAndGrowsInward() {
         let spec = RibbonSpec([.commandChip, .glyph(.lock), .waveform])
         for edge in [PillEdge.left, .right] {
             let panel = FlowBarDock.panelSize(for: .ribbon(spec), edge: edge)
@@ -530,6 +530,88 @@ final class NubAndCapsuleTests: XCTestCase {
         XCTAssertEqual(FlowBarDock.cardTitle(for: PreviewFixtures.detectedZoom), "Zoom call")
         XCTAssertEqual(FlowBarDock.cardTitle(for: PreviewFixtures.detectedMeetInChrome), "Google Meet in Chrome")
         XCTAssertEqual(FlowBarDock.cardQuestion, "Take notes on this Mac?")
+    }
+}
+
+// MARK: - Side docks stand on end
+
+final class SideDockTests: XCTestCase {
+    private func column(_ configure: (inout FlowBarDock.RibbonInputs) -> Void = { _ in }) -> ColumnSpec? {
+        var inputs = FlowBarDock.RibbonInputs(pillState: .listening(level: 0.4))
+        configure(&inputs)
+        return FlowBarDock.column(for: inputs)
+    }
+
+    func testListeningOnASideDockIsADotOnTopTheWaveformThenTheLock() {
+        XCTAssertEqual(column()?.pieces, [.dot(.listening), .waveform])
+        XCTAssertEqual(column { $0.locked = true }?.pieces, [.dot(.listening), .waveform, .glyph(.lock)])
+        XCTAssertNil(FlowBarDock.column(for: FlowBarDock.RibbonInputs(pillState: .inserted(totalMS: 742))),
+                     "States with words stay horizontal ribbons")
+    }
+
+    func testTheColumnIs36WideAndAsTallAsItsPieces() {
+        let spec = column()!
+        XCTAssertEqual(spec.size.width, 36)
+        XCTAssertEqual(spec.capsuleLength, 12 + 8 + 8 + FlowingWaveform.blockLength + 12)
+        let frames = spec.pieceFrames
+        XCTAssertLessThan(frames[0].minY, frames[1].minY, "The dot sits above the waveform")
+        for frame in frames { XCTAssertEqual(frame.midX, 18, accuracy: 0.001) }
+    }
+
+    func testTheColumnHugsItsEdge() {
+        let spec = column()!
+        for edge in [PillEdge.left, .right] {
+            let panel = FlowBarDock.panelSize(for: .column(spec), edge: edge)
+            let rect = FlowBarDock.columnCapsuleRect(spec, edge: edge, panelSize: panel)
+            XCTAssertEqual(rect.size, CGSize(width: 36, height: spec.capsuleLength))
+            XCTAssertEqual(edge == .left ? rect.minX : panel.width - rect.maxX, 10)
+            XCTAssertEqual(rect.midY, panel.height / 2, accuracy: 0.001)
+        }
+    }
+
+    func testCommandPutsItsChipBesideTheColumnTowardTheInterior() {
+        let spec = column { $0.commandMode = true }!
+        XCTAssertEqual(spec.pieces, [.waveform])
+        for edge in [PillEdge.left, .right] {
+            let panel = FlowBarDock.panelSize(for: .column(spec), edge: edge)
+            let capsule = FlowBarDock.columnCapsuleRect(spec, edge: edge, panelSize: panel)
+            let chip = FlowBarDock.columnLabelRect(spec, edge: edge, panelSize: panel)!
+            XCTAssertTrue(CGRect(origin: .zero, size: panel).contains(chip))
+            XCTAssertEqual(chip.midY, capsule.midY, accuracy: 0.001)
+            if edge == .left { XCTAssertGreaterThan(chip.minX, capsule.maxX) }
+            else { XCTAssertLessThan(chip.maxX, capsule.minX) }
+        }
+        XCTAssertNil(FlowBarDock.columnLabelRect(column()!, edge: .left, panelSize: .zero))
+    }
+
+    func testTheHoverCapsuleStacksDictateOnTop() {
+        let panel = FlowBarDock.panelSize(for: .hover(nil), edge: .left)
+        let rects = DockControl.allCases.map {
+            FlowBarDock.segmentRect($0, hovered: nil, newNote: .start, edge: .left, panelSize: panel)
+        }
+        XCTAssertGreaterThan(rects[0].minY, rects[1].maxY, "AppKit y runs up, so Dictate is highest")
+        XCTAssertGreaterThan(rects[1].minY, rects[2].maxY)
+        for (control, rect) in zip(DockControl.allCases, rects) {
+            XCTAssertEqual(rect.width, 28)
+            XCTAssertEqual(FlowBarDock.control(at: CGPoint(x: rect.midX, y: rect.midY), hovered: nil,
+                                               newNote: .start, edge: .left, panelSize: panel), control)
+        }
+    }
+
+    func testTheSideLabelSitsBesideTheHoveredSegmentAndFits() {
+        for edge in [PillEdge.left, .right] {
+            for control in DockControl.allCases {
+                let panel = FlowBarDock.panelSize(for: .hover(control), edge: edge)
+                let capsule = FlowBarDock.capsuleRect(hovered: control, newNote: .start, edge: edge, panelSize: panel)
+                let segment = FlowBarDock.segmentRect(control, hovered: control, newNote: .start, edge: edge, panelSize: panel)
+                let label = FlowBarDock.labelRect(control, newNote: .start, edge: edge, panelSize: panel)
+                XCTAssertTrue(CGRect(origin: .zero, size: panel).contains(label), "\(control) on \(edge)")
+                XCTAssertEqual(label.midY, segment.midY, accuracy: 0.001)
+                XCTAssertEqual(edge == .left ? capsule.minX : panel.width - capsule.maxX, 10)
+                if edge == .left { XCTAssertEqual(label.minX, capsule.maxX + 8) }
+                else { XCTAssertEqual(label.maxX, capsule.minX - 8) }
+            }
+        }
     }
 }
 
