@@ -405,6 +405,35 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.dispatch({'op': 'config.update', 'config': {'pill_offset': 'half'}})
 
+    def test_double_tap_lock_defaults_on_and_persists(self):
+        self.assertTrue(self.engine.dispatch({'op': 'config.get'})['config']['double_tap_lock'])
+        saved = self.engine.dispatch({'op': 'config.update', 'config': {'double_tap_lock': False}})['config']
+        self.assertFalse(saved['double_tap_lock'])
+        self.assertFalse(self.engine.dispatch({'op': 'config.get'})['config']['double_tap_lock'])
+        with self.assertRaises(ValueError):
+            self.engine.dispatch({'op': 'config.update', 'config': {'double_tap_lock': 'yes'}})
+
+    def test_app_prompt_variants_are_editable_and_validated(self):
+        variants = {'com.apple.MobileSMS': 'Keep it casual.', 'com.openai.codex': 'Plain and neutral.'}
+        self.engine.dispatch({'op': 'config.update', 'config': {'app_prompt_variants': variants}})
+        self.assertEqual(self.engine.dispatch({'op': 'config.get'})['config']['app_prompt_variants'], variants)
+        for bad in ({'': 'x'}, {'com.apple.mail': ''}, {'com.apple.mail': 3}, ['com.apple.mail'],
+                    {'com.apple.mail': 'x' * 2001}, {f'app.{n}': 'x' for n in range(51)}):
+            with self.assertRaises(ValueError):
+                self.engine.dispatch({'op': 'config.update', 'config': {'app_prompt_variants': bad}})
+        self.assertEqual(self.engine.dispatch({'op': 'config.get'})['config']['app_prompt_variants'], variants)
+
+    def test_a_hand_broken_variant_map_falls_back_to_the_defaults(self):
+        config.CONFIG_PATH.write_text("app_prompt_variants: not-a-map\n")
+        loaded = config.load_config()
+        self.assertEqual(loaded['app_prompt_variants'], config.DEFAULTS['app_prompt_variants'])
+
+    def test_status_names_the_high_model_and_keep_warm_time(self):
+        status = self.engine.dispatch({'op': 'status'})
+        self.assertEqual(status['high'], 'cold')
+        self.assertEqual(status['high_model'], 'gemma4:31b')
+        self.assertEqual(status['keep_alive'], '60m')
+
     def test_meeting_dispatch_retains_failed_stt_and_recovers_exact_retry(self):
         calls = []
 

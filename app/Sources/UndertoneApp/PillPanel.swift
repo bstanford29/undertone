@@ -15,6 +15,8 @@ final class DraggablePillPanel: NSPanel {
     var onDragEnd: ((CGPoint) -> Void)?
     /// Escape pressed while dragging.
     var onDragCancel: (() -> Void)?
+    /// A right click, which opens the Flow menu.
+    var onRightClick: ((NSEvent) -> Void)?
 
     private var isTracking = false
 
@@ -33,6 +35,9 @@ final class DraggablePillPanel: NSPanel {
         case .leftMouseUp where isTracking:
             isTracking = false
             onDragEnd?(NSEvent.mouseLocation)
+            return
+        case .rightMouseDown:
+            onRightClick?(event)
             return
         case .keyDown where isTracking && event.keyCode == 53:
             isTracking = false
@@ -207,26 +212,12 @@ enum FlowBarState {
     static func viewState(model: AppModel, hovered: DockControl?, open: Bool) -> FlowBarViewState {
         switch model.pillState {
         case .idle:
-            guard open else { return .nub }
-            let action = model.newNoteAction
-            let label = hovered.map { FlowBarText.labelCapsuleWidth(for: $0, newNote: action) } ?? 0
-            return .stack(hovered: hovered, labelWidth: label)
-        case .listening:
-            return .level(locked: model.dictationLocked,
-                          commandWidth: model.commandMode ? FlowBarText.commandMarkerWidth() : nil)
-        case .working, .inserted, .guarded, .error, .notice:
-            guard let capsule = FlowBarDock.textCapsule(for: model.pillState, workingNote: model.workingNote) else {
-                return .spinner
-            }
-            return .text(capsule, width: FlowBarText.textCapsuleWidth(capsule))
-        case .recording(let elapsed):
-            let isHovered = hovered == .newNote
-            let width = isHovered
-                ? FlowBarText.labelCapsuleWidth(for: .newNote, newNote: .stop)
-                : FlowBarText.timerCapsuleWidth(FlowBarDock.timerText(elapsed))
-            return .recording(elapsed: elapsed, hovered: isHovered, badgeWidth: width)
+            return open ? .hover(hovered) : .nub
         case .meetingDetected(let detected):
             return .nudge(detected)
+        default:
+            guard let spec = FlowBarDock.ribbon(for: model.ribbonInputs) else { return .nub }
+            return .ribbon(spec)
         }
     }
 }
@@ -238,11 +229,8 @@ final class PillPanelController {
     private let chrome = FlowBarChrome()
     private let overlay = DropZoneOverlayController()
     private let tracking = DockTrackingView()
-    private var stateSubscription: AnyCancellable?
-    private var dockSubscription: AnyCancellable?
-    private var persistentSubscription: AnyCancellable?
-    private var contentSubscription: AnyCancellable?
-    private var autoStopSubscription: AnyCancellable?
+    private var subscriptions = Set<AnyCancellable>()
+    private lazy var menuBuilder = FlowMenuBuilder { [weak self] command in self?.model.runFlowMenu(command) }
 
     private var dragState: PillDragState?
     private var dragZones: [PillDropZone] = []
@@ -262,9 +250,6 @@ final class PillPanelController {
 
     private static let settleDuration: TimeInterval = 0.26
     private static let liftDuration: TimeInterval = 0.12
-    /// The panel is placed flush with the edge; the 6 and 10 point insets in
-    /// the mock are drawn inside it.
-    private static let panelInset: CGFloat = 0
 
     init(model: AppModel) {
         self.model = model
@@ -293,37 +278,30 @@ final class PillPanelController {
         panel.onDragMove = { [weak self] cursor in self?.moveDrag(cursor: cursor) }
         panel.onDragEnd = { [weak self] cursor in self?.endDrag(cursor: cursor) }
         panel.onDragCancel = { [weak self] in self?.cancelDrag() }
+        panel.onRightClick = { [weak self] event in self?.showFlowMenu(event) }
         // Defer past @Published willSet; the main queue also serves AppKit
         // tracking/modal modes, unlike the default RunLoop scheduler.
-        stateSubscription = model.$pillState
+        model.$pillState
             .receive(on: DispatchQueue.main)
             .sink { [weak self] state in
             MainActor.assumeIsolated { self?.pillStateChanged(to: state) }
+        }.store(in: &subscriptions)
+        // Anything that changes what the ribbon holds changes its width, so
+        // the panel has to resize with it.
+        let resize: () -> Void = { [weak self] in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.update() } }
         }
-        dockSubscription = model.$pillEdge
-            .combineLatest(model.$pillOffset)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _, _ in
-            MainActor.assumeIsolated { self?.update() }
-        }
-        persistentSubscription = model.$pillPersistent
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.update() }
-        }
-        // The drawn size depends on the hovered control and on the words in
-        // the current capsule, so any of those changing resizes the panel.
-        contentSubscription = model.$commandMode
-            .combineLatest(model.$dictationLocked, model.$workingNote)
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _, _, _ in MainActor.assumeIsolated { self?.update() } }
-        // Resume makes the New note label longer than New note does, so the
-        // panel has to resize when auto-stop arms it.
-        autoStopSubscription = model.meetings.$lastAutoStop
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-            MainActor.assumeIsolated { self?.update() }
-        }
+        model.$pillEdge.sink { _ in resize() }.store(in: &subscriptions)
+        model.$pillOffset.sink { _ in resize() }.store(in: &subscriptions)
+        model.$pillPersistent.sink { _ in resize() }.store(in: &subscriptions)
+        model.$pillHiddenUntil.sink { _ in resize() }.store(in: &subscriptions)
+        model.$commandMode.sink { _ in resize() }.store(in: &subscriptions)
+        model.$dictationLocked.sink { _ in resize() }.store(in: &subscriptions)
+        model.$workingNote.sink { _ in resize() }.store(in: &subscriptions)
+        model.$errorOffersRetry.sink { _ in resize() }.store(in: &subscriptions)
+        model.$dictationTargetBundleID.sink { _ in resize() }.store(in: &subscriptions)
+        model.$pendingLearningActionID.sink { _ in resize() }.store(in: &subscriptions)
+        model.meetings.$lastAutoStop.sink { _ in resize() }.store(in: &subscriptions)
         update()
     }
 
@@ -334,8 +312,8 @@ final class PillPanelController {
     }
 
     private func pillStateChanged(to state: PillState) {
-        // Anything but idle replaces the stack, so the hover intent must not
-        // keep the fan-out alive underneath a capsule.
+        // Anything but idle replaces the capsule, so the hover intent must
+        // not keep it alive underneath a ribbon.
         if state != .idle, intent.isOpen {
             _ = intent.forceClosed()
             cancelHoverTimers()
@@ -343,12 +321,14 @@ final class PillPanelController {
             chrome.hovered = nil
             removeDockEscapeMonitors()
         }
+        if state == .idle { model.setPillHovered(false) }
         update()
     }
 
     private func update() {
         guard let screen = dockingScreen() else { panel.orderOut(nil); return }
-        guard model.pillPersistent || model.pillState != .idle else {
+        let resting = model.pillState == .idle
+        guard !resting || (model.pillPersistent && !model.pillHidden) else {
             panel.orderOut(nil)
             return
         }
@@ -359,14 +339,12 @@ final class PillPanelController {
 
     private func place(in visibleFrame: CGRect) {
         guard !isSettling, dragState == nil else { return }
-        let size = FlowBarDock.panelSize(for: viewState, edge: model.pillEdge)
+        let size = FlowBarDock.panelSize(for: viewState, edge: model.pillEdge, newNote: model.newNoteAction)
         let frame = PillPlacement.frame(
-            size: size, edge: model.pillEdge, offset: model.pillOffset,
-            inset: Self.panelInset, in: visibleFrame
+            size: size, edge: model.pillEdge, offset: model.pillOffset, inset: 0, in: visibleFrame
         )
         guard frame != panel.frame else { return }
         // The panel frame snaps and the SwiftUI content animates inside it.
-        // Animating both fights the fan-out and clips it mid-flight.
         panel.setFrame(frame, display: true)
     }
 
@@ -376,9 +354,7 @@ final class PillPanelController {
 
     // MARK: - Hover
 
-    private var axis: DockAxis {
-        DockAxis(edge: model.pillEdge, panelSize: panel.frame.size)
-    }
+    private var panelSize: CGSize { panel.frame.size }
 
     /// Re-reads the pointer after the panel resizes, since a stationary
     /// pointer gets no tracking callback when the window grows under it.
@@ -396,29 +372,28 @@ final class PillPanelController {
         guard let point else {
             applyHoverEffect(intent.pointerExited())
             model.setNudgeHovered(false)
+            model.setPillHovered(false)
             setHovered(nil)
             return
         }
-        if case .meetingDetected = model.pillState {
+        switch viewState {
+        case .nudge:
             // Reading the card pauses its countdown, so it cannot vanish
             // mid-sentence.
-            model.setNudgeHovered(FlowBarDock.nudgeRect(axis: axis).contains(point))
-            setHovered(nil)
-            return
-        }
-        model.setNudgeHovered(false)
-        applyHoverEffect(intent.pointerEntered())
-        guard case .recording = model.pillState else {
+            model.setNudgeHovered(FlowBarDock.cardRect(edge: model.pillEdge, panelSize: panelSize).contains(point))
+        case .ribbon(let spec):
+            let rect = FlowBarDock.ribbonRect(spec, edge: model.pillEdge, panelSize: panelSize)
+            model.setPillHovered(rect.insetBy(dx: -FlowBarMetrics.hitPadding, dy: -FlowBarMetrics.hitPadding)
+                .contains(point))
+        case .nub, .hover:
+            model.setNudgeHovered(false)
+            applyHoverEffect(intent.pointerEntered())
             let hovered = intent.isOpen
-                ? FlowBarDock.control(at: point, axis: axis, hovered: chrome.hovered)
+                ? FlowBarDock.control(at: point, hovered: chrome.hovered, newNote: model.newNoteAction,
+                                      edge: model.pillEdge, panelSize: panelSize)
                 : nil
             setHovered(hovered)
-            return
         }
-        let inControl = FlowBarDock.recordingControlRect(axis: axis)
-            .insetBy(dx: -FlowBarMetrics.hitPadding, dy: -FlowBarMetrics.hitPadding)
-            .contains(point)
-        setHovered(inControl ? .newNote : nil)
     }
 
     private func setHovered(_ control: DockControl?) {
@@ -479,7 +454,7 @@ final class PillPanelController {
     private func setOpen(_ open: Bool) {
         guard chrome.open != open else { return }
         if open {
-            // Grow the panel first so the fan-out is not clipped. `update`
+            // Grow the panel first so the capsule is not clipped. `update`
             // reads the intent, which is already open, not `chrome.open`.
             update()
             withAnimation(openAnimation) { chrome.open = true }
@@ -506,8 +481,8 @@ final class PillPanelController {
             : .easeIn(duration: FlowBarMetrics.collapseDuration)
     }
 
-    /// Escape collapses the dock. It never stops a recording, and it never
-    /// reaches the app in front while the dock is open on purpose.
+    /// Escape collapses the capsule. It never stops a recording, and it never
+    /// reaches the app in front while the capsule is open on purpose.
     private func installDockEscapeMonitors() {
         guard dockEscapeMonitors.isEmpty else { return }
         if let local = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { event in
@@ -545,37 +520,33 @@ final class PillPanelController {
 
     /// Runs the action for a click that never moved. Drags do not land here.
     private func handleClick(at point: CGPoint) {
-        switch model.pillState {
-        case .meetingDetected(let detected):
-            switch FlowBarDock.nudgeAction(at: point, axis: axis) {
+        switch viewState {
+        case .nudge(let detected):
+            switch FlowBarDock.nudgeAction(at: point, edge: model.pillEdge, panelSize: panelSize) {
             case .ignore: model.ignoreDetectedMeeting()
             case .startNote: model.startDetectedMeeting(detected)
             case nil: break
             }
-        case .recording:
-            let hit = FlowBarDock.recordingControlRect(axis: axis)
-                .insetBy(dx: -FlowBarMetrics.hitPadding, dy: -FlowBarMetrics.hitPadding)
-            if hit.contains(point) { model.toggleMeetingCapture() }
-        case .listening:
-            model.toggleDictationFromDock()
-        case .idle:
-            guard intent.isOpen else {
-                // A click on the nub opens the dock without waiting out the
-                // hover delay.
-                applyHoverEffect(intent.pointerEntered())
-                applyHoverEffect(intent.openTimerFired())
-                return
-            }
-            guard let control = FlowBarDock.control(at: point, axis: axis, hovered: chrome.hovered) else { return }
-            activate(control)
-        case .working, .inserted, .guarded, .error:
-            break
-        case .notice:
-            if let term = model.pendingLearningTerm,
-               AppModel.isLearningNotice(model.pillState, term: term),
-               model.pendingLearningActionID != nil {
+        case .ribbon(let spec):
+            if let action = FlowBarDock.ribbonAction(at: point, spec: spec, edge: model.pillEdge, panelSize: panelSize) {
+                model.performRibbonAction(action)
+            } else if case .listening = model.pillState {
+                model.toggleDictationFromDock()
+            } else if model.canUndoPendingLearning {
+                // A click anywhere on the learned-word ribbon undoes it, as
+                // the notice did before the ribbon.
                 model.undoPendingLearning()
             }
+        case .nub:
+            // A click on the nub opens the capsule without waiting out the
+            // hover delay.
+            applyHoverEffect(intent.pointerEntered())
+            applyHoverEffect(intent.openTimerFired())
+        case .hover(let hovered):
+            guard intent.isOpen,
+                  let control = FlowBarDock.control(at: point, hovered: hovered, newNote: model.newNoteAction,
+                                                    edge: model.pillEdge, panelSize: panelSize) else { return }
+            activate(control)
         }
     }
 
@@ -585,6 +556,16 @@ final class PillPanelController {
         case .newNote: model.toggleMeetingCapture()
         case .scratchpad: model.toggleQuickNote()
         }
+    }
+
+    /// Right click: the Flow menu, for the things people change mid-day
+    /// without opening a window.
+    private func showFlowMenu(_ event: NSEvent) {
+        guard dragState == nil else { return }
+        let entries = FlowMenu.entries(cleanupLevel: model.cleanupLevel, microphones: AudioInputDevices.all())
+        let menu = menuBuilder.menu(for: entries)
+        let location = tracking.convert(event.locationInWindow, from: nil)
+        menu.popUp(positioning: nil, at: location, in: tracking)
     }
 
     // MARK: - Drag
@@ -666,11 +647,8 @@ final class PillPanelController {
     /// Animates the panel onto the chosen dock, pulses the pill, and persists
     /// the new position.
     private func settle(edge: PillEdge, offset: Double, in visibleFrame: CGRect) {
-        let size = FlowBarDock.panelSize(for: viewState, edge: edge)
-        let target = PillPlacement.frame(
-            size: size, edge: edge, offset: offset,
-            inset: Self.panelInset, in: visibleFrame
-        )
+        let size = FlowBarDock.panelSize(for: viewState, edge: edge, newNote: model.newNoteAction)
+        let target = PillPlacement.frame(size: size, edge: edge, offset: offset, inset: 0, in: visibleFrame)
         isSettling = true
         model.setPillDock(edge: edge, offset: offset)
         NSHapticFeedbackManager.defaultPerformer.perform(.levelChange, performanceTime: .now)
@@ -774,35 +752,42 @@ final class PillPanelController {
 
 // MARK: - Colors
 
-/// The dock's palette, straight from section 05 of the mockup.
+/// The ribbon's palette, from the Direction A mock-up.
 enum FlowBarPalette {
-    static let controlFill = Color(red: 0.110, green: 0.110, blue: 0.118)
-    static let controlHover = Color(red: 0.227, green: 0.227, blue: 0.235)
+    /// #141416, the ribbon and card fill.
+    static let ribbonFill = Color(red: 0.078, green: 0.078, blue: 0.086)
+    /// #3A3A3C, the hovered segment.
+    static let segmentHover = Color(red: 0.227, green: 0.227, blue: 0.235)
     static let glyph = Color(red: 0.961, green: 0.961, blue: 0.969)
+    /// #111111, the hover label.
     static let labelFill = Color(red: 0.067, green: 0.067, blue: 0.067)
+    /// #33D9FF, the warm pinhole, the listening dot, and the waveform.
+    static let cyan = Color(red: 0.200, green: 0.851, blue: 1.0)
+    static let green = Color(red: 0.188, green: 0.820, blue: 0.345)
     static let amber = Color(red: 0.949, green: 0.725, blue: 0.314)
+    static let failure = Color(red: 1.0, green: 0.412, blue: 0.380)
+    static let recordingRed = Color(red: 1.0, green: 0.271, blue: 0.227)
+    /// #E7E0FF, the Command chip.
+    static let command = Color(red: 0.906, green: 0.878, blue: 1.0)
+    static let chipText = Color(red: 0.784, green: 0.784, blue: 0.800)
+    static let keyText = Color(red: 0.631, green: 0.631, blue: 0.651)
     static let nubLight = Color(red: 0.557, green: 0.557, blue: 0.576)
     static let nubDark = Color(red: 0.631, green: 0.631, blue: 0.651)
-    static let cardText = Color(red: 0.784, green: 0.784, blue: 0.800)
-    static let cardSub = Color(red: 0.541, green: 0.541, blue: 0.565)
-    static let cardSecondaryButton = Color(red: 0.165, green: 0.165, blue: 0.173)
+    static let pinholeCold = Color(red: 0.43, green: 0.43, blue: 0.45)
 }
 
 // MARK: - The dock
 
-/// One overlay that draws the nub, the fanned-out controls, every capsule,
-/// and the meeting nudge. It reads its own size, so the panel controller can
-/// resize the window and the layout follows.
+/// One overlay that draws the nub, the hover capsule, every ribbon, and the
+/// meeting card. It reads its own size, so the panel controller can resize
+/// the window and the layout follows.
 struct FlowBarDockView: View {
     @EnvironmentObject private var model: AppModel
     @ObservedObject var chrome: FlowBarChrome
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var edge: PillEdge { model.pillEdge }
-
-    /// Start, Stop, or Resume. The controller sizes the panel from the same
-    /// answer, so the label capsule always fits the word it is about to draw.
-    private var newNoteAction: FlowBarDock.NewNoteAction { model.newNoteAction }
 
     private var state: FlowBarViewState {
         FlowBarState.viewState(model: model, hovered: chrome.hovered, open: chrome.open)
@@ -810,10 +795,9 @@ struct FlowBarDockView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let axis = DockAxis(edge: edge, panelSize: geometry.size)
             ZStack(alignment: .topLeading) {
                 Color.clear
-                content(axis: axis)
+                content(panelSize: geometry.size)
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
         }
@@ -822,34 +806,18 @@ struct FlowBarDockView: View {
     }
 
     @ViewBuilder
-    private func content(axis: DockAxis) -> some View {
+    private func content(panelSize: CGSize) -> some View {
         switch state {
-        case .nub, .stack:
-            // One branch for both, so the controls keep their identity and
-            // the fan-out animates instead of cutting.
-            idleDock(axis: axis)
-        case .level(let locked, let commandWidth):
-            levelCapsule(axis: axis, locked: locked, commandWidth: commandWidth)
-        case .spinner:
-            spinnerCapsule(axis: axis)
-        case .text(let capsule, let width):
-            textCapsule(capsule, width: width, axis: axis)
-        case .recording(let elapsed, let hovered, let badgeWidth):
-            recording(axis: axis, elapsed: elapsed, hovered: hovered, badgeWidth: badgeWidth)
+        case .nub, .hover:
+            // One branch for both, so the capsule keeps its identity and the
+            // open animates instead of cutting.
+            nub(panelSize: panelSize, hidden: chrome.open)
+            capsule(panelSize: panelSize)
+        case .ribbon(let spec):
+            ribbon(spec, panelSize: panelSize)
         case .nudge(let detected):
-            nub(axis: axis, hidden: false)
-            nudge(axis: axis, detected: detected)
+            card(detected, panelSize: panelSize)
         }
-    }
-
-    /// The rest state and the hover state are one view: the nub folds away
-    /// while the three controls fan out of where it was.
-    @ViewBuilder
-    private func idleDock(axis: DockAxis) -> some View {
-        let hovered = chrome.open ? chrome.hovered : nil
-        let labelWidth = hovered.map { FlowBarText.labelCapsuleWidth(for: $0, newNote: newNoteAction) } ?? 0
-        nub(axis: axis, hidden: chrome.open)
-        stack(axis: axis, hovered: hovered, labelWidth: labelWidth)
     }
 
     // MARK: Nub
@@ -859,497 +827,425 @@ struct FlowBarDockView: View {
     }
 
     @ViewBuilder
-    private func nub(axis: DockAxis, hidden: Bool) -> some View {
-        let rect = FlowBarDock.nubRect(axis: axis)
+    private func nub(panelSize: CGSize, hidden: Bool) -> some View {
+        let rect = FlowBarDock.nubRect(edge: edge, panelSize: panelSize)
+        let warm = model.engineHealth.warm
         RoundedRectangle(cornerRadius: FlowBarMetrics.nubRadius, style: .continuous)
             .fill(nubFill)
             .overlay(
-                RoundedRectangle(cornerRadius: FlowBarMetrics.nubRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
+                Circle()
+                    .fill(warm ? FlowBarPalette.cyan : FlowBarPalette.pinholeCold)
+                    .frame(width: FlowBarMetrics.nubDot, height: FlowBarMetrics.nubDot)
+                    .shadow(color: warm ? FlowBarPalette.cyan.opacity(0.9) : .clear, radius: 2.5)
             )
             .frame(width: rect.width, height: rect.height)
             .shadow(color: .black.opacity(0.22), radius: 3, y: 1)
             .opacity(hidden ? 0 : 1)
-            // The nub shrinks along the edge only, so it reads as folding
-            // into the controls rather than sinking away.
-            .scaleEffect(
-                x: edge.isHorizontal ? (hidden ? 0.6 : 1) : 1,
-                y: edge.isHorizontal ? 1 : (hidden ? 0.6 : 1)
-            )
+            .scaleEffect(x: edge.isHorizontal ? (hidden ? 0.6 : 1) : 1,
+                         y: edge.isHorizontal ? 1 : (hidden ? 0.6 : 1))
             .animation(.easeOut(duration: FlowBarMetrics.nubFadeDuration), value: hidden)
-            .place(rect, in: axis.panelSize)
+            .place(rect, in: panelSize)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Undertone, idle")
+            .accessibilityLabel(warm ? "Undertone, ready" : "Undertone, models loading")
     }
 
-    // MARK: Stack
+    // MARK: Hover capsule
 
     @ViewBuilder
-    private func stack(axis: DockAxis, hovered: DockControl?, labelWidth: CGFloat) -> some View {
-        let nubCenter = center(of: FlowBarDock.nubRect(axis: axis))
-        ForEach(Array(DockControl.allCases.enumerated()), id: \.element) { index, control in
-            let rect = FlowBarDock.controlRect(control, axis: axis, hovered: hovered)
-            let origin = CGSize(width: nubCenter.x - rect.midX, height: rect.midY - nubCenter.y)
-            controlView(control, rect: rect, hovered: hovered == control)
-                .opacity(chrome.open ? 1 : 0)
-                .scaleEffect(chrome.open || reduceMotion ? 1 : 0.6)
-                .offset(chrome.open || reduceMotion ? .zero : origin)
-                .animation(fanAnimation(index: index), value: chrome.open)
-                .place(rect, in: axis.panelSize)
+    private func capsule(panelSize: CGSize) -> some View {
+        let hovered = chrome.open ? chrome.hovered : nil
+        let action = model.newNoteAction
+        let rect = FlowBarDock.capsuleRect(hovered: hovered, newNote: action, edge: edge, panelSize: panelSize)
+        ZStack(alignment: .topLeading) {
+            Color.clear
+            ForEach(DockControl.allCases) { control in
+                let frame = FlowBarDock.segmentFrame(control)
+                segment(control, hovered: hovered == control)
+                    .frame(width: frame.width, height: frame.height)
+                    .offset(x: frame.minX, y: frame.minY)
+            }
         }
-        if let hovered, labelWidth > 0 {
-            let rect = FlowBarDock.labelRect(hovered, axis: axis, hovered: hovered, width: labelWidth)
-            labelView(hovered, action: newNoteAction)
-                .frame(width: rect.width, height: rect.height)
-                .place(rect, in: axis.panelSize)
+        .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+        .background(ribbonBackground(radius: RibbonMetrics.radius))
+        .opacity(chrome.open ? 1 : 0)
+        .scaleEffect(chrome.open || reduceMotion ? 1 : 0.7, anchor: capsuleAnchor)
+        .animation(chrome.open ? openAnimation : closeAnimation, value: chrome.open)
+        .place(rect, in: panelSize)
+        .accessibilityElement(children: .contain)
+        .accessibilityHidden(!chrome.open)
+
+        if let hovered {
+            let labelRect = FlowBarDock.labelRect(hovered, newNote: action, edge: edge, panelSize: panelSize)
+            hoverLabel(hovered, action: action)
+                .frame(width: labelRect.width, height: labelRect.height)
+                .place(labelRect, in: panelSize)
                 .transition(.opacity)
         }
     }
 
-    private var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
+    /// The capsule grows out of the nub, so it scales from the docked edge.
+    private var capsuleAnchor: UnitPoint {
+        switch edge {
+        case .bottom: return .bottom
+        case .top: return .top
+        case .left: return .leading
+        case .right: return .trailing
+        }
+    }
 
-    private func fanAnimation(index: Int) -> Animation {
-        guard !reduceMotion else { return .easeOut(duration: FlowBarMetrics.reducedMotionFade) }
-        guard chrome.open else { return .easeIn(duration: FlowBarMetrics.collapseDuration) }
-        return .timingCurve(0.2, 0.9, 0.3, 1.15, duration: FlowBarMetrics.fanOutDuration)
-            .delay(Double(index) * FlowBarMetrics.fanOutStagger)
+    private var openAnimation: Animation {
+        reduceMotion ? .easeOut(duration: FlowBarMetrics.reducedMotionFade)
+            : .timingCurve(0.2, 0.9, 0.3, 1.15, duration: FlowBarMetrics.fanOutDuration)
+    }
+
+    private var closeAnimation: Animation {
+        reduceMotion ? .easeOut(duration: FlowBarMetrics.reducedMotionFade)
+            : .easeIn(duration: FlowBarMetrics.collapseDuration)
     }
 
     @ViewBuilder
-    private func controlView(_ control: DockControl, rect: CGRect, hovered: Bool) -> some View {
-        controlShape(hovered: hovered)
-            .frame(width: rect.width, height: rect.height)
-            .overlay(controlGlyph(control, rect: rect, hovered: hovered))
+    private func segment(_ control: DockControl, hovered: Bool) -> some View {
+        RoundedRectangle(cornerRadius: RibbonMetrics.segmentHeight / 2, style: .continuous)
+            .fill(hovered ? FlowBarPalette.segmentHover : Color.clear)
+            .overlay(segmentGlyph(control))
+            .animation(.linear(duration: 0.12), value: hovered)
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(FlowBarDock.accessibilityLabel(for: control, newNote: newNoteAction))
+            .accessibilityLabel(FlowBarDock.accessibilityLabel(for: control, newNote: model.newNoteAction))
             .accessibilityAddTraits(.isButton)
     }
 
     @ViewBuilder
-    private func controlShape(hovered: Bool) -> some View {
-        RoundedRectangle(cornerRadius: FlowBarMetrics.controlSize / 2, style: .circular)
-            .fill((hovered ? FlowBarPalette.controlHover : FlowBarPalette.controlFill).opacity(0.98))
-            .overlay(rim(cornerRadius: FlowBarMetrics.controlSize / 2))
-            .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-            .animation(.linear(duration: 0.12), value: hovered)
-    }
-
-    /// A hairline rim keeps a near-black control readable on a dark desktop.
-    @ViewBuilder
-    private func rim(cornerRadius: CGFloat) -> some View {
-        if colorScheme == .dark {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-        }
-    }
-
-    @ViewBuilder
-    private func controlGlyph(_ control: DockControl, rect: CGRect, hovered: Bool) -> some View {
+    private func segmentGlyph(_ control: DockControl) -> some View {
         switch control {
         case .dictate:
             Image(systemName: "mic")
-                .font(.system(size: FlowBarMetrics.glyphSize, weight: .regular))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(FlowBarPalette.glyph)
         case .newNote:
-            ZStack(alignment: .topLeading) {
-                Color.clear
-                newNoteRing(pulsing: false)
-                    .place(glyphAnchorRect(in: rect), in: rect.size)
-                chevron
-                    .place(chevronRect(in: rect), in: rect.size)
-                    .opacity(hovered ? 0.9 : 0)
-                    .animation(.easeOut(duration: FlowBarMetrics.labelFadeDuration), value: hovered)
-            }
-            .frame(width: rect.width, height: rect.height, alignment: .topLeading)
+            Circle()
+                .strokeBorder(FlowBarPalette.glyph, lineWidth: 1.8)
+                .overlay(Circle().fill(FlowBarPalette.glyph).frame(width: 5, height: 5))
+                .frame(width: 14, height: 14)
         case .scratchpad:
-            Image(systemName: "note.text")
-                .font(.system(size: FlowBarMetrics.glyphSize, weight: .regular))
+            Image(systemName: "pencil")
+                .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(FlowBarPalette.glyph)
         }
     }
 
-    /// The New note ring stays pinned toward the edge so the capsule grows
-    /// inward on hover instead of sliding the glyph across.
-    private func glyphAnchorRect(in control: CGRect) -> CGRect {
-        let size = FlowBarMetrics.glyphSize
-        let inset = (FlowBarMetrics.controlSize - size) / 2
-        switch edge {
-        case .right:
-            return CGRect(x: control.width - inset - size, y: (control.height - size) / 2, width: size, height: size)
-        case .left:
-            return CGRect(x: inset, y: (control.height - size) / 2, width: size, height: size)
-        case .bottom:
-            return CGRect(x: (control.width - size) / 2, y: inset, width: size, height: size)
-        case .top:
-            return CGRect(x: (control.width - size) / 2, y: control.height - inset - size, width: size, height: size)
-        }
-    }
-
-    private func chevronRect(in control: CGRect) -> CGRect {
-        let size: CGFloat = 13
-        let inset: CGFloat = 12
-        switch edge {
-        case .right:
-            return CGRect(x: inset - size / 2, y: (control.height - size) / 2, width: size, height: size)
-        case .left:
-            return CGRect(x: control.width - inset - size / 2, y: (control.height - size) / 2, width: size, height: size)
-        case .bottom:
-            return CGRect(x: (control.width - size) / 2, y: control.height - inset - size / 2, width: size, height: size)
-        case .top:
-            return CGRect(x: (control.width - size) / 2, y: inset - size / 2, width: size, height: size)
-        }
-    }
-
     @ViewBuilder
-    private func newNoteRing(pulsing: Bool) -> some View {
-        NewNoteGlyph(pulsing: pulsing)
-            .frame(width: FlowBarMetrics.glyphSize, height: FlowBarMetrics.glyphSize)
-    }
-
-    private var chevronSymbol: String {
-        switch edge {
-        case .right: return "chevron.left"
-        case .left: return "chevron.right"
-        case .bottom: return "chevron.up"
-        case .top: return "chevron.down"
-        }
-    }
-
-    @ViewBuilder
-    private var chevron: some View {
-        Image(systemName: chevronSymbol)
-            .font(.system(size: 13, weight: .medium))
-            .foregroundStyle(FlowBarPalette.glyph)
-    }
-
-    @ViewBuilder
-    private func labelView(_ control: DockControl, action: FlowBarDock.NewNoteAction) -> some View {
+    private func hoverLabel(_ control: DockControl, action: FlowBarDock.NewNoteAction) -> some View {
         let label = FlowBarDock.labelText(for: control, newNote: action)
-        HStack(spacing: FlowBarMetrics.labelShortcutGap) {
+        HStack(spacing: RibbonMetrics.labelKeyGap) {
             Text(label.title)
-                .font(.system(size: FlowBarMetrics.labelFontSize, weight: .medium))
+                .font(.system(size: RibbonMetrics.labelFont, weight: .medium))
             if let shortcut = label.shortcut {
                 Text(shortcut)
-                    .font(.system(size: FlowBarMetrics.labelFontSize, weight: .bold))
+                    .font(.system(size: RibbonMetrics.keyFont, weight: .bold, design: .monospaced))
             }
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(FlowBarPalette.glyph)
         .lineLimit(1)
         .fixedSize()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(FlowBarPalette.labelFill.opacity(0.98),
-                    in: RoundedRectangle(cornerRadius: FlowBarMetrics.labelAlong / 2, style: .circular))
-        .overlay(rim(cornerRadius: FlowBarMetrics.labelAlong / 2))
-        .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
+                    in: RoundedRectangle(cornerRadius: RibbonMetrics.labelHeight / 2, style: .continuous))
+        .shadow(color: .black.opacity(0.30), radius: 8, y: 3)
         .accessibilityHidden(true)
     }
 
-    // MARK: Capsules
+    // MARK: Ribbon
 
+    /// The #141416 fill with a 1 point inset rim at 12% white, which keeps it
+    /// readable on a dark wall.
     @ViewBuilder
-    private func capsuleShape(_ rect: CGRect) -> some View {
-        RoundedRectangle(cornerRadius: FlowBarMetrics.capsuleDepth / 2, style: .circular)
-            .fill(FlowBarPalette.controlFill.opacity(0.98))
-            .overlay(rim(cornerRadius: FlowBarMetrics.capsuleDepth / 2))
-            .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-            .frame(width: rect.width, height: rect.height)
+    private func ribbonBackground(radius: CGFloat) -> some View {
+        RoundedRectangle(cornerRadius: radius, style: .continuous)
+            .fill(FlowBarPalette.ribbonFill)
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.35), radius: 6, y: 4)
     }
 
     @ViewBuilder
-    private func levelCapsule(axis: DockAxis, locked: Bool, commandWidth: CGFloat?) -> some View {
-        if let rect = FlowBarDock.capsuleRect(for: state, axis: axis) {
-            capsuleShape(rect)
-                .overlay(levelContent(locked: locked, commandWidth: commandWidth))
-                .place(rect, in: axis.panelSize)
-                .accessibilityElement(children: .contain)
-                .accessibilityLabel(locked ? "Dictating, locked" : "Dictating")
-        }
-    }
-
-    @ViewBuilder
-    private func levelContent(locked: Bool, commandWidth: CGFloat?) -> some View {
-        let core = Group {
-            if edge.isHorizontal {
-                HStack(spacing: 10) { levelPieces(locked: locked) }
-            } else {
-                VStack(spacing: 10) { levelPieces(locked: locked) }
+    private func ribbon(_ spec: RibbonSpec, panelSize: CGSize) -> some View {
+        let rect = FlowBarDock.ribbonRect(spec, edge: edge, panelSize: panelSize)
+        HStack(spacing: RibbonMetrics.gap) {
+            ForEach(Array(spec.pieces.enumerated()), id: \.offset) { _, piece in
+                pieceView(piece)
+                    .frame(width: RibbonSpec.width(of: piece), height: RibbonSpec.height(of: piece))
             }
         }
-        if commandWidth != nil {
-            // The Command word always reads horizontally, so on a side dock
-            // it sits beside the bars rather than turning with them.
-            HStack(spacing: FlowBarMetrics.textCapsuleGap) {
-                if edge == .left { commandMarker }
-                core
-                if edge != .left { commandMarker }
+        .padding(.leading, spec.leadingPadding)
+        .padding(.trailing, spec.trailingPadding)
+        .frame(width: rect.width, height: rect.height, alignment: .leading)
+        .background(ribbonBackground(radius: RibbonMetrics.radius))
+        .place(rect, in: panelSize)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(ribbonAccessibilityLabel)
+    }
+
+    private var ribbonAccessibilityLabel: String {
+        switch model.pillState {
+        case .listening: return model.dictationLocked ? "Dictating, locked" : "Dictating"
+        case .working: return "Cleaning up"
+        case .inserted(let ms): return "Inserted, \(Int(ms.rounded())) milliseconds"
+        case .guarded: return "Kept raw"
+        case .error(let message): return message
+        case .notice(let message): return message
+        case .recording(let elapsed): return "Recording, \(FlowBarDock.timerText(elapsed))"
+        case .idle, .meetingDetected: return "Undertone"
+        }
+    }
+
+    @ViewBuilder
+    private func pieceView(_ piece: RibbonPiece) -> some View {
+        switch piece {
+        case .dot(let dot):
+            PulsingDot(color: dot == .listening ? FlowBarPalette.cyan : FlowBarPalette.recordingRed,
+                       glow: dot == .listening)
+        case .waveform:
+            FlowingWaveform(level: model.listeningLevel)
+        case .glyph(let glyph):
+            glyphView(glyph)
+        case .spinner:
+            RingSpinner(size: RibbonMetrics.spinner)
+        case .text(let text):
+            Text(text)
+                .font(.system(size: RibbonMetrics.textFont, weight: .medium))
+                .foregroundStyle(FlowBarPalette.glyph)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .mono(let text, _):
+            Text(text)
+                .font(.system(size: RibbonMetrics.monoFont, weight: .medium, design: .monospaced))
+                .foregroundStyle(FlowBarPalette.keyText)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        case .clock(let since):
+            TimelineView(.periodic(from: since, by: 1)) { context in
+                Text(FlowBarDock.timerText(context.date.timeIntervalSince(since)))
+                    .font(.system(size: RibbonMetrics.monoFont, weight: .medium, design: .monospaced))
+                    .foregroundStyle(FlowBarPalette.keyText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, FlowBarMetrics.textCapsuleGap)
-        } else {
-            core
-        }
-    }
-
-    @ViewBuilder
-    private func levelPieces(locked: Bool) -> some View {
-        Circle()
-            .fill(.white)
-            .frame(width: 6, height: 6)
-        FlowingWaveform(level: model.listeningLevel, isHorizontal: edge.isHorizontal)
-        if locked {
-            Image(systemName: "lock.fill")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.85))
-                .accessibilityLabel("Locked, tap or press Escape to stop")
-        }
-    }
-
-    @ViewBuilder
-    private var commandMarker: some View {
-        Text(FlowBarText.commandMarker)
-            .font(.system(size: FlowBarMetrics.textCapsuleFontSize, weight: .medium))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .fixedSize()
-    }
-
-    @ViewBuilder
-    private func spinnerCapsule(axis: DockAxis) -> some View {
-        if let rect = FlowBarDock.capsuleRect(for: state, axis: axis) {
-            capsuleShape(rect)
-                .overlay(RingSpinner())
-                .place(rect, in: axis.panelSize)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Cleaning up")
-        }
-    }
-
-    @ViewBuilder
-    private func textCapsule(_ capsule: FlowBarTextCapsule, width: CGFloat, axis: DockAxis) -> some View {
-        if let rect = FlowBarDock.capsuleRect(for: state, axis: axis) {
-            RoundedRectangle(cornerRadius: FlowBarMetrics.textCapsuleThickness / 2, style: .circular)
-                .fill(FlowBarPalette.controlFill.opacity(0.98))
-                .overlay(rim(cornerRadius: FlowBarMetrics.textCapsuleThickness / 2))
-                .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-                .frame(width: rect.width, height: rect.height)
-                .overlay(
-                    HStack(spacing: FlowBarMetrics.textCapsuleGap) {
-                        capsuleGlyph(capsule.glyph)
-                        if !capsule.text.isEmpty {
-                            Text(capsule.text)
-                                .font(.system(size: FlowBarMetrics.textCapsuleFontSize, weight: .medium))
-                                .foregroundStyle(.white)
-                                .lineLimit(1)
-                        }
-                        if let mono = capsule.mono {
-                            Text(mono)
-                                .font(.system(size: FlowBarMetrics.monoFontSize, weight: .medium).monospacedDigit())
-                                .foregroundStyle(.white.opacity(0.7))
-                                .lineLimit(1)
-                        }
-                    }
-                    .fixedSize()
-                )
-                .place(rect, in: axis.panelSize)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel([capsule.text, capsule.mono ?? ""].filter { !$0.isEmpty }.joined(separator: ", "))
-        }
-    }
-
-    @ViewBuilder
-    private func capsuleGlyph(_ glyph: FlowBarTextCapsule.Glyph) -> some View {
-        switch glyph {
-        case .none:
-            EmptyView()
-        case .check:
-            Image(systemName: "checkmark")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: FlowBarMetrics.glyphSize, height: FlowBarMetrics.glyphSize)
-        case .warning:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(FlowBarPalette.amber)
-                .frame(width: FlowBarMetrics.glyphSize, height: FlowBarMetrics.glyphSize)
-        case .failure:
-            Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.9))
-                .frame(width: FlowBarMetrics.glyphSize, height: FlowBarMetrics.glyphSize)
-        }
-    }
-
-    // MARK: Recording
-
-    @ViewBuilder
-    private func recording(axis: DockAxis, elapsed: TimeInterval, hovered: Bool, badgeWidth: CGFloat) -> some View {
-        let control = FlowBarDock.recordingControlRect(axis: axis)
-        controlShape(hovered: hovered)
-            .frame(width: control.width, height: control.height)
-            .overlay(newNoteRing(pulsing: true))
-            .place(control, in: axis.panelSize)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(FlowBarDock.accessibilityLabel(for: .newNote, newNote: .stop))
-            .accessibilityAddTraits(.isButton)
-
-        let badge = FlowBarDock.recordingBadgeRect(axis: axis, hovered: hovered, width: badgeWidth)
-        if hovered {
-            labelView(.newNote, action: .stop)
-                .frame(width: badge.width, height: badge.height)
-                .place(badge, in: axis.panelSize)
-        } else {
-            Text(FlowBarDock.timerText(elapsed))
-                .font(.system(size: FlowBarMetrics.monoFontSize, weight: .medium).monospacedDigit())
-                .foregroundStyle(.white)
+        case .chip(let text):
+            Text(text)
+                .font(.system(size: RibbonMetrics.chipFont, weight: .medium))
+                .foregroundStyle(FlowBarPalette.chipText)
                 .lineLimit(1)
                 .fixedSize()
-                .frame(width: badge.width, height: badge.height)
-                .background(FlowBarPalette.labelFill.opacity(0.98),
-                            in: RoundedRectangle(cornerRadius: FlowBarMetrics.timerThickness / 2, style: .circular))
-                .overlay(rim(cornerRadius: FlowBarMetrics.timerThickness / 2))
-                .shadow(color: .black.opacity(0.32), radius: 8, y: 3)
-                .place(badge, in: axis.panelSize)
-                .accessibilityLabel("Recording, \(FlowBarDock.timerText(elapsed))")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.white.opacity(0.09),
+                            in: RoundedRectangle(cornerRadius: RibbonMetrics.chipHeight / 2, style: .continuous))
+        case .commandChip:
+            Text(FlowBarText.commandMarker)
+                .font(.system(size: RibbonMetrics.chipFont, weight: .semibold))
+                .foregroundStyle(Color(red: 0.067, green: 0.067, blue: 0.067))
+                .lineLimit(1)
+                .fixedSize()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(FlowBarPalette.command,
+                            in: RoundedRectangle(cornerRadius: RibbonMetrics.commandHeight / 2, style: .continuous))
+                .accessibilityLabel("Command mode")
+        case .button(let action):
+            ribbonButton(action)
+        case .meters:
+            VStack(alignment: .leading, spacing: 3) {
+                meterRow("Me", level: model.meetings.microphoneLevel, tint: FlowBarPalette.cyan)
+                meterRow("All", level: model.meetings.systemAudioLevel, tint: FlowBarPalette.glyph)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Me and Others audio levels")
         }
     }
 
-    // MARK: Nudge
+    @ViewBuilder
+    private func glyphView(_ glyph: RibbonGlyph) -> some View {
+        switch glyph {
+        case .check:
+            Image(systemName: "checkmark")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(FlowBarPalette.green)
+        case .warning:
+            Image(systemName: "exclamationmark.triangle")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FlowBarPalette.amber)
+        case .failure:
+            Image(systemName: "xmark.circle")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(FlowBarPalette.failure)
+        case .lock:
+            Image(systemName: "lock")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(FlowBarPalette.cyan)
+                .accessibilityLabel("Locked")
+        }
+    }
 
     @ViewBuilder
-    private func nudge(axis: DockAxis, detected: DetectedMeeting) -> some View {
-        let rect = FlowBarDock.nudgeRect(axis: axis)
-        MeetingNudgeCard(detected: detected, fraction: model.nudgeFraction, dark: colorScheme == .dark)
+    private func ribbonButton(_ action: RibbonAction) -> some View {
+        if action == .stop {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(FlowBarPalette.recordingRed)
+                .frame(width: 8, height: 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.white.opacity(0.10), in: Circle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(action.accessibilityLabel)
+                .accessibilityAddTraits(.isButton)
+        } else {
+            HStack(spacing: RibbonMetrics.keyGap) {
+                Text(action.title)
+                    .font(.system(size: RibbonMetrics.buttonFont, weight: .semibold))
+                if let shortcut = action.shortcut {
+                    Text(shortcut)
+                        .font(.system(size: RibbonMetrics.keyFont, design: .monospaced))
+                        .foregroundStyle(action.isSolid ? Color(white: 0.33) : FlowBarPalette.keyText)
+                }
+            }
+            .foregroundStyle(action.isSolid ? Color(red: 0.067, green: 0.067, blue: 0.067) : FlowBarPalette.glyph)
+            .lineLimit(1)
+            .fixedSize()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(action.isSolid ? FlowBarPalette.glyph : Color.white.opacity(0.10),
+                        in: RoundedRectangle(cornerRadius: RibbonMetrics.buttonHeight / 2, style: .continuous))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(action.accessibilityLabel)
+            .accessibilityAddTraits(.isButton)
+        }
+    }
+
+    @ViewBuilder
+    private func meterRow(_ label: String, level: Double, tint: Color) -> some View {
+        HStack(spacing: RibbonMetrics.meterGap) {
+            Text(label)
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(FlowBarPalette.keyText)
+                .lineLimit(1)
+                .fixedSize()
+                .frame(width: RibbonMetrics.meterLabel, alignment: .leading)
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.15))
+                Capsule().fill(tint)
+                    .frame(width: RibbonMetrics.meterTrack * MeterScale.visual(level))
+            }
+            .frame(width: RibbonMetrics.meterTrack, height: 3)
+            .animation(.easeOut(duration: 0.12), value: level)
+        }
+    }
+
+    // MARK: Meeting card
+
+    @ViewBuilder
+    private func card(_ detected: DetectedMeeting, panelSize: CGSize) -> some View {
+        let rect = FlowBarDock.cardRect(edge: edge, panelSize: panelSize)
+        MeetingNudgeCard(detected: detected, fraction: model.nudgeFraction)
             .frame(width: rect.width, height: rect.height)
-            .place(rect, in: axis.panelSize)
+            .place(rect, in: panelSize)
     }
 }
 
-/// A 14 point ring with one bright arc turning through it. The system's own
-/// small `ProgressView` draws spokes, which reads as a beachball at this size.
-struct RingSpinner: View {
-    @State private var spinning = false
+/// Meter levels arrive as linear RMS. A -50 to 0 dB scale makes speech fill
+/// a visible share of a 28 point track.
+enum MeterScale {
+    static func visual(_ level: Double) -> Double {
+        guard level.isFinite, level > 0.001 else { return 0 }
+        let decibels = 20 * log10(min(1, level))
+        return min(1, max(0, (decibels + 50) / 50))
+    }
+}
+
+/// An 8 point dot that breathes between full and 40% opacity. Still under
+/// Reduce Motion.
+struct PulsingDot: View {
+    let color: Color
+    var glow = false
+    @State private var dim = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Circle()
-            .strokeBorder(Color.white.opacity(0.25), lineWidth: 2)
-            .overlay(
-                Circle()
-                    .trim(from: 0, to: 0.25)
-                    .stroke(Color.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-                    .padding(1)
-                    .rotationEffect(.degrees(spinning ? 360 : 0))
-            )
-            .frame(width: 14, height: 14)
+            .fill(color)
+            .frame(width: RibbonMetrics.dot, height: RibbonMetrics.dot)
+            .shadow(color: glow ? color.opacity(0.8) : .clear, radius: 4)
+            .opacity(dim ? 0.4 : 1)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear {
                 guard !reduceMotion else { return }
-                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) { spinning = true }
+                withAnimation(.easeInOut(duration: FlowBarMetrics.pulsePeriod / 2).repeatForever(autoreverses: true)) {
+                    dim = true
+                }
             }
             .accessibilityHidden(true)
     }
 }
 
-/// The New note glyph: a 16 point ring with a 6 point dot, which becomes one
-/// filled pulsing dot while capture runs.
-struct NewNoteGlyph: View {
-    let pulsing: Bool
-    @State private var small = false
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        Group {
-            if pulsing {
-                Circle()
-                    .fill(.white)
-                    .frame(width: FlowBarMetrics.recordingDot, height: FlowBarMetrics.recordingDot)
-                    .opacity(small ? 0.55 : 1)
-                    .scaleEffect(small ? 0.82 : 1)
-                    .onAppear {
-                        guard !reduceMotion else { return }
-                        withAnimation(.easeInOut(duration: FlowBarMetrics.recordingPulsePeriod / 2)
-                            .repeatForever(autoreverses: true)) { small = true }
-                    }
-            } else {
-                Circle()
-                    .strokeBorder(FlowBarPalette.glyph, lineWidth: 2)
-                    .overlay(Circle().fill(FlowBarPalette.glyph).frame(width: 6, height: 6))
-                    .frame(width: FlowBarMetrics.glyphSize, height: FlowBarMetrics.glyphSize)
-            }
-        }
-        .frame(width: FlowBarMetrics.glyphSize, height: FlowBarMetrics.glyphSize)
-    }
-}
-
-/// The meeting nudge: which call, why it fired, and what happens next. Always
-/// 300 by 140 on screen, whichever edge the dock is on.
+/// The meeting card the pill grows into: which call, one question, and two
+/// answers. 236 points wide on every dock.
 struct MeetingNudgeCard: View {
     let detected: DetectedMeeting
     let fraction: Double
-    let dark: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(spacing: 9) {
                 MeetingBadgeView(detected: detected)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(FlowBarDock.nudgeTitle)
+                    .frame(width: 24, height: 24)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(FlowBarDock.cardTitle(for: detected))
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(.white)
-                    Text(FlowBarDock.nudgeReason(for: detected))
-                        .font(.system(size: 12))
-                        .foregroundStyle(FlowBarPalette.cardText)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .lineLimit(2)
+                        .foregroundStyle(FlowBarPalette.glyph)
+                        .lineLimit(1)
+                    Text(FlowBarDock.cardQuestion)
+                        .font(.system(size: 11))
+                        .foregroundStyle(FlowBarPalette.keyText)
+                        .lineLimit(1)
                 }
                 Spacer(minLength: 0)
             }
-            Text(FlowBarDock.nudgeSubline)
-                .font(.system(size: 11))
-                .foregroundStyle(FlowBarPalette.cardSub)
-                .padding(.top, 8)
             Spacer(minLength: 8)
-            HStack(spacing: FlowBarMetrics.nudgeButtonGap) {
-                nudgeButton("Ignore", filled: false)
-                nudgeButton("Start note", filled: true)
+            HStack(spacing: RibbonMetrics.cardButtonGap) {
+                cardButton("Not now", solid: false)
+                cardButton("Start notes", solid: true)
             }
-            .frame(height: FlowBarMetrics.nudgeButtonHeight)
+            .frame(height: RibbonMetrics.buttonHeight)
         }
-        .padding(.horizontal, FlowBarMetrics.nudgePadding)
-        .padding(.top, 12)
-        .padding(.bottom, FlowBarMetrics.nudgePadding)
-        .frame(width: FlowBarMetrics.nudgeWidth, height: FlowBarMetrics.nudgeHeight, alignment: .topLeading)
-        .background(FlowBarPalette.labelFill)
+        .padding(RibbonMetrics.cardPadding)
+        .frame(width: RibbonMetrics.cardWidth, height: RibbonMetrics.cardHeight, alignment: .topLeading)
+        .background(FlowBarPalette.ribbonFill)
         .overlay(alignment: .bottom) {
             // How long the card has left. Hovering it pauses the countdown,
             // so the bar stops with it.
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Color.white.opacity(0.14)
-                    Color.white.frame(width: geometry.size.width * max(0, min(1, fraction)))
+                    Color.white.opacity(0.10)
+                    Color.white.opacity(0.6).frame(width: geometry.size.width * max(0, min(1, fraction)))
                 }
             }
             .frame(height: 2)
         }
-        // Clipped as one piece, so the drain bar cannot run past the corners.
-        .clipShape(RoundedRectangle(cornerRadius: FlowBarMetrics.nudgeRadius, style: .continuous))
-        .overlay {
-            if dark {
-                RoundedRectangle(cornerRadius: FlowBarMetrics.nudgeRadius, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-            }
-        }
-        .shadow(color: .black.opacity(0.40), radius: 14, y: 6)
+        .clipShape(RoundedRectangle(cornerRadius: RibbonMetrics.cardRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: RibbonMetrics.cardRadius, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.35), radius: 6, y: 4)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("\(FlowBarDock.nudgeTitle). \(FlowBarDock.nudgeReason(for: detected))")
     }
 
     @ViewBuilder
-    private func nudgeButton(_ title: String, filled: Bool) -> some View {
+    private func cardButton(_ title: String, solid: Bool) -> some View {
         Text(title)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(filled ? FlowBarPalette.labelFill : FlowBarPalette.cardText)
+            .font(.system(size: RibbonMetrics.buttonFont, weight: .semibold))
+            .foregroundStyle(solid ? Color(red: 0.067, green: 0.067, blue: 0.067) : FlowBarPalette.glyph)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(filled ? Color(white: 0.96) : FlowBarPalette.cardSecondaryButton,
-                        in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+            .background(solid ? FlowBarPalette.glyph : Color.white.opacity(0.10),
+                        in: RoundedRectangle(cornerRadius: RibbonMetrics.buttonHeight / 2, style: .continuous))
             .accessibilityAddTraits(.isButton)
     }
 }
@@ -1363,8 +1259,30 @@ private extension View {
     }
 }
 
-private func center(of rect: CGRect) -> CGPoint {
-    CGPoint(x: rect.midX, y: rect.midY)
+/// A small ring with one bright arc turning through it. The system's own
+/// small `ProgressView` draws spokes, which reads as a beachball at this size.
+struct RingSpinner: View {
+    var size: CGFloat = 14
+    @State private var spinning = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Circle()
+            .strokeBorder(Color.white.opacity(0.25), lineWidth: 2)
+            .overlay(
+                Circle()
+                    .trim(from: 0, to: 0.25)
+                    .stroke(Color.white, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .padding(1)
+                    .rotationEffect(.degrees(spinning ? 360 : 0))
+            )
+            .frame(width: size, height: size)
+            .onAppear {
+                guard !reduceMotion else { return }
+                withAnimation(.linear(duration: 0.8).repeatForever(autoreverses: false)) { spinning = true }
+            }
+            .accessibilityHidden(true)
+    }
 }
 
 struct FlowingWaveform: View {

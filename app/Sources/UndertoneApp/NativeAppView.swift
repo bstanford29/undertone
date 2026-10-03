@@ -6,7 +6,6 @@ enum AppPage: String, CaseIterable, Hashable, Identifiable {
     case history = "History"
     case dictionary = "Dictionary"
     case meetings = "Meetings"
-    case settings = "Settings"
     case permissions = "Permissions"
 
     var id: String { rawValue }
@@ -17,7 +16,6 @@ enum AppPage: String, CaseIterable, Hashable, Identifiable {
         case .history: return "clock.arrow.circlepath"
         case .dictionary: return "text.book.closed"
         case .meetings: return "person.2"
-        case .settings: return "gearshape"
         case .permissions: return "checkmark.shield"
         }
     }
@@ -173,7 +171,6 @@ struct NativeAppView: View {
         case .history: HistoryView()
         case .dictionary: DictionaryView()
         case .meetings: MeetingView()
-        case .settings: SettingsView()
         case .permissions:
             SetupView()
                 .accessibilityElement(children: .contain)
@@ -192,7 +189,7 @@ struct NativeAppView: View {
                     model.appPage = model.permissionSnapshot.dictationReady ? .history : .permissions
                 }
                 .buttonStyle(.borderedProminent)
-                Button("Settings") { model.appPage = .settings }
+                Button("Settings…") { model.openSettings() }
                     .buttonStyle(.bordered)
             }
 
@@ -269,7 +266,6 @@ struct NativeAppView: View {
         case .history: return "Review what you said and what was inserted."
         case .dictionary: return "Keep names, phrases, and replacements consistent."
         case .meetings: return "Capture local Me and Others notes when you choose."
-        case .settings: return "Tune cleanup, sound, and meeting export settings."
         case .permissions: return "Check access before the first dictation."
         }
     }
@@ -284,7 +280,7 @@ struct NativeAppView: View {
     private var usesOuterScroll: Bool {
         switch model.appPage {
         case .home: return true
-        case .history, .dictionary, .meetings, .settings: return false
+        case .history, .dictionary, .meetings: return false
         case .permissions: return true
         }
     }

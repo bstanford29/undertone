@@ -94,21 +94,21 @@ final class FlowBarLabelTests: XCTestCase {
     func testLabelTextPerControl() {
         let dictate = FlowBarDock.labelText(for: .dictate, isRecording: false)
         XCTAssertEqual(dictate.title, "Dictate")
-        XCTAssertEqual(dictate.shortcut, "fn")
+        XCTAssertEqual(dictate.shortcut, "hold fn")
 
         let newNote = FlowBarDock.labelText(for: .newNote, isRecording: false)
         XCTAssertEqual(newNote.title, "New note")
-        XCTAssertEqual(newNote.shortcut, "Opt+M")
+        XCTAssertEqual(newNote.shortcut, "⌥M")
 
         let scratchpad = FlowBarDock.labelText(for: .scratchpad, isRecording: false)
         XCTAssertEqual(scratchpad.title, "Quick note")
-        XCTAssertNil(scratchpad.shortcut, "Quick note carries no shortcut on the capsule")
+        XCTAssertEqual(scratchpad.shortcut, "⌥S")
     }
 
     func testNewNoteBecomesStopWhileRecording() {
         let recording = FlowBarDock.labelText(for: .newNote, isRecording: true)
         XCTAssertEqual(recording.title, "Stop")
-        XCTAssertEqual(recording.shortcut, "Opt+M")
+        XCTAssertEqual(recording.shortcut, "⌥M")
     }
 
     func testRecordingNeverRenamesTheOtherTwoControls() {
@@ -117,9 +117,9 @@ final class FlowBarLabelTests: XCTestCase {
     }
 
     func testAccessibilityLabelNamesTheShortcut() {
-        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .dictate), "Dictate, fn")
-        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .newNote, isRecording: true), "Stop, Opt+M")
-        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .scratchpad), "Quick note")
+        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .dictate), "Dictate, hold fn")
+        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .newNote, isRecording: true), "Stop, ⌥M")
+        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .scratchpad), "Quick note, ⌥S")
     }
 
     func testNoLabelUsesAnEmDash() {
@@ -168,7 +168,7 @@ final class FlowBarLabelTests: XCTestCase {
         XCTAssertEqual(FlowBarDock.labelText(for: .newNote, newNote: .stop).title, "Stop")
         XCTAssertEqual(FlowBarDock.labelText(for: .newNote, newNote: .resume).title, "Resume")
         for action in [FlowBarDock.NewNoteAction.start, .stop, .resume] {
-            XCTAssertEqual(FlowBarDock.labelText(for: .newNote, newNote: action).shortcut, "Opt+M")
+            XCTAssertEqual(FlowBarDock.labelText(for: .newNote, newNote: action).shortcut, "⌥M")
         }
     }
 
@@ -178,7 +178,7 @@ final class FlowBarLabelTests: XCTestCase {
     }
 
     func testResumeReachesVoiceOverToo() {
-        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .newNote, newNote: .resume), "Resume, Opt+M")
+        XCTAssertEqual(FlowBarDock.accessibilityLabel(for: .newNote, newNote: .resume), "Resume, ⌥M")
     }
 
     func testTimerReadsMinutesAndSeconds() {
@@ -195,11 +195,105 @@ final class FlowBarLabelTests: XCTestCase {
     }
 }
 
-// MARK: - Capsule contents and sizes
+// MARK: - What each state draws
 
-final class FlowBarCapsuleTests: XCTestCase {
-    private let side = PillEdge.right
-    private let flat = PillEdge.bottom
+final class RibbonContentTests: XCTestCase {
+    private func ribbon(_ state: PillState, _ configure: (inout FlowBarDock.RibbonInputs) -> Void = { _ in }) -> RibbonSpec? {
+        var inputs = FlowBarDock.RibbonInputs(pillState: state)
+        configure(&inputs)
+        return FlowBarDock.ribbon(for: inputs)
+    }
+
+    func testIdleAndTheMeetingCardDrawNoRibbon() {
+        XCTAssertNil(ribbon(.idle))
+        XCTAssertNil(ribbon(.meetingDetected(PreviewFixtures.detectedZoom)))
+    }
+
+    func testListeningIsADotTheWaveformAndTheTargetChip() {
+        let spec = ribbon(.listening(level: 0.4)) { $0.targetChip = "Messages · Casual" }
+        XCTAssertEqual(spec?.pieces, [.dot(.listening), .waveform, .chip("Messages · Casual")])
+    }
+
+    func testListeningWithNoTargetAppDropsTheChip() {
+        XCTAssertEqual(ribbon(.listening(level: 0))?.pieces, [.dot(.listening), .waveform])
+    }
+
+    func testTheRibbonNeverShowsWordsWhileListeningBecauseThereAreNoPartials() {
+        let spec = ribbon(.listening(level: 0.4)) { $0.targetChip = "Mail · Formal" }
+        XCTAssertFalse(spec?.pieces.contains { if case .text = $0 { return true } else { return false } } ?? true)
+    }
+
+    func testLockedShowsTheLockTheClockAndHowToFinish() {
+        let since = Date(timeIntervalSince1970: 100)
+        let spec = ribbon(.listening(level: 0.4)) {
+            $0.locked = true
+            $0.lockedSince = since
+            $0.targetChip = "Messages · Casual"
+        }
+        XCTAssertEqual(spec?.pieces, [.glyph(.lock), .waveform, .clock(since: since), .chip("fn to finish")])
+    }
+
+    func testCommandModeLeadsWithTheCommandChip() {
+        let spec = ribbon(.listening(level: 0.4)) {
+            $0.commandMode = true
+            $0.targetChip = "Mail · Formal"
+        }
+        XCTAssertEqual(spec?.pieces, [.commandChip, .waveform, .chip("Mail · Formal")])
+    }
+
+    func testWorkingSaysCleaningAndNamesTheModel() {
+        let spec = ribbon(.working) { $0.workingModel = "qwen3.5" }
+        XCTAssertEqual(spec?.pieces, [.spinner, .text("Cleaning"), .mono("qwen3.5", reserve: "qwen3.5")])
+    }
+
+    func testAWorkingNoteReplacesCleaningAndDropsTheModel() {
+        let spec = ribbon(.working) {
+            $0.workingModel = "qwen3.5"
+            $0.workingNote = "Release fn to insert"
+        }
+        XCTAssertEqual(spec?.pieces, [.spinner, .text("Release fn to insert")])
+    }
+
+    func testInsertedShowsTheReadingAndUndoOnlyWhenThereIsSomethingToUndo() {
+        XCTAssertEqual(ribbon(.inserted(totalMS: 742.4)) { $0.canUndo = true }?.pieces,
+                       [.glyph(.check), .mono("742 ms", reserve: "742 ms"), .button(.undo)])
+        XCTAssertEqual(ribbon(.inserted(totalMS: 742.4))?.pieces,
+                       [.glyph(.check), .mono("742 ms", reserve: "742 ms")])
+    }
+
+    func testKeptRawOffersWhy() {
+        XCTAssertEqual(ribbon(.guarded(totalMS: 900)) { $0.canExplainGuard = true }?.pieces,
+                       [.glyph(.warning), .text("Kept raw"), .button(.why)])
+    }
+
+    func testAnErrorOffersInsertAgainOnlyWhenTheTextWasSaved() {
+        let message = "Couldn't type into Messages. Text saved."
+        XCTAssertEqual(ribbon(.error(message)) { $0.errorOffersRetry = true }?.pieces,
+                       [.glyph(.failure), .text(message), .button(.insertAgain)])
+        XCTAssertEqual(ribbon(.error("Microphone unavailable"))?.pieces,
+                       [.glyph(.failure), .text("Microphone unavailable")])
+    }
+
+    func testRecordingShowsTheRedDotTimerMetersAndStop() {
+        XCTAssertEqual(ribbon(.recording(elapsed: 12 * 60 + 4))?.pieces,
+                       [.dot(.recording), .mono("12:04", reserve: "00:00"), .meters, .button(.stop)])
+    }
+
+    func testANoticeIsACheckAndItsWords() {
+        XCTAssertEqual(ribbon(.notice("Saved"))?.pieces, [.glyph(.check), .text("Saved")])
+    }
+
+    func testALearnedWordNoticeGetsARealUndoButton() {
+        XCTAssertEqual(ribbon(.notice("Learned Velora · Undo")) { $0.canUndoLearning = true }?.pieces,
+                       [.glyph(.check), .text("Learned Velora"), .button(.undoLearning)])
+        XCTAssertEqual(ribbon(.notice("Learned Velora · Undo"))?.pieces,
+                       [.glyph(.check), .text("Learned Velora")], "No button once the undo is spent")
+    }
+
+    func testLearningNoticeHasSixSecondsForUndo() {
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Learned Velora · Undo")), .seconds(6))
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Saved")), FlowBarMetrics.transientHold)
+    }
 
     @MainActor
     func testPublishedStateResizesTheActualPanelAfterAssignment() async throws {
@@ -214,365 +308,319 @@ final class FlowBarCapsuleTests: XCTestCase {
 
         let expected = FlowBarDock.panelSize(
             for: FlowBarState.viewState(model: model, hovered: nil, open: false),
-            edge: .right
+            edge: .right, newNote: model.newNoteAction
         )
         XCTAssertEqual(controller.panelFrameForTesting.size, expected)
     }
 
-    func testInsertedDropsTheWordAndKeepsTheReading() {
-        let capsule = FlowBarDock.textCapsule(for: .inserted(totalMS: 742), workingNote: nil)
-        XCTAssertEqual(capsule?.glyph, .check)
-        XCTAssertEqual(capsule?.text, "")
-        XCTAssertEqual(capsule?.mono, "742 ms")
-    }
-
-    func testLearningNoticeHasSixSecondsForUndo() {
-        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Learned Velora · Undo")), .seconds(6))
-        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Saved")), FlowBarMetrics.transientHold)
-    }
-
-    func testGuardedAndErrorCarryTheirOwnGlyphs() {
-        XCTAssertEqual(FlowBarDock.textCapsule(for: .guarded(totalMS: 900), workingNote: nil),
-                       FlowBarTextCapsule(glyph: .warning, text: "Kept raw"))
-        XCTAssertEqual(FlowBarDock.textCapsule(for: .error("Insertion failed: app changed"), workingNote: nil),
-                       FlowBarTextCapsule(glyph: .failure, text: "Insertion failed: app changed"))
-        XCTAssertEqual(FlowBarDock.textCapsule(for: .notice("Saved"), workingNote: nil),
-                       FlowBarTextCapsule(glyph: .check, text: "Saved"))
-        XCTAssertEqual(FlowBarDock.textCapsule(for: .notice("Meeting ended"), workingNote: nil),
-                       FlowBarTextCapsule(glyph: .check, text: "Meeting ended"))
-    }
-
-    func testWorkingIsASpinnerUntilItHasSomethingToSay() {
-        XCTAssertNil(FlowBarDock.textCapsule(for: .working, workingNote: nil))
-        XCTAssertNil(FlowBarDock.textCapsule(for: .working, workingNote: ""))
-        XCTAssertEqual(FlowBarDock.textCapsule(for: .working, workingNote: "Release fn to insert"),
-                       FlowBarTextCapsule(text: "Release fn to insert"))
-    }
-
-    func testStatesWithoutACapsuleReturnNothing() {
-        XCTAssertNil(FlowBarDock.textCapsule(for: .idle, workingNote: nil))
-        XCTAssertNil(FlowBarDock.textCapsule(for: .listening(level: 0.4), workingNote: nil))
-        XCTAssertNil(FlowBarDock.textCapsule(for: .recording(elapsed: 10), workingNote: nil))
-    }
-
-    func testDictationCapsuleIs40By120AlongEveryEdge() {
-        let state = FlowBarViewState.level(locked: false, commandWidth: nil)
-        for edge in PillEdge.allCases {
-            let box = FlowBarDock.capsuleBox(for: state, edge: edge)
-            XCTAssertEqual(box?.depth, 40, "\(edge)")
-            XCTAssertEqual(box?.along, 120, "\(edge)")
-        }
-        XCTAssertEqual(FlowBarDock.capsuleBox(for: .spinner, edge: side)?.depth, 40)
-        XCTAssertEqual(FlowBarDock.capsuleBox(for: .spinner, edge: side)?.along, 120)
-    }
-
-    func testDictationCapsuleGrowsSidewaysForTheCommandMarker() {
-        let state = FlowBarViewState.level(locked: false, commandWidth: 60)
-        // The word always reads horizontally, so a side dock grows inward and
-        // a flat dock grows along the edge. Neither one rotates the text.
-        let sideBox = FlowBarDock.capsuleBox(for: state, edge: side)
-        XCTAssertEqual(sideBox?.depth, 40 + 60 + 16)
-        XCTAssertEqual(sideBox?.along, 120)
-
-        let flatBox = FlowBarDock.capsuleBox(for: state, edge: flat)
-        XCTAssertEqual(flatBox?.depth, 40)
-        XCTAssertEqual(flatBox?.along, 120 + 60 + 16)
-    }
-
-    func testTextCapsulesStayHorizontalOnASideDock() {
-        let state = FlowBarViewState.text(FlowBarTextCapsule(text: "Kept raw"), width: 180)
-        let sideBox = FlowBarDock.capsuleBox(for: state, edge: side)
-        XCTAssertEqual(sideBox?.depth, 180, "It grows toward the interior, not along the edge")
-        XCTAssertEqual(sideBox?.along, 40)
-
-        let flatBox = FlowBarDock.capsuleBox(for: state, edge: flat)
-        XCTAssertEqual(flatBox?.depth, 40)
-        XCTAssertEqual(flatBox?.along, 180)
-    }
-
-    func testStatesWithNoCapsuleHaveNoCapsuleBox() {
-        XCTAssertNil(FlowBarDock.capsuleBox(for: .nub, edge: side))
-        XCTAssertNil(FlowBarDock.capsuleBox(for: .stack(hovered: nil, labelWidth: 0), edge: side))
-        XCTAssertNil(FlowBarDock.capsuleBox(for: .recording(elapsed: 0, hovered: false, badgeWidth: 60), edge: side))
-        XCTAssertNil(FlowBarDock.capsuleBox(for: .nudge(PreviewFixtures.detectedZoom), edge: side))
-    }
-
-    func testTextCapsuleWidthIsPaddingPlusEveryPieceAndTheGapsBetweenThem() {
-        // Padding 16 both ends, a 16 point glyph, 8 point gaps.
-        XCTAssertEqual(FlowBarDock.textCapsuleWidth(glyph: .none, textWidth: 100, monoWidth: 0), 132)
-        XCTAssertEqual(FlowBarDock.textCapsuleWidth(glyph: .check, textWidth: 100, monoWidth: 0), 132 + 16 + 8)
-        XCTAssertEqual(FlowBarDock.textCapsuleWidth(glyph: .check, textWidth: 0, monoWidth: 50), 32 + 16 + 8 + 50)
-        XCTAssertEqual(FlowBarDock.textCapsuleWidth(glyph: .check, textWidth: 60, monoWidth: 50), 32 + 16 + 60 + 50 + 16)
-    }
-
-    func testLabelAndTimerPaddingMatchTheSpec() {
-        XCTAssertEqual(FlowBarDock.labelWidth(textWidth: 100), 144)
-        XCTAssertEqual(FlowBarDock.timerWidth(textWidth: 40), 60)
+    func testTheButtonsReuseTheExistingShortcuts() {
+        XCTAssertEqual(RibbonAction.undo.shortcut, "⌥⇧Z")
+        XCTAssertEqual(RibbonAction.insertAgain.shortcut, "⌥⇧V")
+        XCTAssertTrue(RibbonAction.insertAgain.isSolid)
+        XCTAssertFalse(RibbonAction.undo.isSolid)
     }
 }
 
-// MARK: - Panel and control geometry
+// MARK: - Ribbon geometry
 
-final class FlowBarLayoutTests: XCTestCase {
-    private let right = PillEdge.right
-    private let bottom = PillEdge.bottom
-
-    func testTheIdlePanelIsExactlyTheNubHitArea() {
-        XCTAssertEqual(FlowBarDock.panelSize(for: .nub, edge: right), CGSize(width: 44, height: 48))
-        XCTAssertEqual(FlowBarDock.panelSize(for: .nub, edge: bottom), CGSize(width: 48, height: 44))
+final class RibbonGeometryTests: XCTestCase {
+    func testTheRibbonIs36TallWithAnEighteenPointRadius() {
+        XCTAssertEqual(RibbonMetrics.height, 36)
+        XCTAssertEqual(RibbonMetrics.radius, 18)
+        XCTAssertEqual(RibbonSpec([.dot(.listening), .waveform]).size.height, 36)
     }
 
-    func testTheNubIsDrawn48By8SixPointsFromTheEdge() {
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: .nub, edge: right))
-        let nub = FlowBarDock.nubRect(axis: axis)
-        XCTAssertEqual(nub.size, CGSize(width: 8, height: 48))
-        XCTAssertEqual(axis.panelSize.width - nub.maxX, 6, accuracy: 0.0001)
-
-        let flatAxis = DockAxis(edge: bottom, panelSize: FlowBarDock.panelSize(for: .nub, edge: bottom))
-        let flatNub = FlowBarDock.nubRect(axis: flatAxis)
-        XCTAssertEqual(flatNub.size, CGSize(width: 48, height: 8))
-        XCTAssertEqual(flatNub.minY, 6, accuracy: 0.0001)
+    func testWidthIsPaddingPlusEveryPieceAndTheGapsBetweenThem() {
+        let spec = RibbonSpec([.dot(.listening), .waveform])
+        XCTAssertEqual(spec.width, 14 + 8 + FlowingWaveform.blockLength + 10 + 14)
     }
 
-    func testTheStackRunsMicThenNewNoteThenQuickNoteAcross160Points() {
-        XCTAssertEqual(FlowBarDock.controlOffset(.dictate), 0)
-        XCTAssertEqual(FlowBarDock.controlOffset(.newNote), 72)
-        XCTAssertEqual(FlowBarDock.controlOffset(.scratchpad), 120)
-        let total = FlowBarDock.controlOffset(.scratchpad) + FlowBarDock.controlAlong(.scratchpad)
-        XCTAssertEqual(total, FlowBarMetrics.stackAlong)
+    func testARibbonEndingInAChipOrButtonTucksItIn() {
+        XCTAssertEqual(RibbonSpec([.waveform, .chip("Mail · Formal")]).trailingPadding, 6)
+        XCTAssertEqual(RibbonSpec([.glyph(.check), .button(.undo)]).trailingPadding, 6)
+        XCTAssertEqual(RibbonSpec([.spinner, .text("Cleaning")]).trailingPadding, 14)
     }
 
-    func testControlsAreTenPointsInFromTheEdge() {
-        let state = FlowBarViewState.stack(hovered: nil, labelWidth: 0)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        for control in DockControl.allCases {
-            let rect = FlowBarDock.controlRect(control, axis: axis, hovered: nil)
-            XCTAssertEqual(axis.panelSize.width - rect.maxX, 10, accuracy: 0.0001, "\(control)")
+    func testPieceFramesRunLeftToRightWithTenPointGaps() {
+        let spec = RibbonSpec([.glyph(.check), .mono("742 ms", reserve: "742 ms"), .button(.undo)])
+        let frames = spec.pieceFrames
+        XCTAssertEqual(frames[0].minX, 14)
+        for index in 1..<frames.count {
+            XCTAssertEqual(frames[index].minX, frames[index - 1].maxX + 10, accuracy: 0.001)
         }
-        XCTAssertEqual(FlowBarDock.controlRect(.dictate, axis: axis, hovered: nil).size,
-                       CGSize(width: 40, height: 64))
-        XCTAssertEqual(FlowBarDock.controlRect(.scratchpad, axis: axis, hovered: nil).size,
-                       CGSize(width: 40, height: 40))
+        XCTAssertEqual(frames.last!.maxX + spec.trailingPadding, spec.width, accuracy: 0.001)
+        XCTAssertEqual(frames[2].height, 24, "Buttons are 24 tall inside the 36 ribbon")
+        XCTAssertEqual(frames[2].midY, 18, accuracy: 0.001)
     }
 
-    func testMicStandsOnEndOnASideDockAndLiesFlatOnABottomDock() {
-        let state = FlowBarViewState.stack(hovered: nil, labelWidth: 0)
-        let flatAxis = DockAxis(edge: bottom, panelSize: FlowBarDock.panelSize(for: state, edge: bottom))
-        XCTAssertEqual(FlowBarDock.controlRect(.dictate, axis: flatAxis, hovered: nil).size,
-                       CGSize(width: 64, height: 40))
+    func testAClickOnTheButtonFindsItAndAClickBesideItDoesNot() {
+        let spec = RibbonSpec([.glyph(.check), .mono("742 ms", reserve: "742 ms"), .button(.undo)])
+        let button = spec.pieceFrames[2]
+        XCTAssertEqual(spec.action(at: CGPoint(x: button.midX, y: button.midY)), .undo)
+        XCTAssertNil(spec.action(at: CGPoint(x: spec.pieceFrames[0].midX, y: 18)))
     }
 
-    func testControlsSitEightPointsApart() {
-        let state = FlowBarViewState.stack(hovered: nil, labelWidth: 0)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        let mic = FlowBarDock.controlRect(.dictate, axis: axis, hovered: nil)
-        let note = FlowBarDock.controlRect(.newNote, axis: axis, hovered: nil)
-        let pad = FlowBarDock.controlRect(.scratchpad, axis: axis, hovered: nil)
-        XCTAssertEqual(mic.minY - note.maxY, 8, accuracy: 0.0001)
-        XCTAssertEqual(note.minY - pad.maxY, 8, accuracy: 0.0001)
+    func testAClockReservesItsWidthSoTheRibbonDoesNotJitter() {
+        let early = RibbonSpec([.mono("0:09", reserve: "0:00")])
+        let later = RibbonSpec([.mono("0:59", reserve: "0:00")])
+        XCTAssertEqual(early.width, later.width)
+        XCTAssertEqual(FlowBarDock.zeroed("12:04"), "00:00")
+        XCTAssertEqual(FlowBarDock.zeroed("1:02:04"), "0:00:00")
     }
 
-    func testHoveringNewNoteGrowsItInwardAndLeavesTheOthersAlone() {
-        let state = FlowBarViewState.stack(hovered: .newNote, labelWidth: 0)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        let note = FlowBarDock.controlRect(.newNote, axis: axis, hovered: .newNote)
-        XCTAssertEqual(note.width, 76)
-        XCTAssertEqual(axis.panelSize.width - note.maxX, 10, accuracy: 0.0001,
-                       "It grows toward the interior, so the ring stays by the edge")
-        XCTAssertEqual(FlowBarDock.controlRect(.dictate, axis: axis, hovered: .newNote).width, 40)
+    func testLongErrorTextIsCapped() {
+        let long = String(repeating: "Insertion failed ", count: 20)
+        XCTAssertEqual(RibbonSpec.width(of: .text(long)), RibbonMetrics.maxTextWidth)
     }
 
-    func testHoveringAControlWidensThePanelEnoughForItsLabel() {
-        let plain = FlowBarDock.panelBox(for: .stack(hovered: nil, labelWidth: 0), edge: right)
-        let labelled = FlowBarDock.panelBox(for: .stack(hovered: .dictate, labelWidth: 150), edge: right)
-        XCTAssertEqual(labelled.depth - plain.depth, 12 + 150, accuracy: 0.0001)
-        XCTAssertEqual(labelled.along, plain.along)
+    func testOnTheBottomDockTheRibbonSitsTenPointsUpAndCentred() {
+        let spec = RibbonSpec([.dot(.listening), .waveform])
+        let panel = FlowBarDock.panelSize(for: .ribbon(spec), edge: .bottom)
+        let rect = FlowBarDock.ribbonRect(spec, edge: .bottom, panelSize: panel)
+        XCTAssertEqual(rect.minY, 10)
+        XCTAssertEqual(rect.midX, panel.width / 2, accuracy: 0.001)
+        XCTAssertEqual(panel.height, 10 + 36 + FlowBarMetrics.shadowSlack)
     }
 
-    func testTheLabelSits12PointsInwardFromTheHoveredControl() {
-        let state = FlowBarViewState.stack(hovered: .dictate, labelWidth: 150)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        let control = FlowBarDock.controlRect(.dictate, axis: axis, hovered: .dictate)
-        let label = FlowBarDock.labelRect(.dictate, axis: axis, hovered: .dictate, width: 150)
-        XCTAssertEqual(control.minX - label.maxX, 12, accuracy: 0.0001)
-        XCTAssertEqual(label.height, 46)
-        XCTAssertEqual(label.midY, control.midY, accuracy: 0.0001, "The label centres on its control")
+    func testOnTheTopDockItHangsTenPointsDown() {
+        let spec = RibbonSpec([.dot(.listening), .waveform])
+        let panel = FlowBarDock.panelSize(for: .ribbon(spec), edge: .top)
+        let rect = FlowBarDock.ribbonRect(spec, edge: .top, panelSize: panel)
+        XCTAssertEqual(panel.height - rect.maxY, 10)
     }
 
-    func testCapsulesThatHoldWordsStayUprightOnABottomDock() {
-        // A label, a timer, and a text capsule all read left to right. Turning
-        // them with the dock would stand the words on end.
-        let label = FlowBarViewState.stack(hovered: .dictate, labelWidth: 150)
-        let axis = DockAxis(edge: bottom, panelSize: FlowBarDock.panelSize(for: label, edge: bottom))
-        let rect = FlowBarDock.labelRect(.dictate, axis: axis, hovered: .dictate, width: 150)
-        XCTAssertEqual(rect.size, CGSize(width: 150, height: 46))
-
-        let recording = FlowBarViewState.recording(elapsed: 724, hovered: false, badgeWidth: 60)
-        let recordingAxis = DockAxis(edge: bottom, panelSize: FlowBarDock.panelSize(for: recording, edge: bottom))
-        XCTAssertEqual(FlowBarDock.recordingBadgeRect(axis: recordingAxis, hovered: false, width: 60).size,
-                       CGSize(width: 60, height: 28))
-    }
-
-    func testABottomDockPanelGrowsSidewaysForALongLabel() {
-        // On a bottom dock a label reaches along the edge, not inward, and it
-        // hangs off its own control rather than the middle of the stack.
-        let state = FlowBarViewState.stack(hovered: .dictate, labelWidth: 150)
-        let box = FlowBarDock.panelBox(for: state, edge: bottom)
-        XCTAssertEqual(box.depth, 10 + 40 + 12 + 46 + 12, "Inward it only needs the 46 point label height")
-        XCTAssertEqual(box.along, 2 * (48 + 75 + 12), "Sideways it needs room for a label hung off the mic")
-    }
-
-    func testTheLabelStaysCentredOnItsControlOnEveryDock() {
-        for edge in PillEdge.allCases {
-            for control in DockControl.allCases {
-                let state = FlowBarViewState.stack(hovered: control, labelWidth: 150)
-                let axis = DockAxis(edge: edge, panelSize: FlowBarDock.panelSize(for: state, edge: edge))
-                let drawn = FlowBarDock.controlRect(control, axis: axis, hovered: control)
-                let label = FlowBarDock.labelRect(control, axis: axis, hovered: control, width: 150)
-                if edge.isHorizontal {
-                    XCTAssertEqual(label.midX, drawn.midX, accuracy: 0.0001, "\(edge) \(control)")
-                } else {
-                    XCTAssertEqual(label.midY, drawn.midY, accuracy: 0.0001, "\(edge) \(control)")
-                }
+    func testOnTheSideDocksTheRibbonStaysHorizontalAndGrowsInward() {
+        let spec = RibbonSpec([.dot(.listening), .waveform, .chip("Messages · Casual")])
+        for edge in [PillEdge.left, .right] {
+            let panel = FlowBarDock.panelSize(for: .ribbon(spec), edge: edge)
+            let rect = FlowBarDock.ribbonRect(spec, edge: edge, panelSize: panel)
+            XCTAssertEqual(rect.width, spec.width, "The ribbon keeps its width on \(edge)")
+            XCTAssertEqual(rect.height, 36, "and stays 36 tall, so its words never rotate")
+            XCTAssertEqual(rect.midY, panel.height / 2, accuracy: 0.001)
+            if edge == .left {
+                XCTAssertEqual(rect.minX, 10)
+            } else {
+                XCTAssertEqual(panel.width - rect.maxX, 10)
             }
         }
     }
 
-    func testHitAreasAreTheDrawnSizePlusFourPoints() {
-        let state = FlowBarViewState.stack(hovered: nil, labelWidth: 0)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        let drawn = FlowBarDock.controlRect(.scratchpad, axis: axis, hovered: nil)
-        let hit = FlowBarDock.controlHitRect(.scratchpad, axis: axis, hovered: nil)
-        XCTAssertEqual(hit.width - drawn.width, 8, accuracy: 0.0001)
-        XCTAssertEqual(hit.height - drawn.height, 8, accuracy: 0.0001)
-    }
-
-    func testHitTestingFindsTheControlUnderThePointer() {
-        let state = FlowBarViewState.stack(hovered: nil, labelWidth: 0)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        for control in DockControl.allCases {
-            let rect = FlowBarDock.controlRect(control, axis: axis, hovered: nil)
-            XCTAssertEqual(FlowBarDock.control(at: CGPoint(x: rect.midX, y: rect.midY), axis: axis, hovered: nil),
-                           control)
+    func testRibbonClicksMapFromPanelCoordinates() {
+        let spec = RibbonSpec([.glyph(.warning), .text("Kept raw"), .button(.why)])
+        for edge in PillEdge.allCases {
+            let panel = FlowBarDock.panelSize(for: .ribbon(spec), edge: edge)
+            let rect = FlowBarDock.ribbonRect(spec, edge: edge, panelSize: panel)
+            let button = spec.pieceFrames[2]
+            let point = CGPoint(x: rect.minX + button.midX, y: rect.maxY - button.midY)
+            XCTAssertEqual(FlowBarDock.ribbonAction(at: point, spec: spec, edge: edge, panelSize: panel), .why)
         }
-        // The far interior of the panel is inside the dock but on no control.
-        XCTAssertNil(FlowBarDock.control(at: CGPoint(x: 2, y: 2), axis: axis, hovered: nil))
     }
 
     func testEveryStateFitsInsideItsOwnPanel() {
-        let states: [FlowBarViewState] = [
-            .nub,
-            .stack(hovered: nil, labelWidth: 0),
-            .stack(hovered: .dictate, labelWidth: 160),
-            .stack(hovered: .newNote, labelWidth: 160),
-            .stack(hovered: .scratchpad, labelWidth: 220),
-            .level(locked: true, commandWidth: nil),
-            .level(locked: false, commandWidth: 60),
-            .spinner,
-            .text(FlowBarTextCapsule(glyph: .check, mono: "742 ms"), width: 120),
-            .recording(elapsed: 724, hovered: false, badgeWidth: 60),
-            .recording(elapsed: 724, hovered: true, badgeWidth: 150),
-            .nudge(PreviewFixtures.detectedZoom),
+        let specs: [RibbonSpec] = [
+            RibbonSpec([.dot(.listening), .waveform, .chip("Messages · Casual")]),
+            RibbonSpec([.glyph(.failure), .text("Couldn't type into Messages. Text saved."), .button(.insertAgain)]),
+            RibbonSpec([.dot(.recording), .mono("12:04", reserve: "00:00"), .meters, .button(.stop)]),
         ]
+        let bounds = { (size: CGSize) in CGRect(origin: .zero, size: size) }
         for edge in PillEdge.allCases {
-            for state in states {
-                let size = FlowBarDock.panelSize(for: state, edge: edge)
-                let axis = DockAxis(edge: edge, panelSize: size)
-                let bounds = CGRect(origin: .zero, size: size)
-                for rect in drawnRects(state: state, axis: axis) {
-                    XCTAssertTrue(bounds.contains(rect),
-                                  "\(state) on \(edge): \(rect) escapes \(bounds)")
+            for spec in specs {
+                let panel = FlowBarDock.panelSize(for: .ribbon(spec), edge: edge)
+                XCTAssertTrue(bounds(panel).contains(FlowBarDock.ribbonRect(spec, edge: edge, panelSize: panel)))
+            }
+            for hovered in [nil] + DockControl.allCases.map(Optional.some) {
+                let panel = FlowBarDock.panelSize(for: .hover(hovered), edge: edge)
+                XCTAssertTrue(bounds(panel).contains(
+                    FlowBarDock.capsuleRect(hovered: hovered, newNote: .start, edge: edge, panelSize: panel)))
+                if let hovered {
+                    XCTAssertTrue(bounds(panel).contains(
+                        FlowBarDock.labelRect(hovered, newNote: .start, edge: edge, panelSize: panel)),
+                        "\(hovered) label on \(edge)")
                 }
             }
+            let nudge = FlowBarDock.panelSize(for: .nudge(PreviewFixtures.detectedZoom), edge: edge)
+            XCTAssertTrue(bounds(nudge).contains(FlowBarDock.cardRect(edge: edge, panelSize: nudge)))
+        }
+    }
+}
+
+// MARK: - Nub and hover capsule
+
+final class NubAndCapsuleTests: XCTestCase {
+    func testTheNubIs44By6SixPointsFromTheEdge() {
+        let panel = FlowBarDock.panelSize(for: .nub, edge: .bottom)
+        XCTAssertEqual(panel, CGSize(width: 48, height: 44), "The panel is the hit area")
+        let nub = FlowBarDock.nubRect(edge: .bottom, panelSize: panel)
+        XCTAssertEqual(nub.size, CGSize(width: 44, height: 6))
+        XCTAssertEqual(nub.minY, 6)
+        XCTAssertEqual(FlowBarMetrics.nubDot, 4)
+    }
+
+    func testTheNubStandsOnEndOnASideDock() {
+        let panel = FlowBarDock.panelSize(for: .nub, edge: .left)
+        let nub = FlowBarDock.nubRect(edge: .left, panelSize: panel)
+        XCTAssertEqual(nub.size, CGSize(width: 6, height: 44))
+        XCTAssertEqual(nub.minX, 6)
+    }
+
+    func testTheCapsuleJoinsThreeSegments28TallInside36() {
+        XCTAssertEqual(FlowBarDock.capsuleWidth, 4 + 40 + 2 + 36 + 2 + 36 + 4)
+        var previous: CGRect?
+        for control in DockControl.allCases {
+            let frame = FlowBarDock.segmentFrame(control)
+            XCTAssertEqual(frame.height, 28)
+            XCTAssertEqual(frame.midY, 18, accuracy: 0.001)
+            if let previous { XCTAssertEqual(frame.minX, previous.maxX + 2, accuracy: 0.001) }
+            previous = frame
         }
     }
 
-    private func drawnRects(state: FlowBarViewState, axis: DockAxis) -> [CGRect] {
-        switch state {
-        case .nub:
-            return [FlowBarDock.nubRect(axis: axis)]
-        case .stack(let hovered, let labelWidth):
-            var rects = DockControl.allCases.map { FlowBarDock.controlRect($0, axis: axis, hovered: hovered) }
-            if let hovered, labelWidth > 0 {
-                rects.append(FlowBarDock.labelRect(hovered, axis: axis, hovered: hovered, width: labelWidth))
+    func testTheLabelSitsEightPointsAboveTheHoveredSegmentAndCentredOnIt() {
+        let panel = FlowBarDock.panelSize(for: .hover(.newNote), edge: .bottom)
+        let capsule = FlowBarDock.capsuleRect(hovered: .newNote, newNote: .start, edge: .bottom, panelSize: panel)
+        let segment = FlowBarDock.segmentRect(.newNote, hovered: .newNote, newNote: .start, edge: .bottom, panelSize: panel)
+        let label = FlowBarDock.labelRect(.newNote, newNote: .start, edge: .bottom, panelSize: panel)
+        XCTAssertEqual(label.minY, capsule.maxY + 8)
+        XCTAssertEqual(label.midX, segment.midX, accuracy: 0.001)
+        XCTAssertEqual(label.height, 26)
+    }
+
+    func testOnTheTopDockTheLabelHangsBelow() {
+        let panel = FlowBarDock.panelSize(for: .hover(.dictate), edge: .top)
+        let capsule = FlowBarDock.capsuleRect(hovered: .dictate, newNote: .start, edge: .top, panelSize: panel)
+        let label = FlowBarDock.labelRect(.dictate, newNote: .start, edge: .top, panelSize: panel)
+        XCTAssertEqual(label.maxY, capsule.minY - 8)
+    }
+
+    func testTheCapsuleStaysPutAsTheLabelMovesBetweenSegments() {
+        var centres: Set<CGFloat> = []
+        for hovered in [nil] + DockControl.allCases.map(Optional.some) {
+            let panel = FlowBarDock.panelSize(for: .hover(hovered), edge: .bottom)
+            let capsule = FlowBarDock.capsuleRect(hovered: hovered, newNote: .start, edge: .bottom, panelSize: panel)
+            XCTAssertEqual(capsule.midX, panel.width / 2, accuracy: 0.001)
+            centres.insert(capsule.minY)
+        }
+        XCTAssertEqual(centres, [10], "Always 10 points up from the edge")
+    }
+
+    func testHitTestingFindsTheSegmentUnderThePointerWithNoDeadGap() {
+        let panel = FlowBarDock.panelSize(for: .hover(nil), edge: .bottom)
+        for control in DockControl.allCases {
+            let segment = FlowBarDock.segmentRect(control, hovered: nil, newNote: .start, edge: .bottom, panelSize: panel)
+            XCTAssertEqual(FlowBarDock.control(at: CGPoint(x: segment.midX, y: segment.midY), hovered: nil,
+                                               newNote: .start, edge: .bottom, panelSize: panel), control)
+        }
+        let dictate = FlowBarDock.segmentRect(.dictate, hovered: nil, newNote: .start, edge: .bottom, panelSize: panel)
+        let inTheGap = CGPoint(x: dictate.maxX + 0.5, y: dictate.midY)
+        XCTAssertNotNil(FlowBarDock.control(at: inTheGap, hovered: nil, newNote: .start, edge: .bottom, panelSize: panel))
+        XCTAssertNil(FlowBarDock.control(at: CGPoint(x: 1, y: panel.height - 1), hovered: nil,
+                                         newNote: .start, edge: .bottom, panelSize: panel))
+    }
+
+    func testTheCardIs236WideAndItsButtonsAnswerClicks() {
+        let panel = FlowBarDock.panelSize(for: .nudge(PreviewFixtures.detectedZoom), edge: .bottom)
+        let card = FlowBarDock.cardRect(edge: .bottom, panelSize: panel)
+        XCTAssertEqual(card.width, 236)
+        let buttons = FlowBarDock.cardButtonRects(card: card)
+        XCTAssertEqual(FlowBarDock.nudgeAction(at: CGPoint(x: buttons.notNow.midX, y: buttons.notNow.midY),
+                                               edge: .bottom, panelSize: panel), .ignore)
+        XCTAssertEqual(FlowBarDock.nudgeAction(at: CGPoint(x: buttons.start.midX, y: buttons.start.midY),
+                                               edge: .bottom, panelSize: panel), .startNote)
+        XCTAssertNil(FlowBarDock.nudgeAction(at: CGPoint(x: card.midX, y: card.maxY - 6),
+                                             edge: .bottom, panelSize: panel))
+    }
+
+    func testTheCardNamesTheCallAndAsksOneQuestion() {
+        XCTAssertEqual(FlowBarDock.cardTitle(for: PreviewFixtures.detectedZoom), "Zoom call")
+        XCTAssertEqual(FlowBarDock.cardTitle(for: PreviewFixtures.detectedMeetInChrome), "Google Meet in Chrome")
+        XCTAssertEqual(FlowBarDock.cardQuestion, "Take notes on this Mac?")
+    }
+}
+
+// MARK: - Tone chip and Flow menu
+
+final class ToneAndMenuTests: XCTestCase {
+    func testThePresetsReadAsTheirNamesAndAnythingElseIsCustom() {
+        let variants = ToneCatalog.defaults.merging(["com.openai.codex": "Short."]) { $1 }
+        XCTAssertEqual(ToneCatalog.tone(for: "com.apple.MobileSMS", variants: variants), .casual)
+        XCTAssertEqual(ToneCatalog.tone(for: "com.apple.mail", variants: variants), .formal)
+        XCTAssertEqual(ToneCatalog.tone(for: "com.openai.codex", variants: variants), .custom)
+        XCTAssertEqual(ToneCatalog.tone(for: "com.mitchellh.ghostty", variants: variants), .neutral)
+        XCTAssertEqual(ToneCatalog.tone(for: nil, variants: variants), .neutral)
+    }
+
+    func testTheDefaultsMatchTheEngine() {
+        // engine/undertone/config.py ships these two texts as app_prompt_variants.
+        XCTAssertEqual(ToneCatalog.defaults["com.apple.MobileSMS"], ToneCatalog.casualText)
+        XCTAssertEqual(ToneCatalog.defaults["com.apple.mail"], ToneCatalog.formalText)
+    }
+
+    func testSettingNeutralRemovesTheEntryAndCustomLeavesItAlone() {
+        var variants = ToneCatalog.defaults
+        variants = ToneCatalog.setting(.neutral, for: "com.apple.mail", in: variants)
+        XCTAssertNil(variants["com.apple.mail"])
+        variants = ToneCatalog.setting(.formal, for: "com.openai.codex", in: variants)
+        XCTAssertEqual(variants["com.openai.codex"], ToneCatalog.formalText)
+        let custom = ["x.y": "Mine."]
+        XCTAssertEqual(ToneCatalog.setting(.custom, for: "x.y", in: custom), custom)
+    }
+
+    func testTheChipNamesTheAppAndTheTone() {
+        XCTAssertEqual(ToneCatalog.chip(appName: "Messages", tone: .casual), "Messages · Casual")
+        XCTAssertNil(ToneCatalog.chip(appName: nil, tone: .casual))
+        XCTAssertEqual(ToneCatalog.fallbackName(for: "com.apple.MobileSMS"), "Messages")
+        XCTAssertEqual(ToneCatalog.fallbackName(for: "org.example.Writer"), "Writer")
+    }
+
+    private func titles(_ entries: [FlowMenu.Entry]) -> [String] {
+        entries.compactMap {
+            switch $0 {
+            case .item(let title, _, _, _, _, _): return title
+            case .submenu(let title, _, _): return title
+            case .separator: return nil
             }
-            return rects
-        case .level, .spinner, .text:
-            return [FlowBarDock.capsuleRect(for: state, axis: axis)].compactMap { $0 }
-        case .recording(_, let hovered, let badgeWidth):
-            return [
-                FlowBarDock.recordingControlRect(axis: axis),
-                FlowBarDock.recordingBadgeRect(axis: axis, hovered: hovered, width: badgeWidth),
-            ]
-        case .nudge:
-            return [FlowBarDock.nubRect(axis: axis), FlowBarDock.nudgeRect(axis: axis)]
         }
     }
 
-    func testTheRecordingTimerSits12PointsInwardFromTheControl() {
-        let state = FlowBarViewState.recording(elapsed: 724, hovered: false, badgeWidth: 60)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        let control = FlowBarDock.recordingControlRect(axis: axis)
-        let badge = FlowBarDock.recordingBadgeRect(axis: axis, hovered: false, width: 60)
-        XCTAssertEqual(control.size, CGSize(width: 40, height: 40))
-        XCTAssertEqual(control.minX - badge.maxX, 12, accuracy: 0.0001)
-        XCTAssertEqual(badge.height, 28, "The timer capsule is 28 tall")
+    func testTheFlowMenuHoldsWhatPeopleChangeMidDay() {
+        let entries = FlowMenu.entries(cleanupLevel: "medium", microphones: [])
+        XCTAssertEqual(titles(entries), ["Insert last again", "Copy last transcript", "Microphone", "Cleanup",
+                                         "Hide for an hour", "Settings…"])
     }
 
-    func testHoveringWhileRecordingSwapsTheTimerForA46TallLabel() {
-        let state = FlowBarViewState.recording(elapsed: 724, hovered: true, badgeWidth: 150)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        XCTAssertEqual(FlowBarDock.recordingBadgeRect(axis: axis, hovered: true, width: 150).height, 46)
+    func testTheCleanupSubmenuChecksTheCurrentLevelAndSetsANewOne() {
+        let entries = FlowMenu.entries(cleanupLevel: "high", microphones: [])
+        guard case .submenu(_, let detail, let children)? = entries.first(where: {
+            if case .submenu("Cleanup", _, _) = $0 { return true } else { return false }
+        }) else { return XCTFail("No Cleanup submenu") }
+        XCTAssertEqual(detail, "High")
+        let checked = children.compactMap { entry -> FlowMenu.Command? in
+            if case .item(_, _, _, let command, true, _) = entry { return command } else { return nil }
+        }
+        XCTAssertEqual(checked, [.setCleanup("high")])
     }
 
-    func testTheNudgeCardIs300By140TwelvePointsFromTheNub() {
-        for edge in PillEdge.allCases {
-            let state = FlowBarViewState.nudge(PreviewFixtures.detectedZoom)
-            let axis = DockAxis(edge: edge, panelSize: FlowBarDock.panelSize(for: state, edge: edge))
-            let card = FlowBarDock.nudgeRect(axis: axis)
-            XCTAssertEqual(card.size, CGSize(width: 300, height: 132), "\(edge) keeps the card upright")
-            let nub = FlowBarDock.nubRect(axis: axis)
-            let gap: CGFloat
-            switch edge {
-            case .right: gap = nub.minX - card.maxX
-            case .left: gap = card.minX - nub.maxX
-            case .bottom: gap = card.minY - nub.maxY
-            case .top: gap = nub.minY - card.maxY
+    func testTheMicrophoneSubmenuShowsDevicesButDoesNotPickOne() {
+        let mics = [AudioInputDevices.Device(id: 1, name: "MacBook Pro Microphone", isDefault: true),
+                    AudioInputDevices.Device(id: 2, name: "Studio Display Microphone", isDefault: false)]
+        let entries = FlowMenu.entries(cleanupLevel: "medium", microphones: mics)
+        guard case .submenu(_, let detail, let children)? = entries.first(where: {
+            if case .submenu("Microphone", _, _) = $0 { return true } else { return false }
+        }) else { return XCTFail("No Microphone submenu") }
+        XCTAssertEqual(detail, "MacBook Pro Microphone")
+        for child in children {
+            if case .item(let title, _, _, let command, _, let enabled) = child, title != "Sound Settings…" {
+                XCTAssertNil(command)
+                XCTAssertFalse(enabled)
             }
-            XCTAssertEqual(gap, 12, accuracy: 0.0001, "\(edge)")
         }
     }
 
-    func testNudgeButtonsSplitTheCardAndAnswerClicks() {
-        let state = FlowBarViewState.nudge(PreviewFixtures.detectedZoom)
-        let axis = DockAxis(edge: right, panelSize: FlowBarDock.panelSize(for: state, edge: right))
-        let card = FlowBarDock.nudgeRect(axis: axis)
-        let buttons = FlowBarDock.nudgeButtonRects(card: card)
-        XCTAssertEqual(buttons.ignore.width, buttons.start.width, accuracy: 0.0001)
-        XCTAssertEqual(buttons.start.minX - buttons.ignore.maxX, 8, accuracy: 0.0001)
-        XCTAssertEqual(FlowBarDock.nudgeAction(at: CGPoint(x: buttons.ignore.midX, y: buttons.ignore.midY), axis: axis),
-                       .ignore)
-        XCTAssertEqual(FlowBarDock.nudgeAction(at: CGPoint(x: buttons.start.midX, y: buttons.start.midY), axis: axis),
-                       .startNote)
-        XCTAssertNil(FlowBarDock.nudgeAction(at: CGPoint(x: card.midX, y: card.maxY - 4), axis: axis),
-                     "The card body is not a button")
-        XCTAssertNil(FlowBarDock.nudgeAction(at: CGPoint(x: axis.panelSize.width - 2, y: 2), axis: axis))
-    }
-
-    func testTheAxisPutsDepthAndAlongWhereEachDockExpectsThem() {
-        let size = CGSize(width: 200, height: 100)
-        let vertical = DockAxis(edge: .right, panelSize: size)
-        XCTAssertEqual(vertical.rect(depth: 10, deep: 40, along: 0, long: 20),
-                       CGRect(x: 150, y: 80, width: 40, height: 20))
-        let flat = DockAxis(edge: .bottom, panelSize: size)
-        XCTAssertEqual(flat.rect(depth: 10, deep: 40, along: 0, long: 20),
-                       CGRect(x: 0, y: 10, width: 20, height: 40))
-        let top = DockAxis(edge: .top, panelSize: size)
-        XCTAssertEqual(top.rect(depth: 10, deep: 40, along: 0, long: 20),
-                       CGRect(x: 0, y: 50, width: 20, height: 40))
-        let left = DockAxis(edge: .left, panelSize: size)
-        XCTAssertEqual(left.rect(depth: 10, deep: 40, along: 0, long: 20),
-                       CGRect(x: 10, y: 80, width: 40, height: 20))
+    func testOnlyCopyLastTouchesTheClipboardAndOnlyWhenChosen() {
+        let commands = FlowMenu.entries(cleanupLevel: "medium", microphones: []).compactMap { entry -> FlowMenu.Command? in
+            if case .item(_, _, _, let command, _, _) = entry { return command } else { return nil }
+        }
+        XCTAssertEqual(commands.filter { $0 == .copyLast }.count, 1)
     }
 }
 
@@ -630,11 +678,7 @@ final class MeetingNudgeTextTests: XCTestCase {
             XCTAssertFalse(FlowBarDock.nudgeReason(for: detected).contains("\u{2014}"))
         }
         XCTAssertFalse(FlowBarDock.nudgeTitle.contains("\u{2014}"))
-        XCTAssertFalse(FlowBarDock.nudgeSubline.contains("\u{2014}"))
-    }
-
-    func testTheSublineSaysWhatDoesNotHappen() {
-        XCTAssertEqual(FlowBarDock.nudgeSubline, "No bot joins. Recording stays on this Mac.")
+        XCTAssertFalse(FlowBarDock.cardQuestion.contains("\u{2014}"))
     }
 
     func testStartNoteNamesThePlatformAndTheWindow() {
@@ -894,9 +938,10 @@ final class HotkeyClickToggleTests: XCTestCase {
 // MARK: - Holds
 
 final class FlowBarHoldTests: XCTestCase {
-    func testInsertedLeavesTwiceAsFastAsAWarning() {
-        XCTAssertEqual(FlowBarMetrics.insertedHold, .milliseconds(900))
-        XCTAssertEqual(FlowBarMetrics.transientHold, .milliseconds(1800))
+    func testInsertedHoldsTwoSecondsAndAnErrorFour() {
+        XCTAssertEqual(AppModel.hold(for: .inserted(totalMS: 742)), .seconds(2))
+        XCTAssertEqual(AppModel.hold(for: .error("x")), .seconds(4))
+        XCTAssertEqual(AppModel.hold(for: .guarded(totalMS: 900)), .seconds(3))
         XCTAssertEqual(FlowBarMetrics.savedHold, .milliseconds(1200))
     }
 
@@ -904,10 +949,37 @@ final class FlowBarHoldTests: XCTestCase {
         XCTAssertEqual(FlowBarMetrics.nudgeAutoDismiss, 20, accuracy: 0.0001)
     }
 
-    func testTheFanOutTimingsMatchTheSpec() {
-        XCTAssertEqual(FlowBarMetrics.fanOutDuration, 0.260, accuracy: 0.0001)
-        XCTAssertEqual(FlowBarMetrics.fanOutStagger, 0.045, accuracy: 0.0001)
+    func testTheOpenTimingsMatchTheSpec() {
+        XCTAssertEqual(FlowBarMetrics.hoverOpenDelay, 0.120, accuracy: 0.0001)
         XCTAssertEqual(FlowBarMetrics.collapseDuration, 0.160, accuracy: 0.0001)
-        XCTAssertEqual(FlowBarMetrics.recordingPulsePeriod, 1.2, accuracy: 0.0001)
+        XCTAssertEqual(FlowBarMetrics.pulsePeriod, 1.2, accuracy: 0.0001)
+    }
+
+    func testAFailedInsertSaysTheTextIsSafe() {
+        XCTAssertEqual(AppModel.pillFailureMessage(.appChanged, appName: "Messages"),
+                       "Couldn't type into Messages. Text saved.")
+        XCTAssertEqual(AppModel.pillFailureMessage(.typeFailed, appName: nil), "Couldn't type it in. Text saved.")
+        XCTAssertEqual(AppModel.pillFailureMessage(.notTrusted, appName: "Mail"), "Accessibility permission required")
+    }
+}
+
+// MARK: - Double-tap lock switch
+
+final class DoubleTapLockSettingTests: XCTestCase {
+    func testWithLockOffADoubleTapIsTwoDictationsNeverALock() {
+        var state = HotkeyStateMachine()
+        state.doubleTapLock = false
+        XCTAssertEqual(state.press(at: 0), .start)
+        XCTAssertEqual(state.release(at: 0.1), .stopImmediately, "No second tap to wait for")
+        XCTAssertEqual(state.press(at: 0.2), .start)
+        XCTAssertFalse(state.locked)
+    }
+
+    func testWithLockOnTheSameTapsLatch() {
+        var state = HotkeyStateMachine()
+        XCTAssertEqual(state.press(at: 0), .start)
+        XCTAssertEqual(state.release(at: 0.1), .stopAfterDelay)
+        _ = state.press(at: 0.2)
+        XCTAssertTrue(state.locked)
     }
 }

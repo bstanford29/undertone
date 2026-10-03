@@ -35,8 +35,10 @@ Request:
 Response:
 
 ```json
-{"id":1,"whisper":"loading","cleanup":"loading","model":"qwen3.5:latest","error_message":null}
+{"id":1,"whisper":"loading","cleanup":"loading","model":"qwen3.5:latest","error_message":null,"high":"cold","high_model":"gemma4:31b","keep_alive":"60m"}
 ```
+
+`high` is `cold` until a High cleanup succeeds on `high_model`, then `warm`.
 
 `whisper` and `cleanup` are `loading`, `warm`, or `error`. `error_message` is a generic warm-up message when the engine cannot load its local models.
 
@@ -85,6 +87,8 @@ Update only these keys:
 | `sounds` | boolean |
 | `whisper_mode` | boolean |
 | `toggle_mode` | boolean |
+| `double_tap_lock` | boolean, default true: a double tap of the hold key locks dictation on |
+| `app_prompt_variants` | map of app bundle id to style text (up to 50 entries, 2000 characters each) |
 | `streaming` | boolean |
 | `obsidian_vault_path` | existing absolute directory, or empty to unset |
 
