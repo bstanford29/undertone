@@ -299,7 +299,6 @@ final class PillPanelController {
         model.$dictationLocked.sink { _ in resize() }.store(in: &subscriptions)
         model.$workingNote.sink { _ in resize() }.store(in: &subscriptions)
         model.$errorOffersRetry.sink { _ in resize() }.store(in: &subscriptions)
-        model.$dictationTargetBundleID.sink { _ in resize() }.store(in: &subscriptions)
         model.$pendingLearningActionID.sink { _ in resize() }.store(in: &subscriptions)
         model.meetings.$lastAutoStop.sink { _ in resize() }.store(in: &subscriptions)
         update()
@@ -769,7 +768,6 @@ enum FlowBarPalette {
     static let recordingRed = Color(red: 1.0, green: 0.271, blue: 0.227)
     /// #E7E0FF, the Command chip.
     static let command = Color(red: 0.906, green: 0.878, blue: 1.0)
-    static let chipText = Color(red: 0.784, green: 0.784, blue: 0.800)
     static let keyText = Color(red: 0.631, green: 0.631, blue: 0.651)
     static let nubLight = Color(red: 0.557, green: 0.557, blue: 0.576)
     static let nubDark = Color(red: 0.631, green: 0.631, blue: 0.651)
@@ -1025,22 +1023,6 @@ struct FlowBarDockView: View {
                 .foregroundStyle(FlowBarPalette.keyText)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        case .clock(let since):
-            TimelineView(.periodic(from: since, by: 1)) { context in
-                Text(FlowBarDock.timerText(context.date.timeIntervalSince(since)))
-                    .font(.system(size: RibbonMetrics.monoFont, weight: .medium, design: .monospaced))
-                    .foregroundStyle(FlowBarPalette.keyText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        case .chip(let text):
-            Text(text)
-                .font(.system(size: RibbonMetrics.chipFont, weight: .medium))
-                .foregroundStyle(FlowBarPalette.chipText)
-                .lineLimit(1)
-                .fixedSize()
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(Color.white.opacity(0.09),
-                            in: RoundedRectangle(cornerRadius: RibbonMetrics.chipHeight / 2, style: .continuous))
         case .commandChip:
             Text(FlowBarText.commandMarker)
                 .font(.system(size: RibbonMetrics.chipFont, weight: .semibold))
@@ -1299,12 +1281,12 @@ struct FlowingWaveform: View {
 
     private let cyan = Color(red: 0.20, green: 0.85, blue: 1.0)
     /// Seven bars, 2 points wide, 3 points apart, 4 to 16 points tall.
-    private static let barCount = 7
-    private static let barWidth = 2.0
-    private static let barGap = 3.0
+    nonisolated private static let barCount = 7
+    nonisolated private static let barWidth = 2.0
+    nonisolated private static let barGap = 3.0
     private static let minBarHeight = 4.0
     private static let maxBarHeight = 16.0
-    static let blockLength = CGFloat(Double(barCount) * barWidth + Double(barCount - 1) * barGap)
+    nonisolated static let blockLength = CGFloat(Double(barCount) * barWidth + Double(barCount - 1) * barGap)
     private static let durations: [Double] = [0.29, 0.37, 0.43, 0.31, 0.47, 0.34, 0.41]
     private static let gains: [Double] = [0.72, 0.48, 0.88, 0.60, 0.94, 0.52, 0.82]
     private static let phaseOffsets: [Double] = [0.0, 1.1, 2.2, 0.5, 3.0, 1.7, 4.0]

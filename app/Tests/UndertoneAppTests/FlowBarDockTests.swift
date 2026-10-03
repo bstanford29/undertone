@@ -209,36 +209,32 @@ final class RibbonContentTests: XCTestCase {
         XCTAssertNil(ribbon(.meetingDetected(PreviewFixtures.detectedZoom)))
     }
 
-    func testListeningIsADotTheWaveformAndTheTargetChip() {
-        let spec = ribbon(.listening(level: 0.4)) { $0.targetChip = "Messages · Casual" }
-        XCTAssertEqual(spec?.pieces, [.dot(.listening), .waveform, .chip("Messages · Casual")])
+    func testListeningIsOnlyTheDotAndTheWaveform() {
+        XCTAssertEqual(ribbon(.listening(level: 0.4))?.pieces, [.dot(.listening), .waveform])
     }
 
-    func testListeningWithNoTargetAppDropsTheChip() {
-        XCTAssertEqual(ribbon(.listening(level: 0))?.pieces, [.dot(.listening), .waveform])
+    func testListeningShowsNoWordsAndNoAppName() {
+        let pieces = ribbon(.listening(level: 0.4))?.pieces ?? []
+        XCTAssertFalse(pieces.contains { if case .text = $0 { return true } else { return false } })
+        XCTAssertFalse(pieces.contains { if case .mono = $0 { return true } else { return false } })
     }
 
-    func testTheRibbonNeverShowsWordsWhileListeningBecauseThereAreNoPartials() {
-        let spec = ribbon(.listening(level: 0.4)) { $0.targetChip = "Mail · Formal" }
-        XCTAssertFalse(spec?.pieces.contains { if case .text = $0 { return true } else { return false } } ?? true)
+    func testTheListeningCapsuleIsSizedToItsContent() {
+        let spec = ribbon(.listening(level: 0.4))!
+        XCTAssertEqual(spec.width, 14 + RibbonMetrics.dot + 10 + FlowingWaveform.blockLength + 14)
     }
 
-    func testLockedShowsTheLockTheClockAndHowToFinish() {
-        let since = Date(timeIntervalSince1970: 100)
-        let spec = ribbon(.listening(level: 0.4)) {
-            $0.locked = true
-            $0.lockedSince = since
-            $0.targetChip = "Messages · Casual"
-        }
-        XCTAssertEqual(spec?.pieces, [.glyph(.lock), .waveform, .clock(since: since), .chip("fn to finish")])
+    func testLockedAddsOnlyASmallLock() {
+        let spec = ribbon(.listening(level: 0.4)) { $0.locked = true }
+        XCTAssertEqual(spec?.pieces, [.dot(.listening), .glyph(.lock), .waveform])
     }
 
-    func testCommandModeLeadsWithTheCommandChip() {
-        let spec = ribbon(.listening(level: 0.4)) {
+    func testCommandModeKeepsOnlyTheCommandChipAndTheWaveform() {
+        XCTAssertEqual(ribbon(.listening(level: 0.4)) { $0.commandMode = true }?.pieces, [.commandChip, .waveform])
+        XCTAssertEqual(ribbon(.listening(level: 0.4)) {
             $0.commandMode = true
-            $0.targetChip = "Mail · Formal"
-        }
-        XCTAssertEqual(spec?.pieces, [.commandChip, .waveform, .chip("Mail · Formal")])
+            $0.locked = true
+        }?.pieces, [.commandChip, .glyph(.lock), .waveform])
     }
 
     func testWorkingSaysCleaningAndNamesTheModel() {
@@ -336,7 +332,7 @@ final class RibbonGeometryTests: XCTestCase {
     }
 
     func testARibbonEndingInAChipOrButtonTucksItIn() {
-        XCTAssertEqual(RibbonSpec([.waveform, .chip("Mail · Formal")]).trailingPadding, 6)
+        XCTAssertEqual(RibbonSpec([.waveform, .commandChip]).trailingPadding, 6)
         XCTAssertEqual(RibbonSpec([.glyph(.check), .button(.undo)]).trailingPadding, 6)
         XCTAssertEqual(RibbonSpec([.spinner, .text("Cleaning")]).trailingPadding, 14)
     }
@@ -390,7 +386,7 @@ final class RibbonGeometryTests: XCTestCase {
     }
 
     func testOnTheSideDocksTheRibbonStaysHorizontalAndGrowsInward() {
-        let spec = RibbonSpec([.dot(.listening), .waveform, .chip("Messages · Casual")])
+        let spec = RibbonSpec([.commandChip, .glyph(.lock), .waveform])
         for edge in [PillEdge.left, .right] {
             let panel = FlowBarDock.panelSize(for: .ribbon(spec), edge: edge)
             let rect = FlowBarDock.ribbonRect(spec, edge: edge, panelSize: panel)
@@ -418,7 +414,7 @@ final class RibbonGeometryTests: XCTestCase {
 
     func testEveryStateFitsInsideItsOwnPanel() {
         let specs: [RibbonSpec] = [
-            RibbonSpec([.dot(.listening), .waveform, .chip("Messages · Casual")]),
+            RibbonSpec([.commandChip, .glyph(.lock), .waveform]),
             RibbonSpec([.glyph(.failure), .text("Couldn't type into Messages. Text saved."), .button(.insertAgain)]),
             RibbonSpec([.dot(.recording), .mono("12:04", reserve: "00:00"), .meters, .button(.stop)]),
         ]
@@ -565,9 +561,7 @@ final class ToneAndMenuTests: XCTestCase {
         XCTAssertEqual(ToneCatalog.setting(.custom, for: "x.y", in: custom), custom)
     }
 
-    func testTheChipNamesTheAppAndTheTone() {
-        XCTAssertEqual(ToneCatalog.chip(appName: "Messages", tone: .casual), "Messages · Casual")
-        XCTAssertNil(ToneCatalog.chip(appName: nil, tone: .casual))
+    func testSettingsNamesAppsFromTheirBundleIDs() {
         XCTAssertEqual(ToneCatalog.fallbackName(for: "com.apple.MobileSMS"), "Messages")
         XCTAssertEqual(ToneCatalog.fallbackName(for: "org.example.Writer"), "Writer")
     }

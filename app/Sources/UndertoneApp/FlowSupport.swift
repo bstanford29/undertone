@@ -2,7 +2,7 @@ import AppKit
 import CoreAudio
 import Foundation
 
-/// The tone names the pill chip and Settings show for `app_prompt_variants`.
+/// The tone names Settings shows for `app_prompt_variants`.
 /// The engine stores style text per bundle id. Two texts are the presets the
 /// engine ships; no entry means Neutral, and any other text is Custom.
 enum ToneCatalog {
@@ -18,7 +18,7 @@ enum ToneCatalog {
     static let casualText = "Keep the speaker's casual tone and contractions. Preserve every spoken fact and request."
     static let formalText = "Use conventional punctuation and paragraph breaks suitable for email. Preserve the spoken wording and greetings; add no greeting or sign-off."
 
-    /// The engine's own defaults, so the chip is right before config loads.
+    /// The engine's own defaults, so Settings is right before config loads.
     static let defaults: [String: String] = [
         "com.apple.MobileSMS": casualText,
         "com.apple.mail": formalText,
@@ -51,12 +51,6 @@ enum ToneCatalog {
         case .custom: break
         }
         return result
-    }
-
-    /// "Messages · Casual". Nil when there is no target app.
-    static func chip(appName: String?, tone: Tone) -> String? {
-        guard let appName, !appName.isEmpty else { return nil }
-        return "\(appName) · \(tone.rawValue)"
     }
 
     private static let knownNames: [String: String] = [

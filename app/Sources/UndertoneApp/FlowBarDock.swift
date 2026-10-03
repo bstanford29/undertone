@@ -98,10 +98,6 @@ enum RibbonPiece: Equatable, Sendable {
     /// A monospaced reading. `reserve` is the widest text it will show, so a
     /// ticking clock does not resize the panel every second.
     case mono(String, reserve: String)
-    /// The elapsed time of a locked dictation, drawn from `since`.
-    case clock(since: Date)
-    /// A quiet chip, such as "Messages · Casual" or "fn to finish".
-    case chip(String)
     /// The lavender Command chip.
     case commandChip
     case button(RibbonAction)
@@ -128,8 +124,6 @@ enum RibbonMetrics {
     static let monoFont: CGFloat = 12
     static let maxTextWidth: CGFloat = 300
 
-    static let chipHeight: CGFloat = 24
-    static let chipPadding: CGFloat = 10
     static let chipFont: CGFloat = 12
     static let commandPadding: CGFloat = 9
     static let commandHeight: CGFloat = 22
@@ -178,7 +172,7 @@ struct RibbonSpec: Equatable, Sendable {
 
     var trailingPadding: CGFloat {
         switch pieces.last {
-        case .chip, .commandChip, .button: return RibbonMetrics.tightPadding
+        case .commandChip, .button: return RibbonMetrics.tightPadding
         default: return RibbonMetrics.leadingPadding
         }
     }
@@ -224,11 +218,6 @@ struct RibbonSpec: Equatable, Sendable {
         case .mono(let text, let reserve):
             return max(FlowBarText.width(text, size: RibbonMetrics.monoFont, weight: .medium, monospaced: true),
                        FlowBarText.width(reserve, size: RibbonMetrics.monoFont, weight: .medium, monospaced: true))
-        case .clock:
-            return FlowBarText.width("00:00", size: RibbonMetrics.monoFont, weight: .medium, monospaced: true)
-        case .chip(let text):
-            return FlowBarText.width(text, size: RibbonMetrics.chipFont, weight: .medium)
-                + 2 * RibbonMetrics.chipPadding
         case .commandChip:
             return FlowBarText.width(FlowBarText.commandMarker, size: RibbonMetrics.chipFont, weight: .semibold)
                 + 2 * RibbonMetrics.commandPadding
@@ -247,7 +236,6 @@ struct RibbonSpec: Equatable, Sendable {
 
     static func height(of piece: RibbonPiece) -> CGFloat {
         switch piece {
-        case .chip: return RibbonMetrics.chipHeight
         case .commandChip: return RibbonMetrics.commandHeight
         case .button: return RibbonMetrics.buttonHeight
         default: return RibbonMetrics.height
@@ -482,10 +470,7 @@ enum FlowBarDock {
     struct RibbonInputs: Equatable {
         var pillState: PillState
         var locked = false
-        var lockedSince: Date?
         var commandMode = false
-        /// "Messages · Casual": the target app and the tone it will get.
-        var targetChip: String?
         var workingNote: String?
         /// The cleanup model for the current level, such as "qwen3.5".
         var workingModel: String?
@@ -496,7 +481,6 @@ enum FlowBarDock {
         var canUndoLearning = false
     }
 
-    static let lockedHint = "fn to finish"
     static let cleaningText = "Cleaning"
 
     /// The ribbon for a state, or nil for the states that draw the nub, the
@@ -506,15 +490,11 @@ enum FlowBarDock {
         case .idle, .meetingDetected:
             return nil
         case .listening:
-            var pieces: [RibbonPiece] = []
-            if inputs.commandMode { pieces.append(.commandChip) }
-            if inputs.locked {
-                pieces += [.glyph(.lock), .waveform, .clock(since: inputs.lockedSince ?? Date()), .chip(lockedHint)]
-            } else {
-                if !inputs.commandMode { pieces.append(.dot(.listening)) }
-                pieces.append(.waveform)
-                if let chip = inputs.targetChip, !chip.isEmpty { pieces.append(.chip(chip)) }
-            }
+            // Only the signal that you are being heard: the dot or the
+            // Command chip, a lock glyph when locked, and the waveform.
+            var pieces: [RibbonPiece] = [inputs.commandMode ? .commandChip : .dot(.listening)]
+            if inputs.locked { pieces.append(.glyph(.lock)) }
+            pieces.append(.waveform)
             return RibbonSpec(pieces)
         case .working:
             var pieces: [RibbonPiece] = [.spinner, .text(inputs.workingNote ?? cleaningText)]

@@ -144,10 +144,6 @@ final class AppModel: ObservableObject {
     /// Whether the hold key has latched into lock mode. Drives the lock
     /// glyph on the pill.
     @Published private(set) var dictationLocked = false
-    /// When lock mode engaged, for the locked ribbon's clock.
-    @Published private(set) var lockedSince: Date?
-    /// The app the current dictation will type into, for the ribbon chip.
-    @Published private(set) var dictationTargetBundleID: String?
     /// Bundle id to style text, the engine's `app_prompt_variants`.
     @Published var appPromptVariants: [String: String] = ToneCatalog.defaults
     /// A double tap of the hold key locks dictation on.
@@ -261,7 +257,6 @@ final class AppModel: ObservableObject {
             slowerOnBattery = PreviewFixtures.slowerOnBattery
             detectedMeeting = PreviewFixtures.detectedMeeting
             engineHealth = PreviewFixtures.engineHealth
-            dictationTargetBundleID = PreviewFixtures.targetBundleID
             lastRow = PreviewFixtures.rows.first
             pillState = .working
         }
@@ -422,10 +417,7 @@ final class AppModel: ObservableObject {
         }
         hotkey.onStart = { [weak self] in self?.beginDictation() }
         hotkey.onStop = { [weak self] in self?.endDictation() }
-        hotkey.onLockChange = { [weak self] locked in
-            self?.dictationLocked = locked
-            self?.lockedSince = locked ? Date() : nil
-        }
+        hotkey.onLockChange = { [weak self] locked in self?.dictationLocked = locked }
         installLockEscapeMonitors()
         hotkey.onDiagnosticsChange = { [weak self] tapActive, lastSeen in
             self?.shortcutTapActive = tapActive
@@ -601,7 +593,6 @@ final class AppModel: ObservableObject {
         pillResetTask = nil
         workingNote = nil
         target = inserter.snapshot()
-        dictationTargetBundleID = target?.bundleID
         let hasSelectionText = Self.hasCommandSelection(target?.selectedText)
         let hasSelectionRange = (target?.selectedRange?.length ?? 0) > 0
         if hasSelectionText || hasSelectionRange {
@@ -1848,15 +1839,6 @@ final class AppModel: ObservableObject {
         lastInsertedText != nil && lastInsertTarget != nil && lastInsertedRawText != nil
     }
 
-    /// "Messages · Casual" for the app the dictation will type into.
-    var targetChip: String? {
-        let tone = ToneCatalog.tone(for: dictationTargetBundleID, variants: appPromptVariants)
-        let name = previewMode
-            ? dictationTargetBundleID.map(ToneCatalog.fallbackName(for:))
-            : ToneCatalog.appName(for: dictationTargetBundleID)
-        return ToneCatalog.chip(appName: name, tone: tone)
-    }
-
     /// The model the current cleanup level runs on, for the Cleaning ribbon.
     var workingModelName: String? {
         switch cleanupLevel {
@@ -1869,8 +1851,8 @@ final class AppModel: ObservableObject {
 
     var ribbonInputs: FlowBarDock.RibbonInputs {
         FlowBarDock.RibbonInputs(
-            pillState: pillState, locked: dictationLocked, lockedSince: lockedSince,
-            commandMode: commandMode, targetChip: targetChip, workingNote: workingNote,
+            pillState: pillState, locked: dictationLocked,
+            commandMode: commandMode, workingNote: workingNote,
             workingModel: workingModelName, canUndo: canUndoLastInsert || previewMode,
             canExplainGuard: lastGuardRowID != nil || previewMode, errorOffersRetry: errorOffersRetry,
             canUndoLearning: canUndoPendingLearning || previewMode
@@ -1952,7 +1934,6 @@ final class AppModel: ObservableObject {
     func setPreviewFlags(locked: Bool, errorRetry: Bool) {
         guard previewMode else { return }
         dictationLocked = locked
-        lockedSince = locked ? Date().addingTimeInterval(-42) : nil
         errorOffersRetry = errorRetry
     }
 

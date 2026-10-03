@@ -192,9 +192,6 @@ enum PreviewFixtures {
         high: "cold", highModel: "gemma4:31b", keepAlive: "60m"
     )
 
-    /// The ribbon chip reads "Messages · Casual" in the captures.
-    static let targetBundleID = "com.apple.MobileSMS"
-
     /// 12 minutes and 4 seconds, the timer reading in the mockup.
     static let recordingElapsed: TimeInterval = 12 * 60 + 4
 }
