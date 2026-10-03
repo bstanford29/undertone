@@ -50,14 +50,6 @@ Output: I think we should go with option three.
 
 Correct these proper nouns when misheard: {vocab}"""
 
-# Parakeet takes no vocabulary prompt, so names arrive as sound-alikes,
-# sometimes split into several short words.
-PROMPTLESS_STT_HINT = (
-    "The transcript came from a speech model that does not know these proper nouns. "
-    "When a word or a run of short words sounds like one of them and the proper noun "
-    "fits the context, write the proper noun. Change nothing else."
-)
-
 LIGHT_FILLERS = re.compile(
     r"\b(um+|uh+|erm)\b[,]?\s*",
     re.IGNORECASE,
@@ -259,10 +251,7 @@ def _prompt_for(
 ) -> str:
     from .dictionary import vocab_prompt
 
-    vocab = vocab_prompt(dictionary)
-    prompt = (HIGH_SYSTEM_PROMPT if level == "high" else SYSTEM_PROMPT).format(vocab=vocab)
-    if vocab and config.get("stt_backend", "parakeet") == "parakeet":
-        prompt += "\n" + PROMPTLESS_STT_HINT
+    prompt = (HIGH_SYSTEM_PROMPT if level == "high" else SYSTEM_PROMPT).format(vocab=vocab_prompt(dictionary))
     variants = config.get("app_prompt_variants") or config.get("prompt_variants") or {}
     if app and isinstance(variants, dict):
         variant = variants.get(app)

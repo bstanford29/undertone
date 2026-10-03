@@ -110,6 +110,26 @@ def _speech_gate(
     return None
 
 
+# Phrases Parakeet produces for vocabulary terms it cannot be prompted with.
+# Exact, case-insensitive, whole-word matches only: fuzzy matching here turned
+# ordinary words ("all may", "we can", "code") into terms.
+SOUND_ALIKES: dict[str, tuple[str, ...]] = {
+    "Ollama": ("all IMA", "all-IMA", "Alima", "Olama"),
+}
+
+
+def restore_sound_alikes(text: str, vocab: str = "") -> str:
+    """Rewrite known mishearings of terms that are in this dictation's vocab."""
+    terms = {term.strip().lower() for term in vocab.split(",") if term.strip()}
+    for term, phrases in SOUND_ALIKES.items():
+        if term.lower() not in terms:
+            continue
+        for phrase in phrases:
+            pattern = re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)", re.IGNORECASE)
+            text = pattern.sub(term, text)
+    return text
+
+
 def make_transcriber(config: dict[str, Any] | None = None, *, local_files_only: bool = True):
     """Build the configured STT backend: parakeet by default, whisper when asked
     or when parakeet-mlx is not installed."""
@@ -315,8 +335,9 @@ class ParakeetTranscriber:
     """NVIDIA Parakeet TDT via parakeet-mlx, loaded once and kept warm.
 
     Same interface and silence gates as ``Transcriber``. Parakeet has no
-    initial_prompt, so ``vocab`` and ``context`` are accepted and ignored;
-    proper nouns rely on the cleanup prompt hint and dictionary replacements.
+    initial_prompt, so ``context`` is ignored and ``vocab`` only selects which
+    known sound-alikes to restore; other proper nouns rely on cleanup and
+    dictionary replacements.
     The optional ``parakeet`` extra installs the package.
     """
 
@@ -374,6 +395,7 @@ class ParakeetTranscriber:
         if _looks_repetitive(text):
             stats["dropped"] = 1
             return {"text": "", "no_speech": True, "reason": "repetition", "segments": stats}
+        text = restore_sound_alikes(text, vocab)
         return {"text": text, "no_speech": False, "reason": "", "segments": stats}
 
     def _load(self) -> None:

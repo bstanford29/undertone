@@ -423,3 +423,34 @@ class BackendSwitchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SoundAlikeTests(unittest.TestCase):
+    def test_restores_known_mishearing_when_term_is_in_vocab(self):
+        from undertone.stt import restore_sound_alikes
+
+        text = "then we run it through all IMA locally"
+        self.assertEqual(
+            restore_sound_alikes(text, "Undertone, Ollama, Qwen"),
+            "then we run it through Ollama locally",
+        )
+
+    def test_leaves_text_alone_without_the_term(self):
+        from undertone.stt import restore_sound_alikes
+
+        self.assertEqual(restore_sound_alikes("all IMA", "Qwen"), "all IMA")
+
+    def test_ordinary_words_are_not_rewritten(self):
+        from undertone.stt import restore_sound_alikes
+
+        text = "we all may call Alimar and all images"
+        self.assertEqual(restore_sound_alikes(text, "Ollama"), text)
+
+    def test_parakeet_output_gets_the_fix(self):
+        from undertone.stt import ParakeetTranscriber
+
+        fake = FakeParakeetModules(text="run it through all IMA locally")
+        transcriber = ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        with patch.dict(sys.modules, fake.entries):
+            result = transcriber.transcribe_detailed(_loud(3.0, seed=22), vocab="Ollama, Qwen")
+        self.assertEqual(result["text"], "run it through Ollama locally")
