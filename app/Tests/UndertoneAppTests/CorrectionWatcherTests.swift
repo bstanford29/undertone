@@ -52,7 +52,8 @@ final class CorrectionWatcherTests: XCTestCase {
 
     private func run(_ observations: [CorrectionFieldObservation?], target: TargetSnapshot? = nil,
                      produced: String = "Nora", initialAnchor: CorrectionFieldAnchor? = nil,
-                     retired: Bool = false, noAnchor: Bool = false) async -> [LearningCandidate] {
+                     retired: Bool = false, noAnchor: Bool = false,
+                     wait: Duration = .milliseconds(280)) async -> [LearningCandidate] {
         let reader = ScriptedCorrectionFields(anchor: noAnchor ? nil : initialAnchor ?? anchor(),
                                               retired: retired, observations: observations)
         let watcher = EditWatcher(inserter: reader, interval: .milliseconds(3),
@@ -61,23 +62,56 @@ final class CorrectionWatcherTests: XCTestCase {
         watcher.start(rowID: 1, produced: produced, target: target ?? original(), knownTerms: []) { candidate, _, _ in
             candidates.append(candidate)
         }
-        try? await Task.sleep(for: .milliseconds(280))
+        try? await Task.sleep(for: wait)
         watcher.cancel()
         return candidates
     }
 
     func testLearnsWhenEditorReplacesItsAXElementDuringTheCorrection() async {
-        let result = await run([field("Nora"), field("Zelvoriax", newElement: true)])
+        let result = await run([field("Please call Nora"), field("Please call Zelvoriax", newElement: true)],
+                               produced: "Please call Nora")
         XCTAssertEqual(result, [LearningCandidate(produced: "Nora", replacement: "Zelvoriax", reason: "capitalized")])
     }
 
     func testPausesWhileCopyingAndResumesInTheSameLogicalEditor() async {
         let result = await run([
-            field("Nora"), nil, field("Source", newElement: true, anchor: anchor(y: 300)), nil,
-            field("Zelvoriax", newElement: true)
-        ])
+            field("Please call Nora"), nil, field("Source", newElement: true, anchor: anchor(y: 300)), nil,
+            field("Please call Zelvoriax", newElement: true)
+        ], produced: "Please call Nora")
         XCTAssertEqual(result.first?.replacement, "Zelvoriax")
         XCTAssertEqual(result.count, 1)
+    }
+
+    func testSamePositionUnrelatedSingleWordDraftDoesNotLearn() async {
+        let result = await run([field("Okay"), field("Thanks", newElement: true)], produced: "Okay")
+        XCTAssertTrue(result.isEmpty)
+    }
+
+    func testOneWordDictationCanRebindWhileUnchangedThenLearn() async {
+        let result = await run([field("Nora"), field("Nora", newElement: true), field("Zelvoriax", newElement: true)])
+        XCTAssertEqual(result.first?.replacement, "Zelvoriax")
+    }
+
+    func testConversationContextChangesRejectEvenAtTheSamePosition() async {
+        for key in ["placeholder", "description", "windowTitle"] {
+            var changed = anchor()
+            switch key {
+            case "placeholder": changed.placeholder = "Message other conversation"
+            case "description": changed.description = "Other conversation"
+            default: changed.windowTitle = "Other conversation"
+            }
+            let result = await run([field("Please call Nora"),
+                                    field("Please call Zelvoriax", newElement: true, anchor: changed)],
+                                   produced: "Please call Nora")
+            XCTAssertTrue(result.isEmpty, key)
+        }
+    }
+
+    func testReusedPhysicalReferenceCannotIgnoreChangedConversationMetadata() async {
+        var changed = anchor()
+        changed.windowTitle = "Other conversation"
+        let result = await run([field("Nora"), field("Zelvoriax", anchor: changed)])
+        XCTAssertTrue(result.isEmpty)
     }
 
     func testNeverRebindsToAnotherFieldEvenWhenItContainsTheSameOutput() async {
@@ -155,12 +189,14 @@ final class CorrectionWatcherTests: XCTestCase {
     func testPausedWatchDoesNotExtendItsDeadline() async {
         let observations = [field("Nora")] + Array<CorrectionFieldObservation?>(repeating: nil, count: 90)
             + [field("Zelvoriax", newElement: true)]
-        let result = await run(observations)
+        // A broken extended deadline would reach the late edit around 280ms.
+        // Keep the harness alive well beyond that point so it cannot hide it.
+        let result = await run(observations, wait: .milliseconds(650))
         XCTAssertTrue(result.isEmpty)
     }
 
     func testStartingAnotherDictationCancelsThePreviousWatch() async {
-        let reader = ScriptedCorrectionFields(anchor: anchor(), observations: [field("Noah"), field("Zelvoriax", newElement: true)])
+        let reader = ScriptedCorrectionFields(anchor: anchor(), observations: [field("Noah"), field("Zelvoriax")])
         let watcher = EditWatcher(inserter: reader, interval: .milliseconds(3),
                                   duration: .milliseconds(200), stability: .milliseconds(2))
         var rows: [Int] = []

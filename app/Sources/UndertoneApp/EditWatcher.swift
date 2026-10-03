@@ -125,6 +125,7 @@ final class EditWatcher {
             let recoveryDeadline = min(deadline, startedAt + .seconds(2))
             var baseline = initialReceipt
             var watchedTarget = target
+            var lastObservedValue = initialReceipt?.expectedValue
             var anchor = originalAnchor
             var isFirstObservation = true
             var paused = false
@@ -143,7 +144,7 @@ final class EditWatcher {
                       observation.target.bundleID == appBundleID,
                       let element = observation.target.element, let value = observation.target.value else {
                     stableEdit = nil
-                    if !paused { self.log("watch_paused", rowID: rowID); paused = true }
+                    if !paused { self.log("watch_paused_unavailable", rowID: rowID); paused = true }
                     if baseline == nil && ContinuousClock.now >= recoveryDeadline {
                         self.log("snapshot_recovery_rejected", rowID: rowID)
                         return
@@ -159,9 +160,24 @@ final class EditWatcher {
                     && (value == baseline?.expectedValue || (!produced.isEmpty && value == produced))
                 let canEstablishInitialField = confirmedInitialValue && anchor == nil
                     && (target.element == nil || self.inserter.correctionReferenceIsRetired(target))
-                guard sameElement || sameEditor || canEstablishInitialField else {
+                // Geometry can be reused by another chat. Require unchanged
+                // readback or a narrow correction with at least two unchanged
+                // words as textual continuity before adopting a new reference.
+                let continuousRebind = sameEditor && lastObservedValue.map {
+                    Self.hasRebindContinuity(previous: $0, current: value)
+                } == true
+                if let anchor, let observedAnchor = observation.anchor,
+                   !anchor.hasSameContext(as: observedAnchor) {
+                    self.log("watch_ended_context_changed", rowID: rowID)
+                    return
+                }
+                if !sameElement && sameEditor && !continuousRebind {
+                    self.log("watch_ended_ambiguous_rebind", rowID: rowID)
+                    return
+                }
+                guard sameElement || continuousRebind || canEstablishInitialField else {
                     stableEdit = nil
-                    if !paused { self.log("watch_paused", rowID: rowID); paused = true }
+                    if !paused { self.log(sameEditor ? "watch_paused_text_continuity" : "watch_paused_identity", rowID: rowID); paused = true }
                     if baseline == nil && ContinuousClock.now >= recoveryDeadline {
                         self.log("snapshot_recovery_rejected", rowID: rowID)
                         return
@@ -189,6 +205,7 @@ final class EditWatcher {
                 }
                 if !sameElement { self.log("logical_target_rebound", rowID: rowID) }
                 watchedTarget = observation.target
+                lastObservedValue = value
                 // Refresh geometry only after field identity or exact initial
                 // output has established continuity with the original editor.
                 if (sameElement || anchor == nil), let observedAnchor = observation.anchor { anchor = observedAnchor }
@@ -260,6 +277,17 @@ final class EditWatcher {
             }
             if !Task.isCancelled { self.log("watch_expired", rowID: rowID) }
         }
+    }
+
+    /// A changed AX object plus an unrelated one-word draft is ambiguous.
+    /// Identical readback or a one-word edit retaining two exact words supplies
+    /// continuity; field metadata must also match before this rule is used.
+    nonisolated static func hasRebindContinuity(previous: String, current: String) -> Bool {
+        if previous == current { return true }
+        let before = previous.split(whereSeparator: \.isWhitespace)
+        let after = current.split(whereSeparator: \.isWhitespace)
+        guard before.count >= 3, before.count == after.count else { return false }
+        return zip(before, after).filter { $0 != $1 }.count == 1
     }
 
     nonisolated static func isolatedEditedSpan(expected: String, current: String, range: CFRange) -> String? {

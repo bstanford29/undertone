@@ -8,9 +8,18 @@ struct CorrectionFieldAnchor {
     let role: String
     let identifier: String?
     let frame: CGRect?
+    var placeholder: String? = nil
+    var description: String? = nil
+    var windowTitle: String? = nil
+
+    func hasSameContext(as other: CorrectionFieldAnchor) -> Bool {
+        CFEqual(window, other.window) && role == other.role
+            && placeholder == other.placeholder && description == other.description
+            && windowTitle == other.windowTitle
+    }
 
     func matches(_ other: CorrectionFieldAnchor) -> Bool {
-        guard CFEqual(window, other.window), role == other.role else { return false }
+        guard hasSameContext(as: other) else { return false }
         let hasIdentifier = identifier?.isEmpty == false
         let otherHasIdentifier = other.identifier?.isEmpty == false
         guard hasIdentifier == otherHasIdentifier,
@@ -99,6 +108,10 @@ extension InsertionController: CorrectionFieldReading {
             }
         }
         guard identifier?.isEmpty == false || frame != nil else { return nil }
-        return CorrectionFieldAnchor(window: window, role: role, identifier: identifier, frame: frame)
+        _ = AXUIElementSetMessagingTimeout(window, 0.25)
+        return CorrectionFieldAnchor(window: window, role: role, identifier: identifier, frame: frame,
+                                     placeholder: attribute(kAXPlaceholderValueAttribute as CFString, from: element) as? String,
+                                     description: attribute(kAXDescriptionAttribute as CFString, from: element) as? String,
+                                     windowTitle: attribute(kAXTitleAttribute as CFString, from: window) as? String)
     }
 }
