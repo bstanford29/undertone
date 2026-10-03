@@ -129,7 +129,7 @@ def save_audio(audio) -> str:
 
 def listen(config: dict[str, Any]) -> None:
     """Temporary F13 listener; the native app owns fn and insertion in Phase 3."""
-    from .streaming import StreamingTranscriber
+    from .streaming import PauseSplitTranscriber, StreamingTranscriber
     transcriber = Transcriber(model=config.get("stt_model"))
     transcriber.warm_up()
     recorder = Recorder()
@@ -138,8 +138,11 @@ def listen(config: dict[str, Any]) -> None:
     stop_timer = threading.Event()
     dictionary = load_dictionary()
 
+    # Pause-split only runs a cheap VAD per snapshot, so it can look more often.
+    snapshot_interval = 1 if config.get("streaming_mode", "cumulative") == "pause" else 5
+
     def snapshots(stream, vocab) -> None:
-        while not stop_timer.wait(5):
+        while not stop_timer.wait(snapshot_interval):
             try:
                 stream.submit_snapshot(recorder.snapshot(), vocab=vocab)
             except RuntimeError:
@@ -155,7 +158,10 @@ def listen(config: dict[str, Any]) -> None:
         state["recording"] = True
         stop_timer.clear()
         if config.get("streaming", False):
-            stream = StreamingTranscriber(transcriber)
+            if config.get("streaming_mode", "cumulative") == "pause":
+                stream = PauseSplitTranscriber(transcriber)
+            else:
+                stream = StreamingTranscriber(transcriber)
             stream.start()
             state["stream"] = stream
             timer = threading.Thread(target=snapshots, args=(stream, vocab_prompt(dictionary)), daemon=True)

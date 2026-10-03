@@ -33,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
     "min_speech_rms": 0.004,
     "toggle_mode": False,
     "streaming": False,
+    "streaming_mode": "cumulative",
     "sounds": True,
     "whisper_mode": False,
     "stream_insert": True,
