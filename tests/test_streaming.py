@@ -365,6 +365,19 @@ class PauseSplitTranscriberTests(unittest.TestCase):
         self.assertEqual(len(run.chunks), 2)
         self.assertEqual(run.chunks[-1].end_sample, len(audio))
 
+    def test_backend_without_prompt_support_still_streams(self):
+        class NoPromptFake(ChunkFake):
+            # Parakeet-style: accepts and ignores vocab and context.
+            def transcribe(self, audio, vocab="", context=""):
+                return super().transcribe(audio, vocab="", context="")
+
+        audio = _recording(_speech(2.0, 1), _silence(0.5), _speech(2.0, 2))
+        fake = NoPromptFake()
+        _, run = self._run(audio, 1.0, fake)
+        self.assertIsNone(run.error)
+        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual(run.chunks[-1].end_sample, len(audio))
+
     def test_empty_recording_makes_no_calls(self):
         fake = ChunkFake()
         stream = PauseSplitTranscriber(fake)

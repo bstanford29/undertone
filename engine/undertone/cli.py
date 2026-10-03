@@ -12,7 +12,7 @@ from .dictionary import load_dictionary
 from .doctor import cmd_doctor
 from .hotkey import listen, run_dictation_cycle
 from .learning import add_explicit_term
-from .stt import Transcriber
+from .stt import make_transcriber
 
 
 def cmd_listen(args: argparse.Namespace) -> None:
@@ -36,7 +36,7 @@ def cmd_once(args: argparse.Namespace) -> None:
     dictionary = load_dictionary()
     audio = load_wav(args.file)
 
-    transcriber = Transcriber(model=config.get("stt_model"))
+    transcriber = make_transcriber(config)
     transcriber.warm_up()
 
     result = run_dictation_cycle(

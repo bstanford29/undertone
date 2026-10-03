@@ -5,8 +5,10 @@ with the repository's Python environment on a Mac with mlx_whisper cached:
 
     PYTHONPATH=engine .venv/bin/python bench/eval_streaming.py --file bench/dictation.wav
     PYTHONPATH=engine .venv/bin/python bench/eval_streaming.py --compare-model mlx-community/whisper-small-mlx
+    PYTHONPATH=engine .venv/bin/python bench/eval_streaming.py --compare-backend parakeet
 
-Reported per mode: release tail (wall time after the key is released), total
+A compared model or backend is judged against the primary (whisper) one-shot
+text. Reported per mode: release tail (wall time after the key is released), total
 model compute while recording, and whether the final normalized text matches
 one-shot and spells the vocabulary words. Pause-split also reports whether
 every cut landed inside silence on the real audio.
@@ -27,7 +29,7 @@ if str(ENGINE_DIR) not in sys.path:
     sys.path.insert(0, str(ENGINE_DIR))
 
 from undertone.audio import SAMPLE_RATE, load_wav
-from undertone.stt import Transcriber
+from undertone.stt import DEFAULT_PARAKEET_MODEL, STT_BACKENDS, Transcriber, make_transcriber
 from undertone.streaming import (
     DEFAULT_VAD_RMS,
     PauseSplitTranscriber,
@@ -49,7 +51,7 @@ def _prefix_ends(sample_count: int, interval_s: float) -> list[int]:
     return list(range(step, sample_count, step))
 
 
-def _run_once(transcriber: Transcriber, audio, vocab: str) -> tuple[dict[str, Any], float]:
+def _run_once(transcriber, audio, vocab: str) -> tuple[dict[str, Any], float]:
     started = time.perf_counter()
     detailed = transcriber.transcribe_detailed(audio, vocab=vocab)
     return detailed, (time.perf_counter() - started) * 1000.0
@@ -133,17 +135,22 @@ def _checks(text: str, reference: str) -> dict[str, Any]:
     }
 
 
-def _evaluate_model(model: str, audio, args) -> dict[str, Any]:
-    transcriber = Transcriber(model=model, local_files_only=True)
+def _evaluate_model(backend: str, model: str | None, audio, args, reference: str | None = None) -> dict[str, Any]:
+    """Time one backend/model; ``reference`` is the primary one-shot text."""
+    config = {"stt_backend": backend, "stt_model": model, "parakeet_model": model}
+    transcriber = make_transcriber(config)
     transcriber.warm_up()
     one_shot, one_shot_ms = _run_once(transcriber, audio, args.vocab)
-    reference = one_shot["text"]
+    if reference is None:
+        reference = one_shot["text"]
     report: dict[str, Any] = {
-        "model": model,
+        "backend": backend,
+        "model": transcriber.model if model is None else model,
+        "one_shot_text": one_shot["text"],
         "one_shot": {
             "stt_ms": round(one_shot_ms, 1),
             "segments": one_shot.get("segments", {}),
-            **_checks(reference, reference),
+            **_checks(one_shot["text"], reference),
         },
     }
     if args.modes in {"all", "cumulative"}:
@@ -160,8 +167,10 @@ def _evaluate_model(model: str, audio, args) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--file", default="bench/dictation.wav")
-    parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--compare-model", default=None, help="also time a second (smaller) whisper model")
+    parser.add_argument("--backend", choices=STT_BACKENDS, default="whisper")
+    parser.add_argument("--model", default=None, help=f"primary model; default {DEFAULT_MODEL} or {DEFAULT_PARAKEET_MODEL}")
+    parser.add_argument("--compare-backend", choices=STT_BACKENDS, default=None, help="also time this backend (e.g. parakeet)")
+    parser.add_argument("--compare-model", default=None, help="also time a second model (smaller whisper, or the parakeet model)")
     parser.add_argument("--interval", type=float, default=5.0, help="cumulative snapshot period in seconds")
     parser.add_argument("--pause-interval", type=float, default=1.0, help="pause-split snapshot period in seconds")
     parser.add_argument("--modes", choices=("all", "cumulative", "pause"), default="all")
@@ -170,30 +179,38 @@ def main() -> None:
     if args.interval <= 0 or args.pause_interval <= 0:
         parser.error("intervals must be positive")
 
-    try:
-        import mlx_whisper  # noqa: F401
-    except ImportError:
-        print(
-            "eval_streaming: mlx_whisper is not importable here. This benchmark needs an "
-            "Apple Silicon Mac with the engine venv (uv pip install -e .) and the whisper "
-            "model cached locally.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    compare_backend = args.compare_backend or (args.backend if args.compare_model else None)
+    needed = {args.backend} | ({compare_backend} if compare_backend else set())
+    modules = {"whisper": "mlx_whisper", "parakeet": "parakeet_mlx"}
+    for backend in sorted(needed):
+        try:
+            __import__(modules[backend])
+        except ImportError:
+            extra = " (uv pip install -e '.[parakeet]')" if backend == "parakeet" else " (uv pip install -e .)"
+            print(
+                f"eval_streaming: {modules[backend]} is not importable here. This benchmark needs an "
+                f"Apple Silicon Mac with the engine venv{extra} and the model cached locally.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     audio_path = Path(args.file).resolve()
     audio = load_wav(str(audio_path))
+    primary = _evaluate_model(args.backend, args.model, audio, args)
+    reference = primary.pop("one_shot_text")
     metrics: dict[str, Any] = {
         "file": audio_path.name,
         "duration_s": round(len(audio) / SAMPLE_RATE, 3),
-        "models": [_evaluate_model(args.model, audio, args)],
+        "models": [primary],
     }
-    if args.compare_model:
-        metrics["models"].append(_evaluate_model(args.compare_model, audio, args))
+    if compare_backend:
+        compared = _evaluate_model(compare_backend, args.compare_model, audio, args, reference=reference)
+        compared.pop("one_shot_text")
+        metrics["models"].append(compared)
 
     print(json.dumps(metrics, sort_keys=True, indent=2))
     failed = [
-        f"{entry['model']}/{mode}"
+        f"{entry['backend']}:{entry['model']}/{mode}"
         for entry in metrics["models"]
         for mode in ("one_shot", "cumulative", "pause_split")
         if mode in entry

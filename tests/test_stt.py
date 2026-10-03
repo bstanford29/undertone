@@ -312,5 +312,96 @@ class InitialPromptTests(unittest.TestCase):
         self.assertEqual(fake.calls[0][2], "send the report Qwen")
 
 
+class FakeParakeetModules:
+    """sys.modules entries standing in for mlx and parakeet-mlx."""
+
+    def __init__(self, text="hello from parakeet"):
+        self.text = text
+        self.loaded: list[str] = []
+        self.generated: list[int] = []
+        modules = self
+
+        class Model:
+            preprocessor_config = object()
+
+            def generate(self, mel):
+                modules.generated.append(len(mel))
+                return [types.SimpleNamespace(text=modules.text)]
+
+        def from_pretrained(path):
+            modules.loaded.append(path)
+            return Model()
+
+        mx = types.SimpleNamespace(array=lambda audio: np.asarray(audio))
+        self.entries = {
+            "mlx": types.SimpleNamespace(core=mx),
+            "mlx.core": mx,
+            "parakeet_mlx": types.SimpleNamespace(from_pretrained=from_pretrained),
+            "parakeet_mlx.audio": types.SimpleNamespace(get_logmel=lambda audio, config: audio),
+        }
+
+
+class BackendSwitchTests(unittest.TestCase):
+    def test_default_backend_is_whisper(self):
+        from undertone.stt import make_transcriber
+
+        with patch("undertone.stt._resolve_model", return_value="/cached/whisper"):
+            transcriber = make_transcriber({"stt_model": "org/whisper"})
+        self.assertIsInstance(transcriber, Transcriber)
+        self.assertEqual(transcriber.backend, "whisper")
+
+    def test_parakeet_backend_resolves_cached_model_and_transcribes(self):
+        from undertone.stt import ParakeetTranscriber, make_transcriber
+
+        fake = FakeParakeetModules()
+        with patch("undertone.stt._resolve_model", return_value="/cached/parakeet") as resolve:
+            transcriber = make_transcriber({"stt_backend": "parakeet", "parakeet_model": "org/parakeet"})
+        self.assertIsInstance(transcriber, ParakeetTranscriber)
+        resolve.assert_called_once_with("org/parakeet", local_files_only=True)
+        with patch.dict(sys.modules, fake.entries):
+            result = transcriber.transcribe_detailed(_loud(3.0, seed=20), vocab=VOCAB, context="earlier words")
+        self.assertEqual(result["text"], "hello from parakeet")
+        self.assertFalse(result["no_speech"])
+        self.assertEqual(result["segments"]["dropped"], 0)
+        # Loaded once (warm-up call plus the real call), from the cached path.
+        self.assertEqual(fake.loaded, ["/cached/parakeet"])
+        self.assertEqual(len(fake.generated), 2)
+        self.assertEqual(fake.generated[-1], SAMPLE_RATE * 3)
+
+    def test_parakeet_keeps_the_silence_gate_without_importing_the_package(self):
+        from undertone.stt import ParakeetTranscriber
+
+        transcriber = ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        with patch.dict(sys.modules, {"parakeet_mlx": None, "mlx": None, "mlx.core": None}):
+            result = transcriber.transcribe_detailed(np.zeros(SAMPLE_RATE * 3, dtype=np.float32), vocab=VOCAB)
+            self.assertEqual(result["reason"], "too_quiet")
+            self.assertEqual(transcriber.transcribe(np.zeros(0, dtype=np.float32)), "")
+
+    def test_parakeet_missing_package_is_a_clear_error(self):
+        from undertone.stt import ParakeetTranscriber
+
+        transcriber = ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        with patch.dict(sys.modules, {"parakeet_mlx": None}):
+            with self.assertRaises(RuntimeError) as caught:
+                transcriber.warm_up()
+        self.assertIn("parakeet-mlx is not installed", str(caught.exception))
+
+    def test_parakeet_repetition_loop_is_not_inserted(self):
+        from undertone.stt import ParakeetTranscriber
+
+        fake = FakeParakeetModules(text="ha ha ha ha ha ha ha ha ha ha ha ha")
+        transcriber = ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        with patch.dict(sys.modules, fake.entries):
+            result = transcriber.transcribe_detailed(_loud(3.0, seed=21))
+        self.assertTrue(result["no_speech"])
+        self.assertEqual(result["reason"], "repetition")
+
+    def test_unknown_backend_is_rejected(self):
+        from undertone.stt import make_transcriber
+
+        with self.assertRaises(ValueError):
+            make_transcriber({"stt_backend": "cloud"})
+
+
 if __name__ == "__main__":
     unittest.main()

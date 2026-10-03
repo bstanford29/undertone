@@ -13,7 +13,7 @@ from . import history, insert
 from .audio import Recorder, SAMPLE_RATE
 from .cleanup import clean_result
 from .dictionary import load_dictionary, vocab_prompt
-from .stt import Transcriber
+from .stt import Transcriber, make_transcriber
 
 logger = logging.getLogger("undertone.hotkey")
 
@@ -130,7 +130,7 @@ def save_audio(audio) -> str:
 def listen(config: dict[str, Any]) -> None:
     """Temporary F13 listener; the native app owns fn and insertion in Phase 3."""
     from .streaming import PauseSplitTranscriber, StreamingTranscriber
-    transcriber = Transcriber(model=config.get("stt_model"))
+    transcriber = make_transcriber(config)
     transcriber.warm_up()
     recorder = Recorder()
     hold_key = HOLD_KEY_MAP.get(config.get("hold_key", "f13"), keyboard.Key.f13)

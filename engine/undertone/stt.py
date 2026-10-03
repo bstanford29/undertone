@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 
 DEFAULT_STT_MODEL = "mlx-community/whisper-large-v3-turbo"
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
+STT_BACKENDS = ("whisper", "parakeet")
 DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_MIN_SPEECH_SECONDS = 0.4
 DEFAULT_MIN_SPEECH_RMS = 0.004
@@ -82,6 +84,42 @@ def _join(parts: list[str]) -> str:
     return " ".join(part.strip() for part in parts if part and part.strip()).strip()
 
 
+def _empty_stats() -> dict[str, int]:
+    return {"total": 0, "retried": 0, "recovered": 0, "dropped": 0}
+
+
+def _speech_gate(
+    audio: np.ndarray,
+    *,
+    min_speech_seconds: float,
+    min_speech_rms: float,
+    sample_rate: int,
+) -> dict[str, Any] | None:
+    """Return a no-speech result for empty or too-quiet audio, else None.
+
+    Silence and faint room noise make both backends hallucinate, so the gate
+    runs before any model call.
+    """
+    if audio.size == 0:
+        return {"text": "", "no_speech": True, "reason": "empty", "segments": _empty_stats()}
+    duration = len(audio) / sample_rate
+    rms = float(np.sqrt(np.mean(np.square(audio))))
+    if duration < min_speech_seconds or rms < min_speech_rms:
+        return {"text": "", "no_speech": True, "reason": "too_quiet", "segments": _empty_stats()}
+    return None
+
+
+def make_transcriber(config: dict[str, Any] | None = None, *, local_files_only: bool = True):
+    """Build the configured STT backend. Whisper unless stt_backend says parakeet."""
+    config = config or {}
+    backend = config.get("stt_backend", "whisper") or "whisper"
+    if backend == "whisper":
+        return Transcriber(model=config.get("stt_model"), local_files_only=local_files_only)
+    if backend == "parakeet":
+        return ParakeetTranscriber(model=config.get("parakeet_model"), local_files_only=local_files_only)
+    raise ValueError(f"Unknown stt_backend: {backend}")
+
+
 def build_initial_prompt(vocab: str = "", context: str = "") -> str | None:
     """Compose whisper's initial_prompt from prior text and the vocabulary.
 
@@ -100,6 +138,8 @@ def build_initial_prompt(vocab: str = "", context: str = "") -> str | None:
 
 class Transcriber:
     """Wraps mlx_whisper, loaded once and kept warm."""
+
+    backend = "whisper"
 
     def __init__(
         self,
@@ -141,16 +181,15 @@ class Transcriber:
         sample_rate: int = DEFAULT_SAMPLE_RATE,
     ) -> dict[str, Any]:
         audio = np.asarray(audio, dtype=np.float32)
-        stats = {"total": 0, "retried": 0, "recovered": 0, "dropped": 0}
-        if audio.size == 0:
-            return {"text": "", "no_speech": True, "reason": "empty", "segments": stats}
-
-        duration = len(audio) / sample_rate
-        rms = float(np.sqrt(np.mean(np.square(audio))))
-        if duration < min_speech_seconds or rms < min_speech_rms:
-            # Gate before whisper: silence and faint room noise hallucinate
-            # the vocabulary prompt back rather than returning empty text.
-            return {"text": "", "no_speech": True, "reason": "too_quiet", "segments": stats}
+        stats = _empty_stats()
+        gated = _speech_gate(
+            audio,
+            min_speech_seconds=min_speech_seconds,
+            min_speech_rms=min_speech_rms,
+            sample_rate=sample_rate,
+        )
+        if gated is not None:
+            return gated
 
         if not self._warm:
             self.warm_up()
@@ -265,6 +304,94 @@ class Transcriber:
         if _looks_repetitive(text) or _looks_like_vocab_echo(text, vocab):
             return None
         return text
+
+
+class ParakeetTranscriber:
+    """NVIDIA Parakeet TDT via parakeet-mlx, loaded once and kept warm.
+
+    Same interface and silence gates as ``Transcriber``. Parakeet has no
+    initial_prompt, so ``vocab`` and ``context`` are accepted and ignored;
+    proper nouns rely on the dictionary replacements applied after cleanup.
+    The optional ``parakeet`` extra installs the package.
+    """
+
+    backend = "parakeet"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        *,
+        local_files_only: bool = True,
+    ) -> None:
+        self.model = _resolve_model(
+            model or DEFAULT_PARAKEET_MODEL,
+            local_files_only=local_files_only,
+        )
+        self._model = None
+        self._warm = False
+
+    def warm_up(self) -> None:
+        if self._warm:
+            return
+        self._load()
+        self._run(np.zeros(16000, dtype=np.float32))
+        self._warm = True
+
+    def transcribe(self, audio: np.ndarray, vocab: str = "", context: str = "") -> str:
+        return self.transcribe_detailed(audio, vocab=vocab, context=context)["text"]
+
+    def transcribe_detailed(
+        self,
+        audio: np.ndarray,
+        vocab: str = "",
+        *,
+        context: str = "",
+        min_speech_seconds: float = DEFAULT_MIN_SPEECH_SECONDS,
+        min_speech_rms: float = DEFAULT_MIN_SPEECH_RMS,
+        sample_rate: int = DEFAULT_SAMPLE_RATE,
+    ) -> dict[str, Any]:
+        audio = np.asarray(audio, dtype=np.float32)
+        gated = _speech_gate(
+            audio,
+            min_speech_seconds=min_speech_seconds,
+            min_speech_rms=min_speech_rms,
+            sample_rate=sample_rate,
+        )
+        if gated is not None:
+            return gated
+        if not self._warm:
+            self.warm_up()
+        text = self._run(audio)
+        stats = _empty_stats()
+        stats["total"] = 1 if text else 0
+        if not text:
+            return {"text": "", "no_speech": True, "reason": "no_speech_segments", "segments": stats}
+        if _looks_repetitive(text):
+            stats["dropped"] = 1
+            return {"text": "", "no_speech": True, "reason": "repetition", "segments": stats}
+        return {"text": text, "no_speech": False, "reason": "", "segments": stats}
+
+    def _load(self) -> None:
+        if self._model is not None:
+            return
+        try:
+            from parakeet_mlx import from_pretrained
+        except ImportError as exc:
+            raise RuntimeError(
+                "stt_backend is parakeet but parakeet-mlx is not installed; "
+                "run: uv pip install -e '.[parakeet]'"
+            ) from exc
+        self._model = from_pretrained(self.model)
+
+    def _run(self, audio: np.ndarray) -> str:
+        """Log-mel in process (no ffmpeg) then greedy TDT decode."""
+        import mlx.core as mx
+        from parakeet_mlx.audio import get_logmel
+
+        self._load()
+        mel = get_logmel(mx.array(audio), self._model.preprocessor_config)
+        results = self._model.generate(mel)
+        return (results[0].text if results else "").strip()
 
 
 def _resolve_model(model: str, *, local_files_only: bool) -> str:

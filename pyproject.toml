@@ -16,6 +16,10 @@ dependencies = [
   "pyobjc-framework-Quartz>=10.0",
 ]
 
+[project.optional-dependencies]
+# Alternative STT backend (stt_backend: parakeet). Apple Silicon only.
+parakeet = ["parakeet-mlx>=0.5"]
+
 [project.scripts]
 undertone = "undertone.cli:main"
 
