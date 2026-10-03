@@ -53,10 +53,12 @@ enum RibbonAction: Equatable, Sendable {
     case insertAgain
     /// Stops meeting capture.
     case stop
+    /// Undoes a word correction learning just added to the dictionary.
+    case undoLearning
 
     var title: String {
         switch self {
-        case .undo: return "Undo"
+        case .undo, .undoLearning: return "Undo"
         case .why: return "Why?"
         case .insertAgain: return "Insert again"
         case .stop: return ""
@@ -67,7 +69,7 @@ enum RibbonAction: Equatable, Sendable {
         switch self {
         case .undo: return "⌥⇧Z"
         case .insertAgain: return "⌥⇧V"
-        case .why, .stop: return nil
+        case .why, .stop, .undoLearning: return nil
         }
     }
 
@@ -80,6 +82,7 @@ enum RibbonAction: Equatable, Sendable {
         case .why: return "Why was the text kept raw"
         case .insertAgain: return "Insert again, Option Shift V"
         case .stop: return "Stop recording"
+        case .undoLearning: return "Undo the learned word"
         }
     }
 }
@@ -286,9 +289,15 @@ enum FlowBarMetrics {
     static let guardedHold: Duration = .seconds(3)
     static let errorHold: Duration = .seconds(4)
     static let transientHold: Duration = .milliseconds(1800)
+    static let learningHold: Duration = .seconds(6)
     static let savedHold: Duration = .milliseconds(1200)
     static let meetingEndedHold: Duration = .seconds(3)
     static let nudgeAutoDismiss: TimeInterval = 20
+
+    /// The hold for a settled state. `AppModel.hold(for:)` owns the rule.
+    static func transientHold(for state: PillState) -> Duration {
+        AppModel.hold(for: state)
+    }
 }
 
 /// Panel-local geometry for the nub. `depth` measures inward from the docked
@@ -483,6 +492,8 @@ enum FlowBarDock {
         var canUndo = false
         var canExplainGuard = false
         var errorOffersRetry = false
+        /// A learned word can still be undone from its notice.
+        var canUndoLearning = false
     }
 
     static let lockedHint = "fn to finish"
@@ -525,6 +536,13 @@ enum FlowBarDock {
             if inputs.errorOffersRetry { pieces.append(.button(.insertAgain)) }
             return RibbonSpec(pieces)
         case .notice(let message):
+            // "Learned Qwen · Undo" becomes words plus a real Undo button.
+            if AppModel.isLearningNoticeText(message) {
+                let words = String(message.dropLast(" · Undo".count))
+                var pieces: [RibbonPiece] = [.glyph(.check), .text(words)]
+                if inputs.canUndoLearning { pieces.append(.button(.undoLearning)) }
+                return RibbonSpec(pieces)
+            }
             return RibbonSpec([.glyph(.check), .text(message)])
         case .recording(let elapsed):
             let timer = timerText(elapsed)

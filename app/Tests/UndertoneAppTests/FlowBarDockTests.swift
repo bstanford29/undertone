@@ -283,6 +283,36 @@ final class RibbonContentTests: XCTestCase {
         XCTAssertEqual(ribbon(.notice("Saved"))?.pieces, [.glyph(.check), .text("Saved")])
     }
 
+    func testALearnedWordNoticeGetsARealUndoButton() {
+        XCTAssertEqual(ribbon(.notice("Learned Velora · Undo")) { $0.canUndoLearning = true }?.pieces,
+                       [.glyph(.check), .text("Learned Velora"), .button(.undoLearning)])
+        XCTAssertEqual(ribbon(.notice("Learned Velora · Undo"))?.pieces,
+                       [.glyph(.check), .text("Learned Velora")], "No button once the undo is spent")
+    }
+
+    func testLearningNoticeHasSixSecondsForUndo() {
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Learned Velora · Undo")), .seconds(6))
+        XCTAssertEqual(FlowBarMetrics.transientHold(for: .notice("Saved")), FlowBarMetrics.transientHold)
+    }
+
+    @MainActor
+    func testPublishedStateResizesTheActualPanelAfterAssignment() async throws {
+        let model = AppModel(previewMode: true)
+        model.pillEdge = .right
+        let controller = PillPanelController(model: model)
+        model.pillState = .working
+        try await Task.sleep(for: .milliseconds(50))
+
+        model.pillState = .notice("Learned Velora · Undo")
+        try await Task.sleep(for: .milliseconds(50))
+
+        let expected = FlowBarDock.panelSize(
+            for: FlowBarState.viewState(model: model, hovered: nil, open: false),
+            edge: .right, newNote: model.newNoteAction
+        )
+        XCTAssertEqual(controller.panelFrameForTesting.size, expected)
+    }
+
     func testTheButtonsReuseTheExistingShortcuts() {
         XCTAssertEqual(RibbonAction.undo.shortcut, "⌥⇧Z")
         XCTAssertEqual(RibbonAction.insertAgain.shortcut, "⌥⇧V")

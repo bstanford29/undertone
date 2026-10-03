@@ -356,6 +356,15 @@ struct CleanupSettingsTab: View {
                 }
                 lastDictationPreview
             }
+            Section("Dictionary") {
+                Toggle(isOn: $model.learnFromCorrections) {
+                    SettingLabel(title: "Learn from my corrections",
+                                 detail: "When you fix a word Undertone typed, it adds the new word to your dictionary. The pill offers Undo.")
+                }
+                .onChange(of: model.learnFromCorrections) { _, value in
+                    model.saveSetting(CorrectionLearningSetting.key, .bool(value))
+                }
+            }
             Section {
                 ForEach(toneApps, id: \.self) { bundleID in toneRow(bundleID) }
                 HStack {

@@ -56,6 +56,44 @@ struct PermissionSnapshot: Equatable {
     }
 }
 
+enum LearningReconciliationPolicy: Equatable {
+    case active(actionID: Int, term: String)
+    case notFound
+    case receipt(String)
+    case clear
+}
+
+struct PersistedLearningFallback: Codable, Equatable {
+    let produced: String
+    let replacement: String
+    let rowID: Int
+    let appBundleID: String
+
+    var isValid: Bool {
+        rowID > 0
+            && !produced.isEmpty && produced.utf8.count <= 200
+            && !replacement.isEmpty && replacement.utf8.count <= 200
+            && !appBundleID.isEmpty && appBundleID.utf8.count <= 300
+            && !produced.contains(where: { $0.isNewline || $0.asciiValue.map { $0 < 32 || $0 == 127 } == true })
+            && !replacement.contains(where: { $0.isNewline || $0.asciiValue.map { $0 < 32 || $0 == 127 } == true })
+    }
+
+    var candidate: LearningCandidate {
+        LearningCandidate(produced: produced, replacement: replacement, reason: "recovered")
+    }
+}
+
+struct PersistedLearningRequest: Codable, Equatable {
+    let token: String
+    let fallback: PersistedLearningFallback
+
+    var isValid: Bool {
+        !token.isEmpty && token.utf8.count <= 128
+            && token.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }
+            && fallback.isValid
+    }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     let engine: EngineClient
@@ -96,6 +134,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var nudgeFraction: Double = 1
     @Published var configError: String?
     @Published var learnedSuggestions: [LearnedSuggestion] = []
+    @Published var learnFromCorrections = false
+    @Published private(set) var pendingLearningActionID: Int?
+    @Published private(set) var pendingLearningTerm: String?
     @Published private(set) var permissionSnapshot = PermissionSnapshot.current()
     @Published var permissionRequestMessage: String?
     @Published private(set) var shortcutTapActive = false
@@ -138,10 +179,16 @@ final class AppModel: ObservableObject {
     private var inputMonitoringUnavailable = false
     private var accessibilityUnavailable = false
     private var insertionInFlight = false
+    private var learningUndoInFlight = false
+    private var learningRecoveryPending = false
+    private var learningReconciliationInFlight = false
+    private var unresolvedLearningClientToken: String?
+    private var unresolvedLearningFallback: PersistedLearningFallback?
     private var meetingsObservation: AnyCancellable?
     private var meetingStateObservation: AnyCancellable?
     private var detectionObservation: AnyCancellable?
     private var nudgeTask: Task<Void, Never>?
+    private var deferredMeetingNudge: DetectedMeeting?
     private var nudgeHovered = false
     private var meetingElapsedTask: Task<Void, Never>?
     /// Set by the app delegate, which owns the Quick note panel.
@@ -155,6 +202,8 @@ final class AppModel: ObservableObject {
     /// Same subsystem and category as the detector, so one log stream shows
     /// the detection and the dock's reaction to it side by side.
     nonisolated private static let log = Logger(subsystem: "com.undertone.app", category: "meeting")
+    private static let unresolvedLearningTokenKey = "Undertone.unresolvedLearningClientToken"
+    private static let unresolvedLearningRequestKey = "Undertone.unresolvedLearningRequest"
     /// Matches the engine's default `min_speech_seconds` gate.
     private static let minimumRecordedSeconds = 0.4
     private static let workingTimeout: Duration = .seconds(25)
@@ -192,6 +241,15 @@ final class AppModel: ObservableObject {
         meetingsObservation = meetings.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+        if let data = UserDefaults.standard.data(forKey: Self.unresolvedLearningRequestKey),
+           let request = try? JSONDecoder().decode(PersistedLearningRequest.self, from: data),
+           request.isValid {
+            unresolvedLearningClientToken = request.token
+            unresolvedLearningFallback = request.fallback
+        } else {
+            UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningRequestKey)
+            unresolvedLearningClientToken = UserDefaults.standard.string(forKey: Self.unresolvedLearningTokenKey)
+        }
         meetings.canStartMeeting = { [weak self] in
             guard let self else { return false }
             switch self.pillState {
@@ -227,6 +285,124 @@ final class AppModel: ObservableObject {
 
     nonisolated static func commandInstructionWithinLimit(_ instruction: String) -> Bool {
         instruction.utf8.count <= 4_096
+    }
+
+    nonisolated static func canShowLearningNotice(for state: PillState) -> Bool {
+        switch state {
+        case .idle, .notice:
+            return true
+        case .listening, .working, .inserted, .guarded, .error, .recording, .meetingDetected:
+            return false
+        }
+    }
+
+    nonisolated static func learningNotice(for term: String) -> String {
+        "Learned \(term) · Undo"
+    }
+
+    nonisolated static func learningClientToken() -> String {
+        UUID().uuidString
+    }
+
+    nonisolated static func learningReconciliationPolicy(
+        status: String?, actionStatus: String?, actionID: Int?, term: String?
+    ) -> LearningReconciliationPolicy {
+        if status == "not_found" { return .notFound }
+        guard status == "learned", let actionID, let term, !term.isEmpty else { return .clear }
+        switch actionStatus {
+        case "active":
+            return .active(actionID: actionID, term: term)
+        case "superseded", "undone":
+            return learningUndoReceipt(status: actionStatus, term: term).map(LearningReconciliationPolicy.receipt) ?? .clear
+        default:
+            return .clear
+        }
+    }
+
+    nonisolated static func isLearningNotice(_ state: PillState, term: String) -> Bool {
+        guard case .notice(let message) = state else { return false }
+        return message == learningNotice(for: term)
+    }
+
+    nonisolated static func shouldDeferMeetingNudge(for state: PillState, pendingLearningTerm: String?) -> Bool {
+        if preservesDeferredMeetingNudge(state) { return true }
+        guard let pendingLearningTerm else { return false }
+        return isLearningNotice(state, term: pendingLearningTerm)
+    }
+
+    nonisolated static func preservesDeferredMeetingNudge(_ state: PillState) -> Bool {
+        guard case .notice(let message) = state else { return false }
+        return message.hasPrefix("Undid learning ")
+            || message.hasPrefix("Kept newer dictionary entry for ")
+            || message.hasPrefix("Kept newer learning for ")
+            || message.hasPrefix("Learning for ") && message.hasSuffix(" was already undone")
+            || message.hasSuffix(" was already removed")
+    }
+
+    nonisolated static func learningUndoReceipt(status: String?, term: String) -> String? {
+        switch status {
+        case "removed":
+            return "Undid learning \(term)"
+        case "superseded":
+            return "Kept newer dictionary entry for \(term)"
+        case "preserved":
+            return "Kept newer learning for \(term)"
+        case "undone":
+            return "Learning for \(term) was already undone"
+        case "absent":
+            return "\(term) was already removed"
+        default:
+            return nil
+        }
+    }
+
+    nonisolated static func shouldShowDeferredMeetingNudge(
+        current: DetectedMeeting?, deferred: DetectedMeeting?, enabled: Bool,
+        persistent: Bool, ignored: Bool, busy: Bool, pillIsIdle: Bool
+    ) -> Bool {
+        guard let current, let deferred, current == deferred else { return false }
+        return shouldShowNudge(enabled: enabled, persistent: persistent, ignored: ignored,
+                               busy: busy, pillIsIdle: pillIsIdle)
+    }
+
+    nonisolated static func canBeginLearningUndo(actionID: Int?, inFlight: Bool) -> Bool {
+        actionID != nil && !inFlight
+    }
+
+    nonisolated static func shouldKeepLearningActionAfterRollback(rollbackSucceeded: Bool) -> Bool {
+        !rollbackSucceeded
+    }
+
+    nonisolated static func canShowLearningRecoveryNotice(for state: PillState) -> Bool {
+        if case .idle = state { return true }
+        return false
+    }
+
+    nonisolated static func canSupersedeLearningRecovery(_ recoveryPending: Bool) -> Bool {
+        !recoveryPending
+    }
+
+    nonisolated static func shouldKeepLearningRecoveryAfterReshowing(inFlight: Bool) -> Bool {
+        inFlight
+    }
+
+    nonisolated static func shouldPreserveLearningRecoveryWhileShowingNotice(
+        state: PillState, nextState: PillState, actionID: Int?, term: String?, recoveryPending: Bool
+    ) -> Bool {
+        guard case .notice = nextState else { return false }
+        if recoveryPending { return true }
+        guard actionID != nil, let term else { return false }
+        return isLearningNotice(state, term: term)
+    }
+
+    nonisolated static func shouldFallbackForPendingLearning(actionID: Int?, unresolvedToken: String? = nil) -> Bool {
+        actionID != nil || unresolvedToken != nil
+    }
+
+    nonisolated static func canBeginLearningReconciliation(
+        tokenPresent: Bool, inFlight: Bool
+    ) -> Bool {
+        tokenPresent && !inFlight
     }
 
     nonisolated static func commandSidecarPayload(selectedText: String, instruction: String) -> [String: String] {
@@ -297,6 +473,7 @@ final class AppModel: ObservableObject {
             if case .bool(let value) = config["sounds"] { soundsEnabled = value }
             if case .bool(let value) = config["stream_insert"] { streamInsert = value }
             if case .bool(let value) = config["whisper_mode"] { whisperMode = value }
+            learnFromCorrections = CorrectionLearningSetting.value(from: config)
             if case .bool(let value) = config["pill_persistent"] { pillPersistent = value }
             if case .string(let value) = config["pill_edge"], let edge = PillEdge(rawValue: value) { pillEdge = edge }
             if case .number(let value) = config["pill_offset"] { pillOffset = value }
@@ -359,6 +536,7 @@ final class AppModel: ObservableObject {
         pillResetTask = nil
         nudgeTask?.cancel()
         nudgeTask = nil
+        deferredMeetingNudge = nil
         meetingElapsedTask?.cancel()
         meetingElapsedTask = nil
         powerMonitor?.stop()
@@ -416,6 +594,7 @@ final class AppModel: ObservableObject {
         case .listening, .working, .recording:
             return
         }
+        clearPendingLearningUnlessRecovering()
         cancelNudge()
         editWatcher.cancel()
         pillResetTask?.cancel()
@@ -468,6 +647,7 @@ final class AppModel: ObservableObject {
             self.target = nil
             statusText = "No speech detected"
             pillState = .idle
+            showPendingLearningRecoveryIfSafe()
             return
         }
         pillState = .working
@@ -551,9 +731,101 @@ final class AppModel: ObservableObject {
             } else if response.whisper == "warm" && response.cleanup == "warm" {
                 setEngineStatus("Whisper and \(response.model ?? "cleanup") warm · ready")
             } else { setEngineStatus("Engine loading…") }
+            await reconcileUnresolvedLearningIfAvailable()
         } catch {
             engineHealth = EngineHealth()
             setEngineStatus("Engine unavailable")
+        }
+    }
+
+    private func persistUnresolvedLearning(token: String, fallback: PersistedLearningFallback) -> Bool {
+        let request = PersistedLearningRequest(token: token, fallback: fallback)
+        guard request.isValid, let data = try? JSONEncoder().encode(request) else { return false }
+        unresolvedLearningClientToken = token
+        unresolvedLearningFallback = fallback
+        UserDefaults.standard.set(data, forKey: Self.unresolvedLearningRequestKey)
+        UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
+        return true
+    }
+
+    private func clearUnresolvedLearning() {
+        unresolvedLearningClientToken = nil
+        unresolvedLearningFallback = nil
+        UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningRequestKey)
+        UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningTokenKey)
+    }
+
+    private func handleLearningFallbackFailure(_ error: Error) {
+        if let clientError = error as? EngineClientError, clientError.isRetryableRecoveryFailure {
+            statusText = "Learning unavailable: suggestion fallback could not be saved"
+            return
+        }
+        clearUnresolvedLearning()
+        statusText = "Learning unavailable: correction could not be queued"
+    }
+
+    private func handleLearningLookupFailure(_ error: Error) {
+        if let clientError = error as? EngineClientError, clientError.isRetryableRecoveryFailure {
+            statusText = "Learning unavailable: response could not be resolved"
+            return
+        }
+        clearUnresolvedLearning()
+        statusText = "Learning unavailable: recovery request was rejected"
+    }
+
+    private func reconcileUnresolvedLearningIfAvailable() async {
+        guard Self.canBeginLearningReconciliation(
+            tokenPresent: unresolvedLearningClientToken != nil,
+            inFlight: learningReconciliationInFlight
+        ), let token = unresolvedLearningClientToken else { return }
+        learningReconciliationInFlight = true
+        defer { learningReconciliationInFlight = false }
+        let response: EngineResponse
+        do {
+            response = try await engine.request(op: "learning.lookup", fields: [
+                "client_token": .string(token),
+            ])
+        } catch {
+            handleLearningLookupFailure(error)
+            return
+        }
+        let policy = Self.learningReconciliationPolicy(
+            status: response.status,
+            actionStatus: response.learningActionStatus,
+            actionID: response.learningActionID,
+            term: response.term
+        )
+        switch policy {
+        case .active(let actionID, let term):
+            clearUnresolvedLearning()
+            pendingLearningActionID = actionID
+            pendingLearningTerm = term
+            learningRecoveryPending = true
+            showPendingLearningRecoveryIfSafe()
+        case .notFound:
+            guard let fallback = unresolvedLearningFallback else {
+                statusText = "Learning unavailable: correction details could not be recovered"
+                clearUnresolvedLearning()
+                return
+            }
+            do {
+                try await proposeEdit(
+                    candidate: fallback.candidate,
+                    rowID: fallback.rowID,
+                    appBundleID: fallback.appBundleID
+                )
+                clearUnresolvedLearning()
+            } catch {
+                handleLearningFallbackFailure(error)
+            }
+        case .receipt(let message):
+            clearUnresolvedLearning()
+            if Self.canShowLearningNotice(for: pillState) {
+                showNotice(message, hold: FlowBarMetrics.transientHold)
+            }
+        case .clear:
+            statusText = "Learning unavailable: unexpected resolution"
+            clearUnresolvedLearning()
         }
     }
 
@@ -580,6 +852,7 @@ final class AppModel: ObservableObject {
                 statusText = "No speech detected"
                 self.commandMode = false
                 pillState = .idle
+                showPendingLearningRecoveryIfSafe()
                 return
             }
             // Retain the raw transcript beside the audio before any history or
@@ -706,8 +979,8 @@ final class AppModel: ObservableObject {
                 lastInsertedText = text
                 lastInsertedRawText = commandMode ? selectedText : raw
                 lastInsertedRowID = rowID
-                if !commandMode, let receipt = InsertionReceipt.make(rowID: rowID, produced: text, target: target) {
-                    editWatcher.start(receipt: receipt, knownTerms: knownTerms) { [weak self] candidate, edited in
+                if !commandMode {
+                    editWatcher.start(rowID: rowID, produced: text, target: target, knownTerms: knownTerms) { [weak self] candidate, edited, receipt in
                         self?.handleEdit(candidate: candidate, editedText: edited, receipt: receipt)
                     }
                 }
@@ -755,15 +1028,213 @@ final class AppModel: ObservableObject {
                 _ = try await engine.request(op: "history.update", fields: [
                     "row_id": .number(Double(rowID)), "edited_text": .string(editedText)
                 ])
-                let response = try await engine.request(op: "learned.propose", fields: [
-                    "produced": .string(candidate.produced), "replacement": .string(candidate.replacement),
-                    "row_id": .number(Double(rowID)), "app_bundle_id": .string(receipt.appBundleID)
-                ])
-                if let suggestion = response.suggestion,
-                   !learnedSuggestions.contains(where: { $0.id == suggestion.id }) {
-                    learnedSuggestions.insert(suggestion, at: 0)
+                guard candidate.reason != "already_known" else { return }
+                guard learnFromCorrections else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
                 }
+                guard !Self.shouldFallbackForPendingLearning(
+                    actionID: pendingLearningActionID, unresolvedToken: unresolvedLearningClientToken
+                ) else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
+                }
+                guard Self.canShowLearningNotice(for: pillState) else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
+                }
+                let clientToken = Self.learningClientToken()
+                let fallback = PersistedLearningFallback(
+                    produced: candidate.produced,
+                    replacement: candidate.replacement,
+                    rowID: rowID,
+                    appBundleID: receipt.appBundleID
+                )
+                guard persistUnresolvedLearning(token: clientToken, fallback: fallback) else {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID)
+                    return
+                }
+                let response: EngineResponse
+                do {
+                    response = try await engine.request(op: "learning.auto_learn", fields: [
+                        "produced": .string(candidate.produced),
+                        "replacement": .string(candidate.replacement), "row_id": .number(Double(rowID)),
+                        "app_bundle_id": .string(receipt.appBundleID),
+                        "client_token": .string(clientToken),
+                    ])
+                } catch {
+                    let resolved: EngineResponse
+                    do {
+                        resolved = try await engine.request(op: "learning.lookup", fields: [
+                            "client_token": .string(clientToken),
+                        ])
+                    } catch {
+                        handleLearningLookupFailure(error)
+                        return
+                    }
+                    switch Self.learningReconciliationPolicy(
+                        status: resolved.status, actionStatus: resolved.learningActionStatus,
+                        actionID: resolved.learningActionID, term: resolved.term
+                    ) {
+                    case .active:
+                        clearUnresolvedLearning()
+                        response = resolved
+                    case .notFound:
+                        do {
+                            try await proposeEdit(
+                                candidate: candidate, rowID: rowID,
+                                appBundleID: receipt.appBundleID
+                            )
+                            clearUnresolvedLearning()
+                        } catch {
+                            handleLearningFallbackFailure(error)
+                        }
+                        return
+                    case .receipt(let message):
+                        clearUnresolvedLearning()
+                        if Self.canShowLearningNotice(for: pillState) {
+                            showNotice(message, hold: FlowBarMetrics.transientHold)
+                        }
+                        return
+                    case .clear:
+                        statusText = "Learning unavailable: unexpected resolution"
+                        clearUnresolvedLearning()
+                        return
+                    }
+                }
+                if response.status == "learned", response.learningActionID == nil {
+                    statusText = "Learning unavailable: action was not returned"
+                    return
+                }
+                clearUnresolvedLearning()
+                try await applyAutoLearnResponse(
+                    response, candidate: candidate, rowID: rowID, appBundleID: receipt.appBundleID
+                )
             } catch {
+                statusText = "Learning unavailable: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func applyAutoLearnResponse(
+        _ response: EngineResponse,
+        candidate: LearningCandidate,
+        rowID: Int,
+        appBundleID: String
+    ) async throws {
+        if response.status == "learned" {
+            let term = response.term ?? candidate.replacement
+            if let actionStatus = response.learningActionStatus, actionStatus != "active" {
+                if let receipt = Self.learningUndoReceipt(status: actionStatus, term: term),
+                   Self.canShowLearningNotice(for: pillState) {
+                    showNotice(receipt, hold: FlowBarMetrics.transientHold)
+                }
+                return
+            }
+            guard let actionID = response.learningActionID else {
+                statusText = "Learning unavailable: action was not returned"
+                return
+            }
+            guard Self.canShowLearningNotice(for: pillState) else {
+                let rollbackSucceeded: Bool
+                do {
+                    _ = try await engine.request(op: "learning.undo", fields: [
+                        "action_id": .number(Double(actionID))
+                    ])
+                    rollbackSucceeded = true
+                } catch {
+                    rollbackSucceeded = false
+                }
+                if Self.shouldKeepLearningActionAfterRollback(rollbackSucceeded: rollbackSucceeded) {
+                    pendingLearningActionID = actionID
+                    pendingLearningTerm = term
+                    learningRecoveryPending = true
+                }
+                do {
+                    try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: appBundleID)
+                } catch {
+                    statusText = "Learning unavailable: \(error.localizedDescription)"
+                }
+                showPendingLearningRecoveryIfSafe()
+                return
+            }
+            pendingLearningActionID = actionID
+            pendingLearningTerm = term
+            learningRecoveryPending = false
+            showTransientState(.notice(Self.learningNotice(for: term)))
+        } else if response.status == "already_known" {
+            return
+        } else if response.status == "disabled" {
+            try await proposeEdit(candidate: candidate, rowID: rowID, appBundleID: appBundleID)
+        }
+    }
+
+    private func proposeEdit(candidate: LearningCandidate, rowID: Int, appBundleID: String) async throws {
+        let response = try await engine.request(op: "learned.propose", fields: [
+            "produced": .string(candidate.produced), "replacement": .string(candidate.replacement),
+            "row_id": .number(Double(rowID)), "app_bundle_id": .string(appBundleID)
+        ])
+        if let suggestion = response.suggestion,
+           !learnedSuggestions.contains(where: { $0.id == suggestion.id }) {
+            learnedSuggestions.insert(suggestion, at: 0)
+        }
+    }
+
+    private func clearPendingLearning() {
+        pendingLearningActionID = nil
+        pendingLearningTerm = nil
+        learningRecoveryPending = false
+    }
+
+    private func clearPendingLearningUnlessRecovering() {
+        guard Self.canSupersedeLearningRecovery(learningRecoveryPending) else { return }
+        clearPendingLearning()
+    }
+
+    private func clearDeferredMeetingNudge() {
+        deferredMeetingNudge = nil
+    }
+
+    private func showPendingLearningRecoveryIfSafe() {
+        guard learningRecoveryPending,
+              pendingLearningActionID != nil,
+              let term = pendingLearningTerm,
+              Self.canShowLearningRecoveryNotice(for: pillState) else { return }
+        learningRecoveryPending = Self.shouldKeepLearningRecoveryAfterReshowing(inFlight: learningUndoInFlight)
+        showTransientState(.notice(Self.learningNotice(for: term)))
+    }
+
+    func undoPendingLearning() {
+        guard Self.canBeginLearningUndo(actionID: pendingLearningActionID, inFlight: learningUndoInFlight),
+              let actionID = pendingLearningActionID else { return }
+        guard !previewMode else {
+            pendingLearningActionID = nil
+            pendingLearningTerm = nil
+            learningRecoveryPending = false
+            return
+        }
+        learningUndoInFlight = true
+        learningRecoveryPending = true
+        let term = pendingLearningTerm ?? "term"
+        Task { [weak self] in
+            guard let self else { return }
+            defer { learningUndoInFlight = false }
+            do {
+                let response = try await engine.request(op: "learning.undo", fields: ["action_id": .number(Double(actionID))])
+                guard pendingLearningActionID == actionID else { return }
+                guard let receipt = Self.learningUndoReceipt(status: response.status, term: term) else {
+                    learningRecoveryPending = true
+                    statusText = "Learning unavailable: unexpected undo status"
+                    return
+                }
+                pendingLearningActionID = nil
+                pendingLearningTerm = nil
+                learningRecoveryPending = false
+                showNotice(receipt, hold: FlowBarMetrics.transientHold)
+            } catch {
+                if pendingLearningActionID == actionID {
+                    learningRecoveryPending = true
+                }
                 statusText = "Learning unavailable: \(error.localizedDescription)"
             }
         }
@@ -1023,6 +1494,7 @@ final class AppModel: ObservableObject {
     func ignoreDetectedMeeting() {
         if let detected = detectedMeeting { meetings.ignore(detected) }
         cancelNudge()
+        showPendingLearningRecoveryIfSafe()
     }
 
     /// Hovering the card pauses its countdown so a reachable mouse does not
@@ -1036,7 +1508,10 @@ final class AppModel: ObservableObject {
     func setDetectCallsEnabled(_ enabled: Bool) {
         detectCallsEnabled = enabled
         UserDefaults.standard.set(enabled, forKey: MeetingDetectionSettings.detectCallsKey)
-        if !enabled { cancelNudge() }
+        if !enabled {
+            cancelNudge()
+            showPendingLearningRecoveryIfSafe()
+        }
     }
 
     // MARK: - Meeting nudge
@@ -1052,7 +1527,9 @@ final class AppModel: ObservableObject {
     private func detectionChanged(_ detected: DetectedMeeting?) {
         guard let detected else {
             meetings.clearIgnored()
+            deferredMeetingNudge = nil
             cancelNudge()
+            showPendingLearningRecoveryIfSafe()
             return
         }
         guard Self.shouldShowNudge(
@@ -1060,12 +1537,23 @@ final class AppModel: ObservableObject {
             persistent: pillPersistent,
             ignored: meetings.isIgnored(detected),
             busy: meetings.state.isBusy,
-            pillIsIdle: pillState == .idle
-        ) else { return }
+            pillIsIdle: true
+        ) else {
+            deferredMeetingNudge = nil
+            return
+        }
+        guard pillState == .idle else {
+            if Self.shouldDeferMeetingNudge(for: pillState, pendingLearningTerm: pendingLearningTerm) {
+                deferredMeetingNudge = detected
+            }
+            return
+        }
         showNudge(detected)
     }
 
     private func showNudge(_ detected: DetectedMeeting) {
+        clearPendingLearningUnlessRecovering()
+        clearDeferredMeetingNudge()
         nudgeTask?.cancel()
         nudgeHovered = false
         nudgeFraction = 1
@@ -1087,15 +1575,19 @@ final class AppModel: ObservableObject {
             guard let self, case .meetingDetected = self.pillState else { return }
             self.pillState = .idle
             self.nudgeTask = nil
+            self.showPendingLearningRecoveryIfSafe()
         }
     }
 
     private func cancelNudge() {
         nudgeTask?.cancel()
         nudgeTask = nil
+        clearDeferredMeetingNudge()
         nudgeHovered = false
         nudgeFraction = 1
-        if case .meetingDetected = pillState { pillState = .idle }
+        if case .meetingDetected = pillState {
+            pillState = .idle
+        }
     }
 
     // MARK: - Auto-stop
@@ -1121,10 +1613,15 @@ final class AppModel: ObservableObject {
         guard state == .recording else {
             meetingElapsedTask?.cancel()
             meetingElapsedTask = nil
-            if case .recording = pillState { pillState = .idle }
+            if case .recording = pillState {
+                pillState = .idle
+                showPendingLearningRecoveryIfSafe()
+            }
             return
         }
         cancelNudge()
+        clearPendingLearningUnlessRecovering()
+        clearDeferredMeetingNudge()
         meetingElapsedTask?.cancel()
         meetingElapsedTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -1180,14 +1677,26 @@ final class AppModel: ObservableObject {
     /// A short receipt on the dock. It never interrupts dictation or a live
     /// capture: those states own the dock while they run.
     private func showNotice(_ message: String, hold: Duration) {
+        let nextState = PillState.notice(message)
+        let preservesRecovery = Self.shouldPreserveLearningRecoveryWhileShowingNotice(
+            state: pillState, nextState: nextState,
+            actionID: pendingLearningActionID,
+            term: pendingLearningTerm,
+            recoveryPending: learningRecoveryPending
+        )
+        if preservesRecovery { learningRecoveryPending = true }
         switch pillState {
-        case .idle, .notice, .meetingDetected:
+        case .idle, .notice:
             break
-        case .listening, .working, .inserted, .guarded, .error, .recording:
+        case .listening, .working, .inserted, .guarded, .error, .recording, .meetingDetected:
             return
         }
-        pillState = .notice(message)
-        schedulePillReset(from: .notice(message), after: hold)
+        if !preservesRecovery { clearPendingLearning() }
+        if !preservesRecovery && !Self.preservesDeferredMeetingNudge(nextState) {
+            clearDeferredMeetingNudge()
+        }
+        pillState = nextState
+        schedulePillReset(from: nextState, after: hold)
     }
 
     /// Persists a new pill dock position, applied immediately for the panel
@@ -1253,21 +1762,40 @@ final class AppModel: ObservableObject {
 
     private func showTransientError(_ message: String, retry: Bool = false, duration: Duration = FlowBarMetrics.errorHold) {
         errorOffersRetry = retry
+        if !learningRecoveryPending {
+            clearPendingLearning()
+            clearDeferredMeetingNudge()
+        }
         pillState = .error(message)
         schedulePillReset(from: .error(message), after: duration)
     }
 
     /// How long a settled state holds before the pill folds back to the nub.
+    /// A learned-word notice holds longest so its Undo is reachable.
     nonisolated static func hold(for state: PillState) -> Duration {
         switch state {
         case .inserted: return FlowBarMetrics.insertedHold
         case .guarded: return FlowBarMetrics.guardedHold
         case .error: return FlowBarMetrics.errorHold
+        case .notice(let message) where isLearningNoticeText(message): return FlowBarMetrics.learningHold
         default: return FlowBarMetrics.transientHold
         }
     }
 
+    /// "Learned Qwen · Undo", the notice correction learning shows.
+    nonisolated static func isLearningNoticeText(_ message: String) -> Bool {
+        message.hasPrefix("Learned ") && message.hasSuffix(" · Undo")
+    }
+
     private func showTransientState(_ state: PillState) {
+        let preservesLearning = if case .notice = state,
+                                    let term = pendingLearningTerm {
+            Self.isLearningNotice(state, term: term)
+        } else { false }
+        if !preservesLearning && !learningRecoveryPending {
+            clearPendingLearning()
+            clearDeferredMeetingNudge()
+        }
         pillState = state
         schedulePillReset(from: state, after: Self.hold(for: state))
     }
@@ -1282,8 +1810,29 @@ final class AppModel: ObservableObject {
                 do { try await Task.sleep(for: .milliseconds(150)) } catch { return }
             }
             guard let self, self.pillState == expected else { return }
+            let deferredMeeting = self.deferredMeetingNudge
             self.pillState = .idle
+            if case .notice = expected, !self.learningRecoveryPending {
+                self.pendingLearningActionID = nil
+                self.pendingLearningTerm = nil
+            }
             self.pillResetTask = nil
+            self.showPendingLearningRecoveryIfSafe()
+            guard self.pillState == .idle else { return }
+            guard let deferredMeeting,
+                  Self.shouldShowDeferredMeetingNudge(
+                current: self.detectedMeeting,
+                deferred: deferredMeeting,
+                enabled: self.detectCallsEnabled,
+                persistent: self.pillPersistent,
+                ignored: self.meetings.isIgnored(self.detectedMeeting),
+                busy: self.meetings.state.isBusy,
+                pillIsIdle: self.pillState == .idle
+            ) else {
+                self.deferredMeetingNudge = nil
+                return
+            }
+            self.showNudge(deferredMeeting)
         }
     }
 
@@ -1323,7 +1872,8 @@ final class AppModel: ObservableObject {
             pillState: pillState, locked: dictationLocked, lockedSince: lockedSince,
             commandMode: commandMode, targetChip: targetChip, workingNote: workingNote,
             workingModel: workingModelName, canUndo: canUndoLastInsert || previewMode,
-            canExplainGuard: lastGuardRowID != nil || previewMode, errorOffersRetry: errorOffersRetry
+            canExplainGuard: lastGuardRowID != nil || previewMode, errorOffersRetry: errorOffersRetry,
+            canUndoLearning: canUndoPendingLearning || previewMode
         )
     }
 
@@ -1335,7 +1885,14 @@ final class AppModel: ObservableObject {
         case .insertAgain: insertLast()
         case .why: openHistory(rowID: lastGuardRowID)
         case .stop: toggleMeetingCapture()
+        case .undoLearning: if canUndoPendingLearning { undoPendingLearning() }
         }
+    }
+
+    /// The pill shows this learned word's notice and its undo is still open.
+    var canUndoPendingLearning: Bool {
+        guard let term = pendingLearningTerm, pendingLearningActionID != nil else { return false }
+        return Self.isLearningNotice(pillState, term: term)
     }
 
     /// Opens History on one row, used by Why? on a Kept raw ribbon.
@@ -1423,6 +1980,7 @@ final class AppModel: ObservableObject {
             if case .object(let value) = config["app_prompt_variants"] {
                 appPromptVariants = value.compactMapValues { if case .string(let text) = $0 { return text } else { return nil } }
             }
+            learnFromCorrections = CorrectionLearningSetting.value(from: config)
         }
         await refreshStatus()
         if lastRow == nil, let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }

@@ -246,6 +246,8 @@ final class PillPanelController {
     /// The panel-local point the current press started at, for click routing.
     private var pressPoint: CGPoint?
 
+    var panelFrameForTesting: NSRect { panel.frame }
+
     private static let settleDuration: TimeInterval = 0.26
     private static let liftDuration: TimeInterval = 0.12
 
@@ -277,7 +279,11 @@ final class PillPanelController {
         panel.onDragEnd = { [weak self] cursor in self?.endDrag(cursor: cursor) }
         panel.onDragCancel = { [weak self] in self?.cancelDrag() }
         panel.onRightClick = { [weak self] event in self?.showFlowMenu(event) }
-        model.$pillState.sink { [weak self] state in
+        // Defer past @Published willSet; the main queue also serves AppKit
+        // tracking/modal modes, unlike the default RunLoop scheduler.
+        model.$pillState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] state in
             MainActor.assumeIsolated { self?.pillStateChanged(to: state) }
         }.store(in: &subscriptions)
         // Anything that changes what the ribbon holds changes its width, so
@@ -294,6 +300,7 @@ final class PillPanelController {
         model.$workingNote.sink { _ in resize() }.store(in: &subscriptions)
         model.$errorOffersRetry.sink { _ in resize() }.store(in: &subscriptions)
         model.$dictationTargetBundleID.sink { _ in resize() }.store(in: &subscriptions)
+        model.$pendingLearningActionID.sink { _ in resize() }.store(in: &subscriptions)
         model.meetings.$lastAutoStop.sink { _ in resize() }.store(in: &subscriptions)
         update()
     }
@@ -525,6 +532,10 @@ final class PillPanelController {
                 model.performRibbonAction(action)
             } else if case .listening = model.pillState {
                 model.toggleDictationFromDock()
+            } else if model.canUndoPendingLearning {
+                // A click anywhere on the learned-word ribbon undoes it, as
+                // the notice did before the ribbon.
+                model.undoPendingLearning()
             }
         case .nub:
             // A click on the nub opens the capsule without waiting out the

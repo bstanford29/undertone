@@ -40,6 +40,7 @@ enum PreviewDockState: String, CaseIterable, Identifiable {
     case guarded
     case error
     case saved
+    case learned
     case recording
     case meetingEnded
     case meeting
@@ -60,6 +61,7 @@ enum PreviewDockState: String, CaseIterable, Identifiable {
         case .guarded: return "Kept raw"
         case .error: return "Error"
         case .saved: return "Saved"
+        case .learned: return "Learned"
         case .recording: return "Recording"
         case .meetingEnded: return "Meeting ended"
         case .meeting: return "Meeting detected"
@@ -315,6 +317,8 @@ struct PreviewView: View {
             model.pillState = .error(AppModel.pillFailureMessage(.appChanged, appName: "Messages"))
         case .saved:
             model.pillState = .notice("Saved")
+        case .learned:
+            model.pillState = .notice(AppModel.learningNotice(for: "Velora"))
         case .recording:
             model.pillState = .recording(elapsed: PreviewFixtures.recordingElapsed)
         case .meetingEnded:

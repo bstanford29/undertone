@@ -37,6 +37,7 @@ DEFAULTS: dict[str, Any] = {
     "sounds": True,
     "whisper_mode": False,
     "stream_insert": True,
+    "learn_from_corrections": False,
     "obsidian_vault_path": None,
     "pill_persistent": True,
     "pill_edge": "bottom",
@@ -98,5 +99,7 @@ def load_config() -> dict[str, Any]:
     config["double_tap_lock"] = bool(config.get("double_tap_lock", DEFAULTS["double_tap_lock"]))
     if not valid_app_prompt_variants(config.get("app_prompt_variants")):
         config["app_prompt_variants"] = dict(DEFAULTS["app_prompt_variants"])
+    if not isinstance(config.get("learn_from_corrections"), bool):
+        config["learn_from_corrections"] = DEFAULTS["learn_from_corrections"]
 
     return config
