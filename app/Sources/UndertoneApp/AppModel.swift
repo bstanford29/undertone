@@ -117,6 +117,9 @@ final class AppModel: ObservableObject {
     private var mainWindow: NSWindow?
     @Published var soundsEnabled = true
     @Published var streamInsert = true
+    /// Stream audio to the engine while the key is held so transcription and
+    /// cleanup happen during the hold and release only types.
+    @Published var liveDictation = true
     @Published var keepWarm = true
     @Published var whisperMode = false
     @Published var pillPersistent = true
@@ -195,9 +198,13 @@ final class AppModel: ObservableObject {
     private var powerMonitor: PowerStateMonitor?
     private var meetingDetector: MeetingAppDetector?
     private var streamInsertSession: StreamInsertSession?
+    /// The live session for the recording in progress, nil while idle or in
+    /// command mode.
+    private var liveFeeder: LiveDictationFeeder?
     /// Same subsystem and category as the detector, so one log stream shows
     /// the detection and the dock's reaction to it side by side.
     nonisolated private static let log = Logger(subsystem: "com.undertone.app", category: "meeting")
+    nonisolated private static let liveLog = Logger(subsystem: "com.undertone.app", category: "live")
     private static let unresolvedLearningTokenKey = "Undertone.unresolvedLearningClientToken"
     private static let unresolvedLearningRequestKey = "Undertone.unresolvedLearningRequest"
     /// Matches the engine's default `min_speech_seconds` gate.
@@ -412,6 +419,7 @@ final class AppModel: ObservableObject {
         recorder.errorHandler = { [weak self] error in
             guard let self else { return }
             _ = self.recorder.stop()
+            self.discardLiveFeeder()
             self.commandMode = false
             self.showTransientError("Recording failed: \(error.localizedDescription)")
         }
@@ -464,6 +472,7 @@ final class AppModel: ObservableObject {
             if case .string(let value) = config["cleanup_level"] { cleanupLevel = value }
             if case .bool(let value) = config["sounds"] { soundsEnabled = value }
             if case .bool(let value) = config["stream_insert"] { streamInsert = value }
+            if case .bool(let value) = config["live_dictation"] { liveDictation = value }
             if case .bool(let value) = config["whisper_mode"] { whisperMode = value }
             learnFromCorrections = CorrectionLearningSetting.value(from: config)
             if case .bool(let value) = config["pill_persistent"] { pillPersistent = value }
@@ -539,6 +548,15 @@ final class AppModel: ObservableObject {
         hotkey.stop()
         editWatcher.cancel()
         _ = recorder.stop()
+        discardLiveFeeder()
+    }
+
+    /// Forgets the live session of a recording that will not be processed.
+    private func discardLiveFeeder() {
+        guard let feeder = liveFeeder else { return }
+        liveFeeder = nil
+        recorder.sampleHandler = nil
+        Task { await feeder.cancel() }
     }
 
     /// Escape ends a locked recording and proceeds to transcription, the
@@ -616,24 +634,61 @@ final class AppModel: ObservableObject {
             commandMode = false
         }
         recorder.whisperMode = whisperMode
+        let feeder: LiveDictationFeeder? = (liveDictation && !commandMode && !previewMode)
+            ? LiveDictationFeeder(engine: engine)
+            : nil
+        if let feeder {
+            recorder.sampleHandler = { @Sendable samples in feeder.push(samples) }
+        } else {
+            recorder.sampleHandler = nil
+        }
         do {
             _ = try recorder.start()
             pillState = .listening(level: 0)
             if soundsEnabled { NSSound(named: "Tink")?.play() }
         } catch {
+            recorder.sampleHandler = nil
             commandMode = false
             showTransientError("Microphone unavailable: \(error.localizedDescription)")
+            return
         }
+        if let feeder, let target { startLiveSession(feeder, target: target) }
+    }
+
+    /// Opens the engine's live session for the recording that just started,
+    /// with the same app, context, and harvested terms the one-shot path
+    /// sends after release. The dictionary is added engine-side.
+    private func startLiveSession(_ feeder: LiveDictationFeeder, target: TargetSnapshot) {
+        liveFeeder = feeder
+        let context = AXContextReader.context(for: target)
+        let harvestedTerms = AXContextReader.harvestedTerms(for: target)
+        let fields: [String: JSONValue] = [
+            "level": .string(cleanupLevel),
+            "app": .string(target.bundleID ?? "unknown"),
+            "vocab_extra": .array(harvestedTerms.map(JSONValue.string)),
+            "context": .object([
+                "before": .string(context.before), "after": .string(context.after), "selected": .string(context.selected),
+            ]),
+        ]
+        Task { await feeder.begin(fields: fields) }
     }
 
     func endDictation() {
         guard case .listening = pillState else { return }
-        guard let path = recorder.stop(), let target else {
+        let feeder = liveFeeder
+        liveFeeder = nil
+        // stop() flushes the last partial frame through the sample handler
+        // before returning, so every sample is queued before finish runs.
+        let stopped = recorder.stop()
+        recorder.sampleHandler = nil
+        guard let path = stopped, let target else {
+            if let feeder { Task { await feeder.cancel() } }
             commandMode = false
             showTransientError("Recording failed, no audio retained")
             return
         }
         guard recorder.lastRecordedSeconds >= Self.minimumRecordedSeconds else {
+            if let feeder { Task { await feeder.cancel() } }
             commandMode = false
             self.target = nil
             statusText = "No speech detected"
@@ -642,7 +697,7 @@ final class AppModel: ObservableObject {
             return
         }
         pillState = .working
-        let task = Task { await self.process(audioPath: path, target: target) }
+        let task = Task { await self.process(audioPath: path, target: target, feeder: feeder) }
         startWatchdog(for: task)
     }
 
@@ -820,7 +875,7 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func process(audioPath: URL, target: TargetSnapshot) async {
+    private func process(audioPath: URL, target: TargetSnapshot, feeder: LiveDictationFeeder? = nil) async {
         defer {
             watchdogTask?.cancel()
             watchdogTask = nil
@@ -835,6 +890,15 @@ final class AppModel: ObservableObject {
             let knownTerms: Set<String> = commandMode
                 ? []
                 : Set((try? await engine.request(op: "dictionary.list"))?.terms?.map { $0.lowercased() } ?? [])
+            if let feeder {
+                if commandMode {
+                    await feeder.cancel()
+                } else if case .finished = try await processLive(
+                    feeder: feeder, audioPath: audioPath, target: target, knownTerms: knownTerms
+                ) {
+                    return
+                }
+            }
             let transcript = try await engine.request(op: "transcribe", fields: [
                 "audio_path": .string(audioPath.path), "vocab_extra": .array(harvestedTerms.map(JSONValue.string))
             ])
@@ -932,83 +996,194 @@ final class AppModel: ObservableObject {
                 insertMS = Double(DispatchTime.now().uptimeNanoseconds &- insertStart) / 1_000_000
             } else {
                 let session = streamInsertSession ?? StreamInsertSession(target: target)
-                if session.failure == nil {
-                    if let rest = StreamInsertion.remainder(clean: text, committed: session.committed) {
-                        if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !Task.isCancelled {
-                            let remOutcome = inserter.appendStreamed(rest, target: target)
-                            if case .inserted = remOutcome {
-                                if session.firstKeystroke == nil {
-                                    session.firstKeystroke = DispatchTime.now().uptimeNanoseconds
-                                }
-                                session.lastKeystroke = DispatchTime.now().uptimeNanoseconds
-                                session.committed += rest
-                            } else {
-                                session.failure = remOutcome
-                            }
-                        }
-                    } else {
-                        InsertionController.logStreamPrefixMismatch(bundleID: target.bundleID)
-                    }
-                }
-                if let failure = session.failure {
-                    outcome = failure
-                } else if !session.committed.isEmpty {
-                    outcome = .inserted(.type)
-                } else {
-                    outcome = .failed(.emptyText)
-                }
-                if let first = session.firstKeystroke, let last = session.lastKeystroke {
-                    insertMS = Double(last &- first) / 1_000_000
-                } else {
-                    insertMS = 0
-                }
-                workingNote = nil
+                let streamed = insertStreamRemainder(text, target: target, session: session)
+                outcome = streamed.outcome
+                insertMS = streamed.insertMS
             }
-            let total = sttMS + llmMS + insertMS
-            if !outcome.isFailure {
-                lastInsertTarget = target
-                lastInsertedText = text
-                lastInsertedRawText = commandMode ? selectedText : raw
-                lastInsertedRowID = rowID
-                if !commandMode {
-                    editWatcher.start(rowID: rowID, produced: text, target: target, knownTerms: knownTerms) { [weak self] candidate, edited, receipt in
-                        self?.handleEdit(candidate: candidate, editedText: edited, receipt: receipt)
-                    }
-                }
-            }
-            var historyUpdateFailed = false
-            do {
-                _ = try await engine.request(op: "history.update", fields: [
-                    "row_id": .number(Double(rowID)),
-                    "insert_mode": .string(outcome.historyValue),
-                    "insert_ms": .number(insertMS),
-                    "total_ms": .number(total),
-                ])
-            } catch {
-                historyUpdateFailed = true
-            }
-            self.commandMode = false
-            if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
-            lastGuardRowID = keptRaw ? rowID : nil
-            if case .failed(let reason) = outcome {
-                statusText = historyUpdateFailed
-                    ? "Insertion failed, history update unknown"
-                    : Self.failureMessage(reason)
-                showTransientError(Self.pillFailureMessage(reason, appName: ToneCatalog.appName(for: target.bundleID)),
-                                   retry: !commandMode && reason != .notTrusted)
-            } else if historyUpdateFailed {
-                statusText = "Inserted, history update unknown"
-                showTransientState(keptRaw ? .guarded(totalMS: total) : .inserted(totalMS: total))
-            } else {
-                showTransientState(keptRaw ? .guarded(totalMS: total) : .inserted(totalMS: total))
-            }
-            if soundsEnabled, !outcome.isFailure { NSSound(named: "Pop")?.play() }
+            await completeDictation(
+                rowID: rowID, text: text, rawForUndo: commandMode ? selectedText : raw, outcome: outcome,
+                sttMS: sttMS, llmMS: llmMS, insertMS: insertMS, keptRaw: keptRaw, commandMode: commandMode,
+                target: target, knownTerms: knownTerms
+            )
         } catch is CancellationError {
             // The watchdog already reported the timeout and reset the pill.
         } catch {
             commandMode = false
             showTransientError(error.localizedDescription)
         }
+    }
+
+    private enum LiveOutcome {
+        case finished
+        /// Nothing was typed and the one-shot path should run instead.
+        case useOneShot
+    }
+
+    /// The live path. The engine transcribed and cleaned most of the recording
+    /// while the key was held, so release types the committed text as soon
+    /// as the engine confirms it, waits only for the short tail, and types the
+    /// rest. Throws after text was typed; before that, a failure means the
+    /// one-shot path runs on the retained audio instead.
+    private func processLive(feeder: LiveDictationFeeder, audioPath: URL, target: TargetSnapshot,
+                             knownTerms: Set<String>) async throws -> LiveOutcome {
+        let session = StreamInsertSession(target: target)
+        streamInsertSession = session
+        let typeEarly = streamInsert
+        let result: EngineResponse
+        do {
+            result = try await feeder.finish(audioPath: audioPath) { chunk in
+                if typeEarly { await self.consumeStreamChunk(chunk) }
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            streamInsertSession = nil
+            guard session.committed.isEmpty else { throw error }
+            Self.liveLog.notice("live dictation unavailable, using the one-shot path: \(error.localizedDescription, privacy: .public)")
+            return .useOneShot
+        }
+        Self.liveLog.info("live dictation: release \(Int(result.liveReleaseMS ?? 0)) ms, units \(result.liveUnits ?? 0), fallback \(result.liveFallback ?? "none", privacy: .public)")
+        let raw = result.raw ?? ""
+        guard result.noSpeech != true, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            statusText = "No speech detected"
+            self.commandMode = false
+            pillState = .idle
+            showPendingLearningRecoveryIfSafe()
+            return .finished
+        }
+        try? retainRawTranscript(kind: "dictation", rawText: raw, instructionText: nil, alongside: audioPath)
+        let app = target.bundleID ?? "unknown"
+        let sttMS = result.sttMS ?? 0
+        let llmMS = result.llmMS ?? 0
+        let text = result.clean ?? ""
+        let guardFired = result.guardFired ?? false
+        let keptRaw = guardFired
+            && (result.model == nil || result.model?.isEmpty == true || result.streamInterrupted == true)
+        let recorded = try await engine.request(op: "history.record", fields: [
+            "kind": .string("dictation"),
+            "raw_text": .string(raw), "instruction_text": .null,
+            "clean_text": .string(text),
+            "stt_ms": .number(sttMS), "llm_ms": .number(llmMS),
+            "insert_ms": .number(0), "total_ms": .number(sttMS + llmMS),
+            "insert_mode": .string("skipped"), "audio_seconds": .number(audioSeconds(audioPath)),
+            "app_bundle_id": .string(app), "guard_fired": .bool(guardFired),
+            "model": result.model.map(JSONValue.string) ?? .null, "audio_path": .string(audioPath.path)
+        ])
+        guard let rowID = recorded.rowID else {
+            throw EngineClientError.protocolViolation("history.record did not return row_id")
+        }
+        if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            self.commandMode = false
+            workingNote = nil
+            showTransientError("Cleanup returned no text; original retained")
+            return .finished
+        }
+        let outcome: InsertOutcome
+        let insertMS: Double
+        if session.committed.isEmpty, session.failure == nil {
+            // Nothing was typed during finish (no committed units, or typing
+            // as it streams is off), so the whole text goes in at once.
+            await awaitHoldKeyRelease()
+            let insertStart = DispatchTime.now().uptimeNanoseconds
+            outcome = inserter.insert(text, target: target, axOnly: false)
+            insertMS = Double(DispatchTime.now().uptimeNanoseconds &- insertStart) / 1_000_000
+        } else {
+            let streamed = insertStreamRemainder(text, target: target, session: session)
+            outcome = streamed.outcome
+            insertMS = streamed.insertMS
+        }
+        await completeDictation(
+            rowID: rowID, text: text, rawForUndo: raw, outcome: outcome, sttMS: sttMS, llmMS: llmMS,
+            insertMS: insertMS, keptRaw: keptRaw, commandMode: false, target: target, knownTerms: knownTerms
+        )
+        return .finished
+    }
+
+    /// Types whatever the final text adds beyond the streamed prefix and
+    /// settles the session's outcome and keystroke timing.
+    private func insertStreamRemainder(_ text: String, target: TargetSnapshot,
+                                       session: StreamInsertSession) -> (outcome: InsertOutcome, insertMS: Double) {
+        if session.failure == nil {
+            if let rest = StreamInsertion.remainder(clean: text, committed: session.committed) {
+                if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !Task.isCancelled {
+                    let remOutcome = inserter.appendStreamed(rest, target: target)
+                    if case .inserted = remOutcome {
+                        if session.firstKeystroke == nil {
+                            session.firstKeystroke = DispatchTime.now().uptimeNanoseconds
+                        }
+                        session.lastKeystroke = DispatchTime.now().uptimeNanoseconds
+                        session.committed += rest
+                    } else {
+                        session.failure = remOutcome
+                    }
+                }
+            } else {
+                InsertionController.logStreamPrefixMismatch(bundleID: target.bundleID)
+            }
+        }
+        let outcome: InsertOutcome
+        if let failure = session.failure {
+            outcome = failure
+        } else if !session.committed.isEmpty {
+            outcome = .inserted(.type)
+        } else {
+            outcome = .failed(.emptyText)
+        }
+        let insertMS: Double
+        if let first = session.firstKeystroke, let last = session.lastKeystroke {
+            insertMS = Double(last &- first) / 1_000_000
+        } else {
+            insertMS = 0
+        }
+        workingNote = nil
+        return (outcome, insertMS)
+    }
+
+    /// The end of every dictation: undo state, the edit watcher, the history
+    /// row's insertion fields, and the pill's receipt.
+    private func completeDictation(rowID: Int, text: String, rawForUndo: String, outcome: InsertOutcome,
+                                   sttMS: Double, llmMS: Double, insertMS: Double, keptRaw: Bool,
+                                   commandMode: Bool, target: TargetSnapshot, knownTerms: Set<String>) async {
+        let total = sttMS + llmMS + insertMS
+        if !outcome.isFailure {
+            lastInsertTarget = target
+            lastInsertedText = text
+            lastInsertedRawText = rawForUndo
+            lastInsertedRowID = rowID
+            if !commandMode {
+                editWatcher.start(rowID: rowID, produced: text, target: target, knownTerms: knownTerms) { [weak self] candidate, edited, receipt in
+                    self?.handleEdit(candidate: candidate, editedText: edited, receipt: receipt)
+                }
+            }
+        }
+        var historyUpdateFailed = false
+        do {
+            _ = try await engine.request(op: "history.update", fields: [
+                "row_id": .number(Double(rowID)),
+                "insert_mode": .string(outcome.historyValue),
+                "insert_ms": .number(insertMS),
+                "total_ms": .number(total),
+            ])
+        } catch {
+            historyUpdateFailed = true
+        }
+        self.commandMode = false
+        if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+        lastGuardRowID = keptRaw ? rowID : nil
+        if case .failed(let reason) = outcome {
+            statusText = historyUpdateFailed
+                ? "Insertion failed, history update unknown"
+                : Self.failureMessage(reason)
+            showTransientError(Self.pillFailureMessage(reason, appName: ToneCatalog.appName(for: target.bundleID)),
+                               retry: !commandMode && reason != .notTrusted)
+        } else if historyUpdateFailed {
+            statusText = "Inserted, history update unknown"
+            showTransientState(keptRaw ? .guarded(totalMS: total) : .inserted(totalMS: total))
+        } else {
+            showTransientState(keptRaw ? .guarded(totalMS: total) : .inserted(totalMS: total))
+        }
+        if soundsEnabled, !outcome.isFailure { NSSound(named: "Pop")?.play() }
     }
 
     private func handleEdit(candidate: LearningCandidate, editedText: String, receipt: InsertionReceipt) {
@@ -1951,6 +2126,7 @@ final class AppModel: ObservableObject {
             if case .string(let value) = config["cleanup_level"] { cleanupLevel = value }
             if case .bool(let value) = config["sounds"] { soundsEnabled = value }
             if case .bool(let value) = config["stream_insert"] { streamInsert = value }
+            if case .bool(let value) = config["live_dictation"] { liveDictation = value }
             if case .bool(let value) = config["whisper_mode"] { whisperMode = value }
             if case .bool(let value) = config["pill_persistent"] { pillPersistent = value }
             if case .string(let value) = config["obsidian_vault_path"] { obsidianVaultPath = value }

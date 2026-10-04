@@ -241,6 +241,11 @@ struct DictationSettingsTab: View {
                 .onChange(of: model.whisperMode) { _, value in model.saveSetting("whisper_mode", .bool(value)) }
             }
             Section("Insert") {
+                Toggle(isOn: $model.liveDictation) {
+                    SettingLabel(title: "Clean up while you speak",
+                                 detail: "Each sentence is transcribed and cleaned during the hold, so the text lands right after you let go.")
+                }
+                .onChange(of: model.liveDictation) { _, value in model.saveSetting("live_dictation", .bool(value)) }
                 Toggle(isOn: $model.streamInsert) {
                     SettingLabel(title: "Type text as it is cleaned",
                                  detail: "Words appear while cleanup streams instead of all at once.")
