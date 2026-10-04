@@ -191,6 +191,9 @@ class HelperTests(unittest.TestCase):
 class WindowedTranscriberTests(unittest.TestCase):
     def _run(self, audio: np.ndarray, fake: AmplitudeFake, *, step_s: float = 0.5, **kwargs):
         chunks_seen: list = []
+        # Four seconds of left context keeps these short synthetic clips from
+        # being decoded whole, so the window logic is what gets exercised.
+        kwargs.setdefault("left_context_s", 4.0)
         stream = WindowedTranscriber(fake, on_chunk=chunks_seen.append, **kwargs)
         step = int(step_s * SR)
         for end in range(step, len(audio), step):
@@ -221,10 +224,23 @@ class WindowedTranscriberTests(unittest.TestCase):
             self.assertLess(chunk.window_start, chunk.start_sample)
             self.assertGreater(chunk.window_end, chunk.end_sample)
 
-    def test_release_only_decodes_the_tail_window(self):
+    def test_short_recordings_decode_the_tail_with_the_whole_clip_as_context(self):
         audio = _sentences(15)
         fake = AmplitudeFake()
         stream = WindowedTranscriber(fake)
+        step = SR // 2
+        for end in range(step, len(audio), step):
+            stream.submit(audio[:end])
+        run = stream.finish(audio)
+        self.assertIsNone(run.error)
+        self.assertEqual(run.chunks[-1].window_start, 0)
+        self.assertEqual(fake.word_calls[-1]["samples"], len(audio))
+        self.assertEqual(run.text.split(), [_label(index) for index in range(15)])
+
+    def test_release_only_decodes_the_tail_window(self):
+        audio = _sentences(15)
+        fake = AmplitudeFake()
+        stream = WindowedTranscriber(fake, left_context_s=4.0)
         step = SR // 2
         for end in range(step, len(audio), step):
             stream.submit(audio[:end])

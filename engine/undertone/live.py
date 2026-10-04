@@ -8,8 +8,10 @@ whose threshold adapts to the room). Each chunk's words are decoded inside a
 window that also holds a few seconds of the audio before and after it, and
 only the words whose timestamps fall inside the chunk are kept. The chunk is
 therefore never an utterance start or end for the model, so punctuation and
-capitalization at its edges are decided with real context. Every sample is
-covered by exactly one chunk and no word straddles a cut.
+capitalization at its edges are decided with real context, and the window is
+long enough that the model's per-utterance feature normalization behaves as
+it does on a whole recording. Every sample is covered by exactly one chunk
+and no word straddles a cut.
 
 ``LiveDictation`` groups finished chunk texts into cleanup units that end at a
 sentence boundary (or at a word cap) and cleans each unit once, with the
@@ -48,7 +50,11 @@ DEFAULT_MIN_CHUNK_S = 1.0
 # Without a pause this long, a cut is forced at the quietest point so the
 # cleanup pipeline keeps moving during one long breathless sentence.
 DEFAULT_MAX_CHUNK_S = 12.0
-LEFT_CONTEXT_S = 4.0
+# Parakeet normalizes its log-mel features over the whole input, so a window's
+# decode depends on how much audio it sees. Fifteen seconds of left context
+# (parakeet-mlx's own overlap for long files) keeps the window's statistics
+# close to a one-shot decode; a recording shorter than that is decoded whole.
+LEFT_CONTEXT_S = 15.0
 RIGHT_CONTEXT_S = 1.0
 MAX_RIGHT_CONTEXT_S = 3.0
 FORCED_CUT_WINDOW_MS = 100
@@ -367,8 +373,6 @@ class WindowedTranscriber:
     def _enqueue_locked(self, targets: list[int], samples: np.ndarray, window_end: int) -> None:
         first = self._chunks[targets[0]]
         window_start = max(0, first.start_sample - self.left_context)
-        if targets[0] > 0:
-            window_start = max(window_start, self._chunks[targets[0] - 1].start_sample)
         window_end = min(window_end, samples.size)
         self._jobs.append(_WindowJob(
             targets=list(targets), audio=np.array(samples[window_start:window_end], dtype=np.float32, copy=True),
