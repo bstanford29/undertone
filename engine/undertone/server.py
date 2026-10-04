@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import fcntl
 import logging
@@ -11,6 +12,7 @@ import sqlite3
 import stat
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -26,6 +28,13 @@ MAX_REQUEST_BYTES = 4 * 1024 * 1024
 MAX_RESPONSE_BYTES = MAX_REQUEST_BYTES
 MAX_CLIENTS = 32
 FRAME_TIMEOUT_SECONDS = 30
+# One streamed audio frame is at most this many PCM16 samples (about one
+# minute at 16 kHz); the app sends half a second at a time.
+MAX_LIVE_AUDIO_SAMPLES = 16000 * 60
+# A live session nobody finished is dropped when the next one starts or
+# after this long without audio.
+LIVE_SESSION_IDLE_SECONDS = 20 * 60
+STREAMING_OPS = {"clean.stream", "dictation.finish"}
 
 # The three meeting prompts. Intermediate rounds stay plain; only the last round
 # writes the headings, so a long meeting gets one set of sections, not several.
@@ -113,6 +122,7 @@ class Engine:
             logger.warning("Pending dictionary write recovery deferred")
         self.lock = threading.RLock()
         self.transcriber = None
+        self._live: tuple[str, Any] | None = None
         self._meetings: meeting.MeetingService | None = None
         self.whisper_status = "loading"
         self.cleanup_status = "loading"
@@ -232,8 +242,147 @@ class Engine:
             raise ValueError("Invalid cleanup context")
         return cfg, level, app, context, text_field(r, "raw")
 
+    # ----- live dictation -------------------------------------------------
+
+    def _live_session(self, r: dict):
+        session_id = text_field(r, "session_id", 64)
+        if self._live is None or self._live[0] != session_id:
+            raise ValueError("Unknown live dictation session")
+        return self._live[1]
+
+    def _dictation_start(self, r: dict) -> dict:
+        from .cleanup import _validated_context, clean_result
+        from .live import LiveDictation
+        from .stt import make_transcriber
+
+        cfg = settings.load_config()
+        if not local_ollama_url(cfg["ollama_url"]):
+            raise ValueError("Ollama must use localhost")
+        level = r.get("level", cfg["cleanup_level"])
+        if not isinstance(level, str) or level not in settings.VALID_CLEANUP_LEVELS:
+            raise ValueError("Unknown cleanup level")
+        app = optional_text(r, "app", 300)
+        context = r.get("context")
+        if context is not None and not isinstance(context, dict):
+            raise ValueError("Invalid cleanup context")
+        validated = _validated_context(context) if context is not None else None
+        extra = r.get("vocab_extra", [])
+        if not isinstance(extra, list) or len(extra) > 100 or not all(isinstance(x, str) and len(x) <= 200 for x in extra):
+            raise ValueError("Invalid temporary vocabulary")
+        if self.transcriber is None:
+            self.transcriber = make_transcriber(cfg)
+        data = dictionary.load_dictionary()
+        vocab = dictionary.vocab_prompt({"terms": extra + data["terms"]})
+        if self._live is not None:
+            stale_id, stale = self._live
+            self._live = None
+            logger.info("dropping an unfinished live dictation session")
+            stale.cancel()
+        session = LiveDictation(
+            self.transcriber, clean_result, level=level, dictionary=data, config=cfg, app=app,
+            context=validated, vocab=vocab,
+            min_unit_words=int(cfg.get("live_min_unit_words", 8)),
+            max_unit_words=int(cfg.get("live_max_unit_words", 40)),
+            rms_threshold=float(cfg.get("min_speech_rms", 0.004)),
+        )
+        session_id = uuid.uuid4().hex
+        self._live = (session_id, session)
+        return {
+            "session_id": session_id,
+            "backend": getattr(self.transcriber, "backend", "whisper"),
+            "model": getattr(self.transcriber, "model", cfg["stt_model"]),
+            "level": level,
+        }
+
+    def _dictation_audio(self, r: dict) -> dict:
+        import numpy as np
+
+        session = self._live_session(r)
+        seq = r.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            raise ValueError("seq must be a non-negative integer")
+        encoded = r.get("pcm16")
+        if not isinstance(encoded, str) or len(encoded) > MAX_REQUEST_BYTES:
+            raise ValueError("pcm16 must be base64 text")
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("pcm16 is not valid base64") from exc
+        if len(raw) % 2 or len(raw) // 2 > MAX_LIVE_AUDIO_SAMPLES:
+            raise ValueError("pcm16 frame has an invalid length")
+        samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+        progress = session.append(samples, seq=seq)
+        return {"seq": seq, **progress}
+
+    def _dictation_finish(self, r: dict, emit: Any) -> dict:
+        from .audio import load_wav
+
+        session = self._live_session(r)
+        final_audio = None
+        audio_path = optional_text(r, "audio_path", 4096)
+        if audio_path:
+            path = Path(audio_path).expanduser()
+            if not path.is_absolute() or not path.is_file():
+                raise ValueError("An existing absolute local audio path is required")
+            final_audio = load_wav(str(path))
+        self._live = None
+        result = session.finish(final_audio, emit=emit or (lambda _frame: None))
+        if result.error is not None:
+            raise RuntimeError("live dictation failed")
+        self.whisper_status = "warm"
+        if result.model and result.model != "light":
+            self.cleanup_status = "warm"
+            if self.whisper_status == "warm":
+                self.error = None
+        logger.info(
+            "live dictation: audio=%.1fs chunks=%d units=%d windows=%d release=%.0fms stt=%.0fms llm=%.0fms "
+            "stt_total=%.0fms llm_total=%.0fms fallback=%s disagreements=%d",
+            result.audio_seconds, len(result.chunks), len(result.units), result.windows, result.release_ms,
+            result.stt_ms, result.llm_ms, result.stt_total_ms, result.llm_total_ms, result.fallback,
+            result.boundary_disagreements,
+        )
+        response = {
+            "raw": result.raw,
+            "clean": result.clean,
+            "model": result.model,
+            "guard_fired": result.guard_fired,
+            "stt_ms": result.stt_ms,
+            "llm_ms": result.llm_ms,
+            "no_speech": result.no_speech,
+            "reason": result.reason,
+            "backend": getattr(self.transcriber, "backend", "whisper"),
+            "audio_seconds": result.audio_seconds,
+            "done": True,
+            "chunks_sent": 1 if result.committed_clean else 0,
+            "live_units": len(result.units),
+            "live_chunks": len(result.chunks),
+            "live_windows": result.windows,
+            "live_fallback": result.fallback,
+            "live_release_ms": result.release_ms,
+            "live_stt_total_ms": result.stt_total_ms,
+            "live_llm_total_ms": result.llm_total_ms,
+            "live_boundary_disagreements": result.boundary_disagreements,
+        }
+        if result.stream_interrupted:
+            response["stream_interrupted"] = True
+        return response
+
+    def _dictation_cancel(self, r: dict) -> dict:
+        session = self._live_session(r)
+        self._live = None
+        session.cancel()
+        return {"cancelled": True}
+
     def _dispatch(self, r: dict, emit: Any = None) -> dict:
         op = r.get("op")
+        if op == "dictation.start":
+            return self._dictation_start(r)
+        if op == "dictation.audio":
+            return self._dictation_audio(r)
+        if op == "dictation.finish":
+            return self._dictation_finish(r, emit)
+        if op == "dictation.cancel":
+            return self._dictation_cancel(r)
         if op in {"command", "command.rewrite"}:
             from .command import rewrite
             return rewrite(text_field(r, "selected"), text_field(r, "instruction", 4096), settings.load_config())
@@ -281,7 +430,7 @@ class Engine:
         if op == "config.update":
             changes = r.get("config")
             booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert",
-                        "double_tap_lock", "learn_from_corrections"}
+                        "double_tap_lock", "learn_from_corrections", "live_dictation"}
             allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset",
                                   "app_prompt_variants"}
             if not isinstance(changes, dict) or set(changes) - allowed:
@@ -572,7 +721,7 @@ class Handler(socketserver.StreamRequestHandler):
                 if not isinstance(identifier, (int, str)) or isinstance(identifier, bool):
                     raise ValueError("Request id is required")
                 try:
-                    if request.get("op") == "clean.stream":
+                    if request.get("op") in STREAMING_OPS:
                         def emit(frame: dict) -> None:
                             self._write_response({**frame, "id": identifier})
                         response = {**self.server.engine.dispatch(request, emit=emit), "id": identifier}

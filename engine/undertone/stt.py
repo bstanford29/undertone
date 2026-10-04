@@ -2,11 +2,55 @@ from __future__ import annotations
 
 import importlib.util
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import re
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+
+@dataclass(frozen=True)
+class Word:
+    """One spoken word with its time span in seconds from the audio start."""
+
+    text: str
+    start: float
+    end: float
+
+
+def words_from_text(text: str, duration: float) -> list[Word]:
+    """Evenly timed words for a backend that reports none."""
+    parts = text.split()
+    if not parts:
+        return []
+    step = max(duration, 0.0) / len(parts)
+    return [Word(part, index * step, (index + 1) * step) for index, part in enumerate(parts)]
+
+
+def words_from_tokens(tokens: Any) -> list[Word]:
+    """Group SentencePiece-style tokens (a leading space starts a word) into words."""
+    words: list[Word] = []
+    text = ""
+    start = 0.0
+    end = 0.0
+    for token in tokens:
+        piece = str(getattr(token, "text", ""))
+        if not piece:
+            continue
+        token_start = float(getattr(token, "start", 0.0))
+        token_end = float(getattr(token, "end", token_start + float(getattr(token, "duration", 0.0))))
+        if piece.startswith(" ") and text.strip():
+            words.append(Word(text.strip(), start, end))
+            text = ""
+        if not text.strip():
+            start = token_start
+        text += piece
+        end = max(end, token_end)
+    if text.strip():
+        words.append(Word(text.strip(), start, end))
+    return words
+
 
 DEFAULT_STT_MODEL = "mlx-community/whisper-large-v3-turbo"
 DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
@@ -196,6 +240,58 @@ class Transcriber:
     def transcribe(self, audio: np.ndarray, vocab: str = "", context: str = "") -> str:
         return self.transcribe_detailed(audio, vocab=vocab, context=context)["text"]
 
+    def transcribe_words(self, audio: np.ndarray, vocab: str = "", context: str = "") -> list[Word]:
+        """Words with timestamps, under the same gates as ``transcribe_detailed``.
+
+        A segment that whisper looped on is recovered as text and spread
+        evenly over the segment's span, so no word is dropped for lacking a
+        timestamp.
+        """
+        audio = np.asarray(audio, dtype=np.float32)
+        sample_rate = DEFAULT_SAMPLE_RATE
+        gated = _speech_gate(
+            audio,
+            min_speech_seconds=DEFAULT_MIN_SPEECH_SECONDS,
+            min_speech_rms=DEFAULT_MIN_SPEECH_RMS,
+            sample_rate=sample_rate,
+        )
+        if gated is not None:
+            return []
+        if not self._warm:
+            self.warm_up()
+        prompt = build_initial_prompt(vocab, context)
+        result = self._call_whisper(audio, temperature=0.0, prompt=prompt, word_timestamps=True)
+        words: list[Word] = []
+        for segment in result.get("segments") or []:
+            if segment.get("no_speech_prob", 0.0) > NO_SPEECH_PROB_THRESHOLD:
+                continue
+            seg_start = float(segment.get("start", 0.0))
+            seg_end = float(segment.get("end", seg_start))
+            if segment.get("compression_ratio", 0.0) > COMPRESSION_RATIO_THRESHOLD:
+                recovered = self._recover_segment(audio, segment, prompt, vocab, sample_rate)
+                if recovered:
+                    words.extend(
+                        Word(word.text, seg_start + word.start, seg_start + word.end)
+                        for word in words_from_text(recovered, seg_end - seg_start)
+                    )
+                continue
+            timed = segment.get("words")
+            if timed:
+                for item in timed:
+                    text = str(item.get("word", "")).strip()
+                    if text:
+                        words.append(Word(text, float(item.get("start", seg_start)), float(item.get("end", seg_end))))
+            else:
+                words.extend(
+                    Word(word.text, seg_start + word.start, seg_start + word.end)
+                    for word in words_from_text(str(segment.get("text", "")), seg_end - seg_start)
+                )
+        if not (result.get("segments") or []):
+            words = words_from_text(str(result.get("text", "")), len(audio) / sample_rate)
+        if _looks_like_vocab_echo(_join([word.text for word in words]), vocab):
+            return []
+        return words
+
     def transcribe_detailed(
         self,
         audio: np.ndarray,
@@ -257,16 +353,20 @@ class Transcriber:
         return {"text": text, "no_speech": False, "reason": "", "segments": stats}
 
     def _call_whisper(
-        self, audio: np.ndarray, *, temperature: float, prompt: str | None
+        self, audio: np.ndarray, *, temperature: float, prompt: str | None, word_timestamps: bool = False
     ) -> dict[str, Any]:
         import mlx_whisper
 
+        options: dict[str, Any] = {}
+        if word_timestamps:
+            options["word_timestamps"] = True
         return mlx_whisper.transcribe(
             audio,
             path_or_hf_repo=self.model,
             language="en",
             temperature=temperature,
             initial_prompt=prompt,
+            **options,
         )
 
     def _recover_segment(
@@ -404,6 +504,31 @@ class ParakeetTranscriber:
         text = restore_sound_alikes(text, vocab)
         return {"text": text, "no_speech": False, "reason": "", "segments": stats}
 
+    def transcribe_words(self, audio: np.ndarray, vocab: str = "", context: str = "") -> list[Word]:
+        """Words with TDT token timestamps, under the same gates as ``transcribe_detailed``.
+
+        Sound-alike restoration is a text rewrite across words, so callers
+        apply ``restore_sound_alikes`` to the joined text they keep.
+        """
+        audio = np.asarray(audio, dtype=np.float32)
+        gated = _speech_gate(
+            audio,
+            min_speech_seconds=DEFAULT_MIN_SPEECH_SECONDS,
+            min_speech_rms=DEFAULT_MIN_SPEECH_RMS,
+            sample_rate=DEFAULT_SAMPLE_RATE,
+        )
+        if gated is not None:
+            return []
+        if not self._warm:
+            self.warm_up()
+        text, tokens = self._worker.submit(self._run_aligned_on_worker, audio).result()
+        if not text or _looks_repetitive(text):
+            return []
+        if tokens is None:
+            return words_from_text(text, len(audio) / DEFAULT_SAMPLE_RATE)
+        words = words_from_tokens(tokens)
+        return words or words_from_text(text, len(audio) / DEFAULT_SAMPLE_RATE)
+
     def _load(self) -> None:
         self._worker.submit(self._load_on_worker).result()
 
@@ -424,13 +549,21 @@ class ParakeetTranscriber:
 
     def _run_on_worker(self, audio: np.ndarray) -> str:
         """Log-mel in process (no ffmpeg) then greedy TDT decode."""
+        return self._run_aligned_on_worker(audio)[0]
+
+    def _run_aligned_on_worker(self, audio: np.ndarray) -> tuple[str, Any]:
+        """Text plus the aligned tokens when the backend reports them."""
         import mlx.core as mx
         from parakeet_mlx.audio import get_logmel
 
         self._load_on_worker()
         mel = get_logmel(mx.array(audio), self._model.preprocessor_config)
         results = self._model.generate(mel)
-        return (results[0].text if results else "").strip()
+        if not results:
+            return "", None
+        result = results[0]
+        tokens = getattr(result, "tokens", None)
+        return (result.text or "").strip(), (list(tokens) if tokens else None)
 
 
 def _resolve_model(model: str, *, local_files_only: bool) -> str:
