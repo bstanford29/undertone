@@ -53,6 +53,13 @@ def _word_error_rate(reference: str, hypothesis: str) -> float:
     return errors / len(ref)
 
 
+def _word_diff(reference: str, hypothesis: str) -> list[str]:
+    ref, hyp = _words(reference), _words(hypothesis)
+    matcher = difflib.SequenceMatcher(a=ref, b=hyp, autojunk=False)
+    return [f"{tag}: {' '.join(ref[i1:i2])!r} -> {' '.join(hyp[j1:j2])!r}"
+            for tag, i1, i2, j1, j2 in matcher.get_opcodes() if tag != "equal"]
+
+
 def _pcm16(samples: np.ndarray) -> str:
     return base64.b64encode((np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()).decode()
 
@@ -114,6 +121,9 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=1)
     parser.add_argument("--expect", action="append", default=[], help="word that must appear in the clean text (repeatable)")
     parser.add_argument("--json", action="store_true", help="print one JSON object instead of a table")
+    parser.add_argument("--show-diff", action="store_true",
+                        help="print the differing words between the one-shot and live raw text. "
+                             "Only for public audio such as bench/dictation.wav, never private recordings")
     args = parser.parse_args()
     path = args.file.resolve()
     if not path.is_file():
@@ -166,6 +176,8 @@ def main() -> None:
             "clean_words": len(_words(clean)),
             "expected_words_present": {word: word.lower() in clean.lower() for word in args.expect},
         })
+        if args.show_diff:
+            rows[-1]["raw_diff"] = _word_diff(baseline["raw"], response.get("raw") or "")
     summary = {
         "file": path.name,
         "one_shot_stt_ms": round(baseline["stt_ms"]),
@@ -191,6 +203,8 @@ def main() -> None:
         print(f"  text: {row['clean_words']} clean words, committed fraction {row['committed_fraction']}, "
               f"raw WER vs one-shot {row['raw_wer_vs_one_shot']}, boundary disagreements {row['boundary_disagreements']}, "
               f"guard {row['guard_fired']}, model {row['model']}, expected words {row['expected_words_present']}")
+        for line in row.get("raw_diff", []):
+            print(f"  raw diff {line}")
 
 
 if __name__ == "__main__":
