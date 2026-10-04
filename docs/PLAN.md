@@ -45,6 +45,19 @@ Requests are one JSON object per line. Responses mirror the `id`.
 {"id":8,"op":"status"}  -> {"whisper":"warm","cleanup":"warm","model":"qwen3.5:latest"}
 ```
 
+Live dictation (default on, `live_dictation` in config) streams the recording while the key is held so release only types. The app sends 16 kHz mono PCM16 in half-second frames with a running `seq`; the engine cuts the audio at pauses, decodes each chunk inside a context window using word timestamps, groups the text into sentence units, and cleans each unit as it closes. `dictation.finish` streams the committed clean text first (the app types it at once), then decodes and cleans only the tail and returns a `clean` that extends the committed text. Any gap, mismatch, window failure, or a correction phrase opening a chunk ("no wait", "scratch that") makes `finish` fall back to the one-shot path on the retained file, reported in `live_fallback`.
+
+```
+{"id":9,"op":"dictation.start","level":"medium","app":"com.apple.mail","vocab_extra":["Priya"],"context":{"before":"...","after":"","selected":""}}
+{"id":9,"session_id":"3f2a...","backend":"parakeet","model":"mlx-community/parakeet-tdt-0.6b-v3","level":"medium"}
+{"id":10,"op":"dictation.audio","session_id":"3f2a...","seq":0,"pcm16":"<base64 of 8000 little-endian int16 samples>"}
+{"id":10,"seq":0,"received_seconds":0.5,"committed_seconds":0,"units":0,"units_cleaned":0}
+{"id":11,"op":"dictation.finish","session_id":"3f2a...","audio_path":"/Users/me/.undertone/audio/u.wav"}
+{"id":11,"seq":0,"chunk":"Hi Priya. The report is ready. "}
+{"id":11,"done":true,"raw":"...","clean":"Hi Priya. The report is ready. I will send it tonight.","stt_ms":147,"llm_ms":612,"model":"qwen3.5:latest","guard_fired":false,"chunks_sent":1,"live_units":2,"live_fallback":null,"live_release_ms":780}
+{"id":12,"op":"dictation.cancel","session_id":"3f2a..."}
+```
+
 ## Hard rules
 
 1. **Dictation never writes the clipboard.** Dictation types synthesized Unicode keystrokes into the focused app. The Accessibility API is used only for command-mode replacement and undo, where the exact selection matters. Paste-with-restore exists behind `insert_mode: paste` in config, off by default, logged loudly. "Copy last transcript" is the only clipboard write, and only on request.

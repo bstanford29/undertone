@@ -335,6 +335,7 @@ class PauseSplitTranscriber:
         min_chunk_s: float = DEFAULT_MIN_CHUNK_S,
         frame_ms: int = DEFAULT_FRAME_MS,
         clock: Callable[[], float] = time.monotonic,
+        on_chunk: Callable[[StreamingChunk], None] | None = None,
     ) -> None:
         if min_pause_s <= 0:
             raise ValueError("min_pause_s must be positive")
@@ -344,6 +345,10 @@ class PauseSplitTranscriber:
         self.rms_threshold = rms_threshold
         self.min_chunk_s = min_chunk_s
         self.frame_ms = frame_ms
+        # Called on the worker thread, outside the lock, after each transcribed
+        # chunk completes and only when the chunk still counts (a chunk that
+        # ``finish`` re-covered with a short tail is never reported).
+        self.on_chunk = on_chunk
         self._clock = clock
         self._condition = threading.Condition(threading.RLock())
         self._queue: list[tuple[StreamingChunk, np.ndarray, str]] = []
@@ -550,6 +555,9 @@ class PauseSplitTranscriber:
             )
             with self._condition:
                 self._chunks.append(done)
+                report = self.on_chunk if done.sequence not in self._superseded else None
+            if report is not None:
+                report(done)
 
     def _start_locked(self) -> None:
         if self._started:

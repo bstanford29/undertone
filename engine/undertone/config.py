@@ -37,6 +37,11 @@ DEFAULTS: dict[str, Any] = {
     "double_tap_lock": True,
     "streaming": False,
     "streaming_mode": "cumulative",
+    # The app streams audio to the engine while the key is held; speech is
+    # transcribed at pauses and cleaned in sentence units before release.
+    "live_dictation": True,
+    "live_min_unit_words": 8,
+    "live_max_unit_words": 40,
     "sounds": True,
     "whisper_mode": False,
     "stream_insert": True,

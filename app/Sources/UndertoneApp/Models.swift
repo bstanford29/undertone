@@ -277,6 +277,12 @@ struct EngineResponse: Codable, Equatable, Sendable {
     let chunksSent: Int?
     let streamTruncated: Bool?
     let streamInterrupted: Bool?
+    /// Live dictation: units cleaned, why the engine fell back to the
+    /// one-shot path (nil when it did not), and the time from release to the
+    /// final text as the engine measured it.
+    let liveUnits: Int?
+    let liveFallback: String?
+    let liveReleaseMS: Double?
 
     enum CodingKeys: String, CodingKey {
         case id, raw, clean, cleanText = "clean_text", rewrite, sttMS = "stt_ms", llmMS = "llm_ms", model, whisper, cleanup
@@ -290,6 +296,7 @@ struct EngineResponse: Codable, Equatable, Sendable {
         case noSpeech = "no_speech", reason
         case chunk, seq, done, chunksSent = "chunks_sent"
         case streamTruncated = "stream_truncated", streamInterrupted = "stream_interrupted"
+        case liveUnits = "live_units", liveFallback = "live_fallback", liveReleaseMS = "live_release_ms"
     }
 }
 
