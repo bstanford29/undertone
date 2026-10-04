@@ -1042,7 +1042,10 @@ final class AppModel: ObservableObject {
             Self.liveLog.notice("live dictation unavailable, using the one-shot path: \(error.localizedDescription, privacy: .public)")
             return .useOneShot
         }
-        Self.liveLog.info("live dictation: release \(Int(result.liveReleaseMS ?? 0)) ms, units \(result.liveUnits ?? 0), fallback \(result.liveFallback ?? "none", privacy: .public)")
+        // Notice level persists in the unified log, so `log show --predicate
+        // 'subsystem == "com.undertone.app" AND category == "live"'` can show
+        // which path a dictation took hours later. Numbers only, no text.
+        Self.liveLog.notice("live dictation: release \(Int(result.liveReleaseMS ?? 0)) ms, units \(result.liveUnits ?? 0), fallback \(result.liveFallback ?? "none", privacy: .public)")
         let raw = result.raw ?? ""
         guard result.noSpeech != true, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             statusText = "No speech detected"
