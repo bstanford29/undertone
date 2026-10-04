@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -313,7 +314,10 @@ class InitialPromptTests(unittest.TestCase):
 
 
 class FakeParakeetModules:
-    """sys.modules entries standing in for mlx and parakeet-mlx."""
+    """sys.modules entries standing in for mlx and parakeet-mlx.
+
+    Like MLX, a model only works on the thread that loaded it.
+    """
 
     def __init__(self, text="hello from parakeet"):
         self.text = text
@@ -324,7 +328,12 @@ class FakeParakeetModules:
         class Model:
             preprocessor_config = object()
 
+            def __init__(self):
+                self.thread = threading.get_ident()
+
             def generate(self, mel):
+                if threading.get_ident() != self.thread:
+                    raise RuntimeError("There is no Stream(cpu, 1) in current thread.")
                 modules.generated.append(len(mel))
                 return [types.SimpleNamespace(text=modules.text)]
 
@@ -454,3 +463,30 @@ class SoundAlikeTests(unittest.TestCase):
         with patch.dict(sys.modules, fake.entries):
             result = transcriber.transcribe_detailed(_loud(3.0, seed=22), vocab="Ollama, Qwen")
         self.assertEqual(result["text"], "run it through Ollama locally")
+
+
+class ParakeetThreadTests(unittest.TestCase):
+    def test_warm_on_one_thread_and_transcribe_on_others(self):
+        from undertone.stt import ParakeetTranscriber
+
+        fake = FakeParakeetModules(text="dictated on a request thread")
+        transcriber = ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        results: list[str] = []
+        errors: list[BaseException] = []
+
+        def request():
+            try:
+                results.append(transcriber.transcribe(_loud(2.0, seed=30)))
+            except BaseException as exc:  # surfaced by the assertion below
+                errors.append(exc)
+
+        with patch.dict(sys.modules, fake.entries):
+            transcriber.warm_up()
+            threads = [threading.Thread(target=request) for _ in range(3)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=10)
+        self.assertEqual(errors, [])
+        self.assertEqual(results, ["dictated on a request thread"] * 3)
+        self.assertEqual(len(fake.loaded), 1)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
 import re
 from pathlib import Path
 from typing import Any
@@ -355,6 +356,11 @@ class ParakeetTranscriber:
         )
         self._model = None
         self._warm = False
+        # MLX streams are per thread: a model loaded on one thread raises
+        # "There is no Stream(cpu, 1) in current thread" when called from
+        # another. The engine serves requests on other threads, so every
+        # load and decode runs on this one worker.
+        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="parakeet")
 
     def warm_up(self) -> None:
         if self._warm:
@@ -399,6 +405,12 @@ class ParakeetTranscriber:
         return {"text": text, "no_speech": False, "reason": "", "segments": stats}
 
     def _load(self) -> None:
+        self._worker.submit(self._load_on_worker).result()
+
+    def _run(self, audio: np.ndarray) -> str:
+        return self._worker.submit(self._run_on_worker, audio).result()
+
+    def _load_on_worker(self) -> None:
         if self._model is not None:
             return
         try:
@@ -410,12 +422,12 @@ class ParakeetTranscriber:
             ) from exc
         self._model = from_pretrained(self.model)
 
-    def _run(self, audio: np.ndarray) -> str:
+    def _run_on_worker(self, audio: np.ndarray) -> str:
         """Log-mel in process (no ffmpeg) then greedy TDT decode."""
         import mlx.core as mx
         from parakeet_mlx.audio import get_logmel
 
-        self._load()
+        self._load_on_worker()
         mel = get_logmel(mx.array(audio), self._model.preprocessor_config)
         results = self._model.generate(mel)
         return (results[0].text if results else "").strip()
