@@ -1,0 +1,9 @@
+# Synthetic test imports only. Do not install MLX speech engines or model weights.
+# Keep minimums aligned with pyproject.toml where the dependency is shared.
+numpy>=1.26
+PyYAML>=6.0
+sounddevice>=0.4
+soundfile>=0.12
+pynput>=1.7
+# tests/test_streaming.py patches snapshot_download without invoking it.
+huggingface-hub>=0.24
