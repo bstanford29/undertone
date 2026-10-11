@@ -73,6 +73,11 @@ final class InsertionController {
     /// so the modifier state change has settled. See
     /// `clearStuckFnFlagIfNeeded`.
     private static let fnClearSettleDelay: TimeInterval = 0.03
+    /// Pause between characters typed into a remote-desktop viewer. The
+    /// viewer sends every key event over the network. The gap is a hedge
+    /// against a burst of a few hundred events outrunning it, not a value
+    /// tuned on a real viewer. About 1 s for a 300-character dictation.
+    private static let remoteKeystrokeInterval: TimeInterval = 0.003
 
     private static func allowsTypingFallback(for error: AXError) -> Bool {
         error == .attributeUnsupported || error == .notImplemented
@@ -185,7 +190,7 @@ final class InsertionController {
         case .appChanged:
             return logAndReturn(route: "appChanged", axResult: nil, confirmed: nil, .failed(.appChanged))
         case .type:
-            let outcome: InsertOutcome = typeUnicode(text) ? .inserted(.type) : .failed(.typeFailed)
+            let outcome: InsertOutcome = typeText(text, bundleID: target.bundleID) ? .inserted(.type) : .failed(.typeFailed)
             return logAndReturn(route: "type", axResult: nil, confirmed: nil, outcome)
         case .axAttempt:
             let axResult = setSelectedText(text, element: target.element)
@@ -195,7 +200,7 @@ final class InsertionController {
                 return logAndReturn(route: "axAttempt", axResult: axResult, confirmed: true, .inserted(.ax))
             }
             // Any AX error, or a hollow success, falls back to typed keystrokes.
-            let outcome: InsertOutcome = typeUnicode(text) ? .inserted(.type) : .failed(.typeFailed)
+            let outcome: InsertOutcome = typeText(text, bundleID: target.bundleID) ? .inserted(.type) : .failed(.typeFailed)
             return logAndReturn(route: "axAttempt", axResult: axResult, confirmed: false, outcome)
         }
     }
@@ -222,7 +227,7 @@ final class InsertionController {
         guard bundleMatches else {
             return logAndReturn(.failed(.appChanged))
         }
-        let outcome: InsertOutcome = typeUnicode(text) ? .inserted(.type) : .failed(.typeFailed)
+        let outcome: InsertOutcome = typeText(text, bundleID: target.bundleID) ? .inserted(.type) : .failed(.typeFailed)
         return logAndReturn(outcome)
     }
 
@@ -260,7 +265,7 @@ final class InsertionController {
         guard let readBack = selectedRange(element), rangesEqual(readBack, replacementRange) else { return .failed(.elementChanged) }
         let axResult = setSelectedText(replacement, element: element)
         if axResult == .success { return .inserted(.ax) }
-        if Self.allowsTypingFallback(for: axResult), typeUnicode(replacement) { return .inserted(.type) }
+        if Self.allowsTypingFallback(for: axResult), typeText(replacement, bundleID: target.bundleID) { return .inserted(.type) }
         return .failed(.axRejected)
     }
 
@@ -393,6 +398,16 @@ final class InsertionController {
         Thread.sleep(forTimeInterval: Self.fnClearSettleDelay)
     }
 
+    /// Types `text` with the keystroke method that suits the target app.
+    /// Remote-desktop viewers get real key presses; every other app gets
+    /// Unicode string events. See `RemoteDesktopTyping`.
+    private func typeText(_ text: String, bundleID: String?) -> Bool {
+        switch RemoteDesktopTyping.keystrokeMethod(bundleID: bundleID) {
+        case .unicodeChunks: return typeUnicode(text)
+        case .layoutKeys: return typeLayoutKeys(text, bundleID: bundleID)
+        }
+    }
+
     private func typeUnicode(_ text: String) -> Bool {
         clearStuckFnFlagIfNeeded()
         let chunks = Self.utf16Chunks(text)
@@ -405,14 +420,8 @@ final class InsertionController {
         // Allocate every event before posting any of them. If event creation fails,
         // the caller can report failure without leaving a partially typed string.
         for chunk in chunks {
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return false }
-            down.flags = []; up.flags = []
-            chunk.withUnsafeBufferPointer { pointer in
-                down.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: pointer.baseAddress)
-                up.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: pointer.baseAddress)
-            }
-            events.append((down: down, up: up))
+            guard let pair = Self.unicodeKeyEvents(chunk, source: source) else { return false }
+            events.append(pair)
         }
 
 
@@ -421,5 +430,64 @@ final class InsertionController {
             event.up.post(tap: .cghidEventTap)
         }
         return true
+    }
+
+    /// Types `text` into a remote-desktop viewer as one real key press per
+    /// character, with Shift and Option pressed as their own keys. The
+    /// viewer forwards these to the remote computer the same way it
+    /// forwards physical typing. Characters with no key on the current
+    /// layout still go out as Unicode events, so nothing is dropped here.
+    /// The log line is at notice level so it persists for later diagnosis.
+    private func typeLayoutKeys(_ text: String, bundleID: String?) -> Bool {
+        clearStuckFnFlagIfNeeded()
+        let keyMap = RemoteDesktopTyping.currentLayoutKeyMap()
+        let steps = RemoteDesktopTyping.steps(for: text, keyMap: keyMap)
+        let unicodeSteps = steps.filter { if case .unicode = $0 { return true } else { return false } }.count
+        let bundleDescription = bundleID ?? "nil"
+        Self.insertLogger.notice("""
+            typeLayoutKeys: bundle=\(bundleDescription, privacy: .public) \
+            keys=\(steps.count - unicodeSteps, privacy: .public) unicode=\(unicodeSteps, privacy: .public) \
+            layoutKeys=\(keyMap.count, privacy: .public)
+            """)
+        guard let source = CGEventSource(stateID: .privateState) else { return false }
+        var groups: [[CGEvent]] = []
+        groups.reserveCapacity(steps.count)
+
+        // Allocate every event before posting any of them, as typeUnicode does.
+        for step in steps {
+            switch step {
+            case .key(let stroke):
+                var events: [CGEvent] = []
+                for press in RemoteDesktopTyping.keyPresses(for: stroke) {
+                    guard let event = CGEvent(keyboardEventSource: source, virtualKey: press.keyCode,
+                                              keyDown: press.keyDown) else { return false }
+                    event.flags = press.flags
+                    events.append(event)
+                }
+                groups.append(events)
+            case .unicode(let units):
+                guard let pair = Self.unicodeKeyEvents(units, source: source) else { return false }
+                groups.append([pair.down, pair.up])
+            }
+        }
+
+        for (index, events) in groups.enumerated() {
+            if index > 0 { Thread.sleep(forTimeInterval: Self.remoteKeystrokeInterval) }
+            for event in events { event.post(tap: .cghidEventTap) }
+        }
+        return true
+    }
+
+    /// A key-down and key-up pair on key code 0 that carries `units` as its
+    /// Unicode string, with no modifier flags.
+    private static func unicodeKeyEvents(_ units: [UInt16], source: CGEventSource) -> (down: CGEvent, up: CGEvent)? {
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return nil }
+        down.flags = []; up.flags = []
+        units.withUnsafeBufferPointer { pointer in
+            down.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: pointer.baseAddress)
+            up.keyboardSetUnicodeString(stringLength: pointer.count, unicodeString: pointer.baseAddress)
+        }
+        return (down: down, up: up)
     }
 }
