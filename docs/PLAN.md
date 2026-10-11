@@ -60,7 +60,7 @@ Live dictation (default on, `live_dictation` in config) streams the recording wh
 
 ## Hard rules
 
-1. **Dictation never writes the clipboard.** Dictation types synthesized Unicode keystrokes into the focused app. The Accessibility API is used only for command-mode replacement and undo, where the exact selection matters. Paste-with-restore exists behind `insert_mode: paste` in config, off by default, logged loudly. "Copy last transcript" is the only clipboard write, and only on request.
+1. **Dictation never writes the clipboard.** Dictation types synthesized Unicode keystrokes into the focused app. Remote-desktop viewers (Jump Desktop, Windows App, Screen Sharing) forward key codes, not text, so they get one real key press per character from the current keyboard layout. The Accessibility API is used only for command-mode replacement and undo, where the exact selection matters. Paste-with-restore exists behind `insert_mode: paste` in config, off by default, logged loudly. "Copy last transcript" is the only clipboard write, and only on request.
 2. **Never drop content.** If the cleaner's output is under 60% of the input word count, retry once on the fallback model, then insert the raw text with basic capitalization and mark the history row `guard_fired`.
 3. **Never answer the transcript.** The cleanup prompt keeps questions as the speaker's words. The eval flags this.
 4. **Nothing leaves the machine.** No network calls except localhost Ollama.
