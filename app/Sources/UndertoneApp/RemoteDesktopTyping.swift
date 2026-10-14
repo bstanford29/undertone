@@ -97,7 +97,13 @@ enum RemoteDesktopTyping {
     }
 
     static func canDeliver(_ steps: [RemoteTypingStep]) -> Bool {
-        !steps.isEmpty && steps.allSatisfy { if case .key = $0 { return true }; return false }
+        // A viewer cannot identify whether Return submits a message or Tab
+        // moves focus. Reject the whole plan before posting even its prefix.
+        !steps.isEmpty && steps.allSatisfy {
+            guard case .key(let stroke) = $0 else { return false }
+            return ![CGKeyCode(kVK_Return), CGKeyCode(kVK_Tab), CGKeyCode(kVK_ANSI_KeypadEnter)]
+                .contains(stroke.keyCode)
+        }
     }
 
     /// Plans one step per character. Line breaks and tabs use the Return
@@ -111,6 +117,11 @@ enum RemoteDesktopTyping {
                 return .key(LayoutKeyStroke(keyCode: CGKeyCode(kVK_Tab), shift: false, option: false))
             default:
                 let string = String(character)
+                if character.unicodeScalars.contains(where: {
+                    $0.properties.generalCategory == .control ||
+                    $0.properties.generalCategory == .lineSeparator ||
+                    $0.properties.generalCategory == .paragraphSeparator
+                }) { return .unicode(Array(string.utf16)) }
                 if let stroke = keyMap[string] { return .key(stroke) }
                 return .unicode(Array(string.utf16))
             }

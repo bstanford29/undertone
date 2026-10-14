@@ -51,6 +51,12 @@ enum DictationInsertRoute: Equatable {
 }
 
 enum StreamInsertion {
+    /// A later pre-post failure is still partial when an earlier chunk landed.
+    static func failure(_ outcome: InsertOutcome, committed: String) -> InsertOutcome {
+        guard outcome.isFailure, !committed.isEmpty else { return outcome }
+        return .failed(.partialInsertion)
+    }
+
     /// Viewers cannot confirm that an early prefix reached the remote field.
     static func enabled(requested: Bool, bundleID: String?) -> Bool {
         requested && !RemoteDesktopTyping.isRemoteDesktopViewer(bundleID: bundleID)
@@ -453,7 +459,6 @@ final class InsertionController {
     /// any part of the message; the complete text remains in History.
     /// The log line is at notice level so it persists for later diagnosis.
     @MainActor private func typeLayoutKeys(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
-        clearStuckFnFlagIfNeeded()
         let keyMap = RemoteDesktopTyping.currentLayoutKeyMap()
         let steps = RemoteDesktopTyping.steps(for: text, keyMap: keyMap)
         let unicodeSteps = steps.filter { if case .unicode = $0 { return true } else { return false } }.count
@@ -464,6 +469,7 @@ final class InsertionController {
             layoutKeys=\(keyMap.count, privacy: .public)
             """)
         guard RemoteDesktopTyping.canDeliver(steps) else { return .failed(.unsupportedCharacters) }
+        clearStuckFnFlagIfNeeded()
         guard let source = CGEventSource(stateID: .privateState) else { return .failed(.typeFailed) }
         var groups: [[CGEvent]] = []
         groups.reserveCapacity(steps.count)

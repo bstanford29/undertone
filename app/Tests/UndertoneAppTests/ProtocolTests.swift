@@ -603,6 +603,18 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(StreamInsertion.enabled(requested: true, bundleID: "com.openai.codex"))
     }
 
+    func testLaterStreamFailureNeverRetriesAnAlreadyCommittedPrefix() {
+        for reason in [InsertFailure.appChanged, .elementChanged, .typeFailed, .deliveryBusy, .cancelled] {
+            let result = StreamInsertion.failure(.failed(reason), committed: "Alpha ")
+            XCTAssertEqual(result, .failed(.partialInsertion))
+            if case .failed(let failure) = result {
+                XCTAssertFalse(AppModel.canRetryInsertion(failure, commandMode: false))
+            }
+            XCTAssertEqual(StreamInsertion.failure(.failed(reason), committed: ""), .failed(reason))
+        }
+        XCTAssertEqual(StreamInsertion.failure(.inserted(.type), committed: "Alpha "), .inserted(.type))
+    }
+
     func testRemoteDeliveryRejectsUnsupportedCharactersBeforeTypingAPrefix() {
         let key = RemoteTypingStep.key(LayoutKeyStroke(keyCode: 0, shift: false, option: false))
         XCTAssertTrue(RemoteDesktopTyping.canDeliver([key]))

@@ -713,6 +713,7 @@ final class AppModel: ObservableObject {
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
             do { try await Task.sleep(for: Self.workingTimeout) } catch { return }
+            guard !Task.isCancelled else { return }
             guard let self, self.workToken == token, case .working = self.pillState else { return }
             task.cancel()
             self.commandMode = false
@@ -777,7 +778,7 @@ final class AppModel: ObservableObject {
             session.lastKeystroke = DispatchTime.now().uptimeNanoseconds
             session.committed += chunk
         case .failed:
-            session.failure = outcome
+            session.failure = StreamInsertion.failure(outcome, committed: session.committed)
         }
     }
 
@@ -928,8 +929,13 @@ final class AppModel: ObservableObject {
             let transcript = try await engine.request(op: "transcribe", fields: [
                 "audio_path": .string(audioPath.path), "vocab_extra": .array(harvestedTerms.map(JSONValue.string))
             ])
-            try checkActiveWork(token)
             let raw = transcript.raw ?? ""
+            if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try? retainRawTranscript(kind: commandMode ? "command" : "dictation",
+                                         rawText: commandMode ? selectedText : raw,
+                                         instructionText: commandMode ? raw : nil, alongside: audioPath)
+            }
+            try checkActiveWork(token)
             guard transcript.noSpeech != true, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 statusText = "No speech detected"
                 self.commandMode = false
@@ -937,18 +943,12 @@ final class AppModel: ObservableObject {
                 showPendingLearningRecoveryIfSafe()
                 return
             }
-            // Retain the raw transcript beside the audio before any history or
-            // cleanup request. This covers a history socket failure without
-            // printing or otherwise exposing transcript content.
             if commandMode {
-                try? retainRawTranscript(kind: "command", rawText: selectedText, instructionText: raw, alongside: audioPath)
                 guard Self.commandInstructionWithinLimit(raw) else {
                     self.commandMode = false
                     showTransientError("Command instruction exceeds the 4 KiB UTF-8 limit")
                     return
                 }
-            } else {
-                try? retainRawTranscript(kind: "dictation", rawText: raw, instructionText: nil, alongside: audioPath)
             }
             let app = target.bundleID ?? "unknown"
             let sttMS = transcript.sttMS ?? 0
@@ -990,7 +990,6 @@ final class AppModel: ObservableObject {
                     "context": .object(["before": .string(context.before), "after": .string(context.after), "selected": .string(context.selected)])
                 ])
             }
-            try checkActiveWork(token)
             let text = commandMode
                 ? (result.rewrite ?? "")
                 : ([result.clean, result.cleanText]
@@ -1036,7 +1035,7 @@ final class AppModel: ObservableObject {
             await completeDictation(
                 rowID: rowID, text: text, rawForUndo: commandMode ? selectedText : raw, outcome: outcome,
                 sttMS: sttMS, llmMS: llmMS, insertMS: insertMS, keptRaw: keptRaw, commandMode: commandMode,
-                target: target, knownTerms: knownTerms
+                target: target, knownTerms: knownTerms, token: token
             )
         } catch is CancellationError {
             // The watchdog already reported the timeout and reset the pill.
@@ -1078,13 +1077,13 @@ final class AppModel: ObservableObject {
             Self.liveLog.notice("live dictation unavailable, using the one-shot path: \(error.localizedDescription, privacy: .public)")
             return .useOneShot
         }
-        try checkActiveWork(token)
         // Notice level persists in the unified log, so `log show --predicate
         // 'subsystem == "com.undertone.app" AND category == "live"'` can show
         // which path a dictation took hours later. Numbers only, no text.
         Self.liveLog.notice("live dictation: release \(Int(result.liveReleaseMS ?? 0)) ms, units \(result.liveUnits ?? 0), fallback \(result.liveFallback ?? "none", privacy: .public)")
         let raw = result.raw ?? ""
         guard result.noSpeech != true, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            try checkActiveWork(token)
             statusText = "No speech detected"
             self.commandMode = false
             pillState = .idle
@@ -1112,6 +1111,7 @@ final class AppModel: ObservableObject {
         guard let rowID = recorded.rowID else {
             throw EngineClientError.protocolViolation("history.record did not return row_id")
         }
+        try checkActiveWork(token)
         if let latest = try? await engine.request(op: "history.last") {
             try checkActiveWork(token)
             lastRow = latest.row
@@ -1140,7 +1140,7 @@ final class AppModel: ObservableObject {
         }
         await completeDictation(
             rowID: rowID, text: text, rawForUndo: raw, outcome: outcome, sttMS: sttMS, llmMS: llmMS,
-            insertMS: insertMS, keptRaw: keptRaw, commandMode: false, target: target, knownTerms: knownTerms
+            insertMS: insertMS, keptRaw: keptRaw, commandMode: false, target: target, knownTerms: knownTerms, token: token
         )
         return .finished
     }
@@ -1151,7 +1151,9 @@ final class AppModel: ObservableObject {
                                        session: StreamInsertSession) async -> (outcome: InsertOutcome, insertMS: Double) {
         if session.failure == nil {
             if let rest = StreamInsertion.remainder(clean: text, committed: session.committed) {
-                if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !Task.isCancelled {
+                if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, Task.isCancelled {
+                    session.failure = StreamInsertion.failure(.failed(.cancelled), committed: session.committed)
+                } else if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     let remOutcome = await inserter.appendStreamed(rest, target: target)
                     if case .inserted = remOutcome {
                         if session.firstKeystroke == nil {
@@ -1160,7 +1162,7 @@ final class AppModel: ObservableObject {
                         session.lastKeystroke = DispatchTime.now().uptimeNanoseconds
                         session.committed += rest
                     } else {
-                        session.failure = remOutcome
+                        session.failure = StreamInsertion.failure(remOutcome, committed: session.committed)
                     }
                 }
             } else {
@@ -1182,7 +1184,7 @@ final class AppModel: ObservableObject {
         } else {
             insertMS = 0
         }
-        workingNote = nil
+        if streamInsertSession === session { workingNote = nil }
         return (outcome, insertMS)
     }
 
@@ -1190,8 +1192,20 @@ final class AppModel: ObservableObject {
     /// row's insertion fields, and the pill's receipt.
     private func completeDictation(rowID: Int, text: String, rawForUndo: String, outcome: InsertOutcome,
                                    sttMS: Double, llmMS: Double, insertMS: Double, keptRaw: Bool,
-                                   commandMode: Bool, target: TargetSnapshot, knownTerms: Set<String>) async {
+                                   commandMode: Bool, target: TargetSnapshot, knownTerms: Set<String>, token: UUID) async {
         let total = sttMS + llmMS + insertMS
+        // Per-row persistence belongs to the completed operation even when
+        // its UI work is stale. Only the current token may change app state.
+        var historyUpdateFailed = false
+        do {
+            _ = try await engine.request(op: "history.update", fields: [
+                "row_id": .number(Double(rowID)),
+                "insert_mode": .string(outcome.historyValue),
+                "insert_ms": .number(insertMS),
+                "total_ms": .number(total),
+            ])
+        } catch { historyUpdateFailed = true }
+        guard workToken == token, !Task.isCancelled else { return }
         if !outcome.isFailure {
             lastInsertTarget = target
             lastInsertedText = text
@@ -1203,19 +1217,10 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        var historyUpdateFailed = false
-        do {
-            _ = try await engine.request(op: "history.update", fields: [
-                "row_id": .number(Double(rowID)),
-                "insert_mode": .string(outcome.historyValue),
-                "insert_ms": .number(insertMS),
-                "total_ms": .number(total),
-            ])
-        } catch {
-            historyUpdateFailed = true
-        }
+        let latest = try? await engine.request(op: "history.last")
+        guard workToken == token, !Task.isCancelled else { return }
         self.commandMode = false
-        if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+        if let latest { lastRow = latest.row }
         lastGuardRowID = keptRaw ? rowID : nil
         if case .failed(let reason) = outcome {
             statusText = historyUpdateFailed

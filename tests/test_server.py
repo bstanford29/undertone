@@ -17,6 +17,33 @@ from undertone.server import Engine, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, Serv
 
 
 class ServerTests(unittest.TestCase):
+    def test_live_raw_sidecar_survives_cleanup_failure_without_a_history_row(self):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+
+        audio = Path(self.temporary.name) / "synthetic.wav"
+        audio.write_bytes(b"synthetic audio fixture")
+        raw = "Alpha\nBeta\tGamma."
+        session = Mock()
+
+        def finish(_audio, *, emit, retain_raw):
+            retain_raw(raw)
+            saved = audio.with_name(audio.name + ".json")
+            self.assertEqual(json.loads(saved.read_text()), {"kind": "dictation", "raw_text": raw})
+            self.assertEqual(stat.S_IMODE(saved.stat().st_mode), 0o600)
+            raise TimeoutError("synthetic cleanup timeout")
+
+        session.finish.side_effect = finish
+        fake_audio = SimpleNamespace(load_wav=lambda _path: np.zeros(100, dtype=np.float32))
+        with patch.dict(sys.modules, {"undertone.audio": fake_audio}), \
+                patch.object(self.engine, "_live_session", return_value=session):
+            with self.assertRaises(TimeoutError):
+                self.engine._dictation_finish({"audio_path": str(audio)}, lambda _frame: None)
+        session.cancel.assert_called_once()
+        self.assertEqual(json.loads(audio.with_name(audio.name + ".json").read_text())["raw_text"], raw)
+        self.assertEqual(audio.read_bytes(), b"synthetic audio fixture")
+
     def test_duplicate_start_cannot_enter_socket_cleanup(self):
         import fcntl
         from undertone import server

@@ -742,6 +742,7 @@ class LiveDictation:
         *,
         emit: Callable[[dict[str, Any]], None] | None = None,
         timeout: float | None = 60.0,
+        retain_raw: Callable[[str], None] | None = None,
     ) -> LiveResult:
         """Emit the final cleaned text so far, decode the tail, and return everything."""
         release_started = self._clock()
@@ -760,7 +761,7 @@ class LiveDictation:
                 audio = complete
                 fallback = fallback or "audio_mismatch"
         if fallback or chunk_error:
-            return self._finish_whole(audio, fallback or "stt_chunk", release_started, timeout)
+            return self._finish_whole(audio, fallback or "stt_chunk", release_started, timeout, retain_raw=retain_raw)
 
         with self._condition:
             committed = self._committed_clean_locked()
@@ -780,7 +781,7 @@ class LiveDictation:
             unit_raws = [unit.raw for unit in self._units]
         if run.error:
             if not committed:
-                return self._finish_whole(audio, "stt_chunk", release_started, timeout, stt_ms=stt_ms)
+                return self._finish_whole(audio, "stt_chunk", release_started, timeout, stt_ms=stt_ms, retain_raw=retain_raw)
             # The committed units stand, so only the uncovered tail is redone.
             retry_started = self._clock()
             try:
@@ -797,7 +798,7 @@ class LiveDictation:
             later_openings = [chunk.text or "" for chunk in run.chunks[1:]]
         if committed and any(opens_with_correction(text) for text in later_openings):
             return self._finish_whole(
-                audio, "correction", release_started, timeout, stt_ms=stt_ms, raw=_join(unit_raws + [tail_raw]),
+                audio, "correction", release_started, timeout, stt_ms=stt_ms, raw=_join(unit_raws + [tail_raw]), retain_raw=retain_raw,
             )
 
         # A word cap may close a unit in the middle of a thought. Cleaning
@@ -809,9 +810,11 @@ class LiveDictation:
         ):
             return self._finish_whole(
                 audio, "cleanup_boundary", release_started, timeout, stt_ms=stt_ms,
-                raw=_join(unit_raws + [tail_raw]),
+                raw=_join(unit_raws + [tail_raw]), retain_raw=retain_raw,
             )
 
+        if retain_raw is not None:
+            retain_raw(_join(unit_raws + [tail_raw]))
         emitted = bool(committed)
         if emitted and emit is not None:
             emit({"seq": 0, "chunk": committed})
@@ -853,6 +856,7 @@ class LiveDictation:
         *,
         stt_ms: float = 0.0,
         raw: str | None = None,
+        retain_raw: Callable[[str], None] | None = None,
     ) -> LiveResult:
         """The non-live path on the complete recording. Nothing was emitted.
 
@@ -860,6 +864,9 @@ class LiveDictation:
         every word and only the cleanup has to start over.
         """
         logger.info("live dictation fell back to the whole recording (%s)", fallback)
+        # Decoded words must survive even if draining or final cleanup stalls.
+        if raw is not None and retain_raw is not None:
+            retain_raw(raw)
         self._drain_quietly(timeout)
         stt_started = self._clock()
         if raw is None:
@@ -867,6 +874,8 @@ class LiveDictation:
                 raw = (self.transcriber.transcribe(audio, vocab=self.vocab) or "").strip()
             except Exception as exc:
                 return self._error_result(type(exc).__name__, release_started, audio, fallback=fallback)
+            if retain_raw is not None:
+                retain_raw(raw)
         stt_ms += (self._clock() - stt_started) * 1000.0
         llm_started = self._clock()
         units: tuple[LiveUnit, ...] = ()
