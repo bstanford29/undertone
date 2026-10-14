@@ -23,9 +23,9 @@ enum RemoteTypingStep: Equatable {
     /// A real key press the viewer can forward to the remote computer.
     case key(LayoutKeyStroke)
     /// No key on the current layout types this character in one press (an
-    /// emoji, or a letter that needs a dead-key sequence). It goes out as a
-    /// Unicode string event, the same as local typing, so the content is
-    /// not dropped here; the viewer may still drop it.
+    /// emoji, or a letter that needs a dead-key sequence). Delivery must
+    /// reject the complete plan before posting any keys; these viewers
+    /// cannot reliably forward attached Unicode text.
     case unicode([UInt16])
 }
 
@@ -94,6 +94,10 @@ enum RemoteDesktopTyping {
 
     static func keystrokeMethod(bundleID: String?) -> KeystrokeMethod {
         isRemoteDesktopViewer(bundleID: bundleID) ? .layoutKeys : .unicodeChunks
+    }
+
+    static func canDeliver(_ steps: [RemoteTypingStep]) -> Bool {
+        !steps.isEmpty && steps.allSatisfy { if case .key = $0 { return true }; return false }
     }
 
     /// Plans one step per character. Line breaks and tabs use the Return

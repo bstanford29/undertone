@@ -116,7 +116,7 @@ final class AppModel: ObservableObject {
     @Published var appPage: AppPage = .home
     private var mainWindow: NSWindow?
     @Published var soundsEnabled = true
-    @Published var streamInsert = true
+    @Published var streamInsert = false
     /// Stream audio to the engine while the key is held so transcription and
     /// cleanup happen during the hold and release only types.
     @Published var liveDictation = true
@@ -747,7 +747,7 @@ final class AppModel: ObservableObject {
             workingNote = "Inserting"
         }
         guard !Task.isCancelled else { return }
-        let outcome = inserter.appendStreamed(chunk, target: session.target)
+        let outcome = await inserter.appendStreamed(chunk, target: session.target)
         switch outcome {
         case .inserted:
             if session.firstKeystroke == nil {
@@ -941,7 +941,7 @@ final class AppModel: ObservableObject {
                 throw EngineClientError.protocolViolation("history.record did not return row_id")
             }
             let result: EngineResponse
-            let usedStreamInsert = !commandMode && streamInsert
+            let usedStreamInsert = !commandMode && StreamInsertion.enabled(requested: streamInsert, bundleID: target.bundleID)
             if commandMode {
                 result = try await engine.request(op: "command", fields: [
                     "selected": .string(selectedText), "instruction": .string(raw)
@@ -992,11 +992,11 @@ final class AppModel: ObservableObject {
             if commandMode || !usedStreamInsert || chunksSent == 0 {
                 await awaitHoldKeyRelease()
                 let insertStart = DispatchTime.now().uptimeNanoseconds
-                outcome = inserter.insert(text, target: target, axOnly: commandMode)
+                outcome = await inserter.insert(text, target: target, axOnly: commandMode)
                 insertMS = Double(DispatchTime.now().uptimeNanoseconds &- insertStart) / 1_000_000
             } else {
                 let session = streamInsertSession ?? StreamInsertSession(target: target)
-                let streamed = insertStreamRemainder(text, target: target, session: session)
+                let streamed = await insertStreamRemainder(text, target: target, session: session)
                 outcome = streamed.outcome
                 insertMS = streamed.insertMS
             }
@@ -1028,7 +1028,7 @@ final class AppModel: ObservableObject {
                              knownTerms: Set<String>) async throws -> LiveOutcome {
         let session = StreamInsertSession(target: target)
         streamInsertSession = session
-        let typeEarly = streamInsert
+        let typeEarly = StreamInsertion.enabled(requested: streamInsert, bundleID: target.bundleID)
         let result: EngineResponse
         do {
             result = try await feeder.finish(audioPath: audioPath) { chunk in
@@ -1089,10 +1089,10 @@ final class AppModel: ObservableObject {
             // as it streams is off), so the whole text goes in at once.
             await awaitHoldKeyRelease()
             let insertStart = DispatchTime.now().uptimeNanoseconds
-            outcome = inserter.insert(text, target: target, axOnly: false)
+            outcome = await inserter.insert(text, target: target, axOnly: false)
             insertMS = Double(DispatchTime.now().uptimeNanoseconds &- insertStart) / 1_000_000
         } else {
-            let streamed = insertStreamRemainder(text, target: target, session: session)
+            let streamed = await insertStreamRemainder(text, target: target, session: session)
             outcome = streamed.outcome
             insertMS = streamed.insertMS
         }
@@ -1106,11 +1106,11 @@ final class AppModel: ObservableObject {
     /// Types whatever the final text adds beyond the streamed prefix and
     /// settles the session's outcome and keystroke timing.
     private func insertStreamRemainder(_ text: String, target: TargetSnapshot,
-                                       session: StreamInsertSession) -> (outcome: InsertOutcome, insertMS: Double) {
+                                       session: StreamInsertSession) async -> (outcome: InsertOutcome, insertMS: Double) {
         if session.failure == nil {
             if let rest = StreamInsertion.remainder(clean: text, committed: session.committed) {
                 if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !Task.isCancelled {
-                    let remOutcome = inserter.appendStreamed(rest, target: target)
+                    let remOutcome = await inserter.appendStreamed(rest, target: target)
                     if case .inserted = remOutcome {
                         if session.firstKeystroke == nil {
                             session.firstKeystroke = DispatchTime.now().uptimeNanoseconds
@@ -1123,6 +1123,7 @@ final class AppModel: ObservableObject {
                 }
             } else {
                 InsertionController.logStreamPrefixMismatch(bundleID: target.bundleID)
+                session.failure = .failed(.prefixMismatch)
             }
         }
         let outcome: InsertOutcome
@@ -1458,7 +1459,7 @@ final class AppModel: ObservableObject {
                     app.activate(options: [])
                 }
                 try? await Task.sleep(for: .milliseconds(120))
-                let outcome = self.inserter.replaceLastInsertion(priorText, with: replacement, target: priorTarget)
+                let outcome = await self.inserter.replaceLastInsertion(priorText, with: replacement, target: priorTarget)
                 if case .inserted = outcome {
                     self.lastInsertedText = replacement
                 } else if case .failed(let reason) = outcome {
@@ -1481,7 +1482,7 @@ final class AppModel: ObservableObject {
                     app.activate(options: [])
                 }
                 try? await Task.sleep(for: .milliseconds(120))
-                let outcome = insertHistoryText(text, target: capturedTarget)
+                let outcome = await insertHistoryText(text, target: capturedTarget)
                 if case .inserted = outcome {
                     lastInsertedText = text
                     lastInsertedRawText = row.rawText
@@ -1510,7 +1511,7 @@ final class AppModel: ObservableObject {
                 app.activate(options: [])
             }
             try? await Task.sleep(for: .milliseconds(120))
-            let outcome = self.insertHistoryText(text, target: selectedTarget)
+            let outcome = await self.insertHistoryText(text, target: selectedTarget)
             if case .inserted = outcome {
                 self.lastInsertedText = text
                 self.lastInsertedRawText = row.rawText
@@ -1521,8 +1522,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func insertHistoryText(_ text: String, target: TargetSnapshot) -> InsertOutcome {
-        let result = inserter.insert(text, target: target)
+    private func insertHistoryText(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
+        let result = await inserter.insert(text, target: target)
         if !result.isFailure { lastInsertTarget = target }
         return result
     }
@@ -1537,6 +1538,7 @@ final class AppModel: ObservableObject {
         case .elementChanged: return "Insertion failed: element changed"
         case .axRejected: return "Insertion failed: Accessibility rejected"
         case .typeFailed: return "Insertion failed: typing failed"
+        case .prefixMismatch: return "Insertion failed: text changed while inserting"
         }
     }
 
