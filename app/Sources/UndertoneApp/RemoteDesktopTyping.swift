@@ -176,7 +176,7 @@ enum RemoteDesktopTyping {
     }
 
     /// The key map for the keyboard layout in use now. Empty when no layout
-    /// data is available, which sends every character as a Unicode event.
+    /// data is available, which rejects remote delivery before any typing.
     static func currentLayoutKeyMap() -> [String: LayoutKeyStroke] {
         for copySource in [TISCopyCurrentKeyboardLayoutInputSource, TISCopyCurrentASCIICapableKeyboardLayoutInputSource] {
             guard let source = copySource()?.takeRetainedValue(),

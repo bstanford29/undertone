@@ -612,29 +612,29 @@ final class ProtocolTests: XCTestCase {
 
     @MainActor func testPacedDeliveryPreservesEventOrderAndYieldsBetweenEvents() async {
         var trace: [String] = []
-        let result = await InsertionController.postKeyGroups([[1, 2], [3, 4]], interval: .milliseconds(3),
+        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .milliseconds(3),
             isCurrent: { true }, post: { trace.append("key\($0)") }, pause: { _ in trace.append("yield") })
-        XCTAssertTrue(result)
-        XCTAssertEqual(trace, ["key1", "yield", "key2", "yield", "key3", "yield", "key4", "yield"])
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(trace, ["key1", "yield", "key2", "yield", "key3", "yield", "key4"])
     }
 
     @MainActor func testDeliveryStopsBeforeTypingIntoChangedField() async {
         var posted: [Int] = []
-        let result = await InsertionController.postKeyGroups([[1, 2], [3, 4]], interval: .zero,
+        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .zero,
             isCurrent: { posted.isEmpty }, post: { posted.append($0) }, pause: { _ in })
-        XCTAssertFalse(result)
+        XCTAssertEqual(result, .failed(.partialInsertion))
         XCTAssertEqual(posted, [1, 2], "finish key-up before stopping; never type the next stroke")
     }
 
     @MainActor func testCancelledDeliveryReleasesModifiersAndStopsBeforeNextStroke() async {
         var posted: [Int] = []
-        var delivery: Task<Bool, Never>?
+        var delivery: Task<InsertOutcome, Never>?
         delivery = Task { @MainActor in
-            await InsertionController.postKeyGroups([[1, 2, 3], [4, 5]], interval: .zero,
+            await InsertionController().postKeyGroups([[1, 2, 3], [4, 5]], interval: .zero,
                 isCurrent: { true }, post: { posted.append($0) }, pause: { _ in delivery?.cancel() })
         }
         let result = await delivery!.value
-        XCTAssertFalse(result)
+        XCTAssertEqual(result, .failed(.partialInsertion))
         XCTAssertEqual(posted, [1, 2, 3], "complete modifier releases even when cancelled during a stroke")
     }
 
@@ -642,13 +642,68 @@ final class ProtocolTests: XCTestCase {
         var posted: [Int] = []
         let delivery = Task { @MainActor in
             await Task.yield()
-            return await InsertionController.postKeyGroups([[1, 2]], interval: .zero,
+            return await InsertionController().postKeyGroups([[1, 2]], interval: .zero,
                 isCurrent: { true }, post: { posted.append($0) }, pause: { _ in })
         }
         delivery.cancel()
         let result = await delivery.value
-        XCTAssertFalse(result)
+        XCTAssertEqual(result, .failed(.cancelled))
         XCTAssertTrue(posted.isEmpty)
+    }
+
+    @MainActor func testCompletedDeliveryIsNotFailedByFocusChangeAfterLastEvent() async {
+        var posted: [Int] = []
+        let result = await InsertionController().postKeyGroups([[1, 2]], interval: .zero,
+            isCurrent: { posted.isEmpty }, post: { posted.append($0) }, pause: { _ in })
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(posted, [1, 2])
+    }
+
+    @MainActor func testTwoDeliveriesCannotInterleave() async {
+        let controller = InsertionController()
+        var posted: [Int] = []
+        var resumeFirst: CheckedContinuation<Void, Never>?
+        let first = Task { @MainActor in
+            await controller.postKeyGroups([[1, 2]], interval: .zero, isCurrent: { true },
+                post: { posted.append($0) }, pause: { _ in
+                    await withCheckedContinuation { resumeFirst = $0 }
+                })
+        }
+        while resumeFirst == nil { await Task.yield() }
+        let second = await controller.postKeyGroups([[3, 4]], interval: .zero, isCurrent: { true },
+            post: { posted.append($0) }, pause: { _ in })
+        XCTAssertEqual(second, .failed(.deliveryBusy))
+        resumeFirst?.resume()
+        let result = await first.value
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(posted, [1, 2])
+    }
+
+    @MainActor func testCancellationKeepsRealModifierReleasePacing() async {
+        var posted: [Int] = []
+        var delivery: Task<InsertOutcome, Never>?
+        let start = ContinuousClock.now
+        delivery = Task { @MainActor in
+            await InsertionController().postKeyGroups([[1, 2, 3], [4, 5]], interval: .milliseconds(10),
+                isCurrent: { true }, post: { event in
+                    posted.append(event)
+                    if event == 1 { delivery?.cancel() }
+                })
+        }
+        let result = await delivery!.value
+        XCTAssertEqual(result, .failed(.partialInsertion))
+        XCTAssertEqual(posted, [1, 2, 3])
+        XCTAssertGreaterThanOrEqual(start.duration(to: .now), .milliseconds(20))
+    }
+
+    func testPartialInsertionNeverOffersARetryThatDuplicatesThePrefix() {
+        for reason in [InsertFailure.partialInsertion, .prefixMismatch, .unsupportedCharacters] {
+            XCTAssertFalse(AppModel.canRetryInsertion(reason, commandMode: false))
+        }
+        XCTAssertTrue(AppModel.canRetryInsertion(.appChanged, commandMode: false))
+        XCTAssertFalse(AppModel.canRetryInsertion(.appChanged, commandMode: true))
+        XCTAssertEqual(AppModel.pillFailureMessage(.partialInsertion, appName: "Jump Desktop"),
+                       "Partly typed. Full text saved.")
     }
 
     func testInsertFailureRawValuesMatchHistoryFormat() {

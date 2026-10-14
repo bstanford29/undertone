@@ -800,6 +800,18 @@ class LiveDictation:
                 audio, "correction", release_started, timeout, stt_ms=stt_ms, raw=_join(unit_raws + [tail_raw]),
             )
 
+        # A word cap may close a unit in the middle of a thought. Cleaning
+        # the continuation separately cannot repair punctuation or wording
+        # already committed at that cut. Reuse all decoded words in one
+        # cleanup before any prefix is emitted.
+        if not interrupted and self.level in {"medium", "high"} and any(
+            raw and not _ends_sentence(raw) for raw in unit_raws
+        ):
+            return self._finish_whole(
+                audio, "cleanup_boundary", release_started, timeout, stt_ms=stt_ms,
+                raw=_join(unit_raws + [tail_raw]),
+            )
+
         emitted = bool(committed)
         if emitted and emit is not None:
             emit({"seq": 0, "chunk": committed})

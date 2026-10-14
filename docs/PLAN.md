@@ -47,6 +47,8 @@ Requests are one JSON object per line. Responses mirror the `id`.
 
 Live dictation (default on, `live_dictation` in config) streams the recording while the key is held so release only types. The app sends 16 kHz mono PCM16 in half-second frames with a running `seq`; the engine cuts the audio at pauses, decodes each chunk inside a context window using word timestamps, groups the text into sentence units, and cleans each unit as it closes. `dictation.finish` streams the committed clean text first (the app types it at once), then decodes and cleans only the tail and returns a `clean` that extends the committed text. Any gap, mismatch, window failure, or a correction phrase opening a chunk ("no wait", "scratch that") makes `finish` fall back to the one-shot path on the retained file, reported in `live_fallback`.
 
+Text insertion buffers until the final result by default (`stream_insert: false`). Remote-desktop viewers always buffer the complete result. If a cleanup unit was closed by the word cap in the middle of a sentence, finish runs one cleanup over the complete decoded text before emitting anything, reported as `cleanup_boundary`; it does not repeat speech recognition. Keystrokes yield between events and stop at stroke boundaries if focus changes or the operation is cancelled. Remote characters without a supported layout key fail before any text is typed and remain available in History.
+
 ```
 {"id":9,"op":"dictation.start","level":"medium","app":"com.apple.mail","vocab_extra":["Priya"],"context":{"before":"...","after":"","selected":""}}
 {"id":9,"session_id":"3f2a...","backend":"parakeet","model":"mlx-community/parakeet-tdt-0.6b-v3","level":"medium"}

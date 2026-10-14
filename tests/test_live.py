@@ -437,6 +437,23 @@ class LiveDictationTests(unittest.TestCase):
         self.assertEqual(result.raw, "")
         self.assertEqual(calls, [])
 
+    def test_word_cap_recleans_the_whole_sentence_before_emitting_a_prefix(self):
+        fake = AmplitudeFake(relabel={i: f"w{i}" for i in range(14)})
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={}, min_unit_words=3, max_unit_words=8)
+        audio = _sentences(15)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertEqual(frames, [], "a mid-sentence edit must not be committed to the target field")
+        self.assertEqual(result.fallback, "cleanup_boundary")
+        self.assertEqual(result.raw.split(), [f"w{i}" for i in range(14)] + ["w14."])
+        self.assertEqual(result.clean, "[" + result.raw.upper() + "]")
+        self.assertEqual(calls[-1]["raw"], result.raw)
+        self.assertEqual(fake.whole_calls, [], "reuse the decoded words; no extra speech recognition")
+
     def test_cancel_closes_workers(self):
         fake = AmplitudeFake()
         session = self._session(fake, [])

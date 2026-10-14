@@ -194,6 +194,7 @@ final class AppModel: ObservableObject {
     var onQuickNoteToggle: (() -> Void)?
     private var watchdogTask: Task<Void, Never>?
     private var workingTask: Task<Void, Never>?
+    private var workToken: UUID?
     private var lockEscapeMonitors: [Any] = []
     private var powerMonitor: PowerStateMonitor?
     private var meetingDetector: MeetingAppDetector?
@@ -221,7 +222,7 @@ final class AppModel: ObservableObject {
     /// why insertion has not happened yet.
     private static let holdKeyReleaseNoteDelay: Duration = .milliseconds(300)
 
-    private final class StreamInsertSession {
+    @MainActor private final class StreamInsertSession {
         let target: TargetSnapshot
         var committed = ""
         var firstKeystroke: UInt64?
@@ -594,6 +595,7 @@ final class AppModel: ObservableObject {
     }
 
     func beginDictation() {
+        guard !insertionInFlight else { return }
         guard !meetings.state.isRecording else {
             showTransientError("Stop meeting capture before dictating")
             return
@@ -604,6 +606,9 @@ final class AppModel: ObservableObject {
         case .listening, .working, .recording:
             return
         }
+        workingTask?.cancel()
+        workToken = nil
+        streamInsertSession = nil
         clearPendingLearningUnlessRecovering()
         cancelNudge()
         editWatcher.cancel()
@@ -697,20 +702,34 @@ final class AppModel: ObservableObject {
             return
         }
         pillState = .working
-        let task = Task { await self.process(audioPath: path, target: target, feeder: feeder) }
-        startWatchdog(for: task)
+        let token = UUID()
+        workToken = token
+        let task = Task { await self.process(audioPath: path, target: target, feeder: feeder, token: token) }
+        startWatchdog(for: task, token: token)
     }
 
-    private func startWatchdog(for task: Task<Void, Never>) {
+    private func startWatchdog(for task: Task<Void, Never>, token: UUID) {
         workingTask = task
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
             do { try await Task.sleep(for: Self.workingTimeout) } catch { return }
-            guard let self, case .working = self.pillState else { return }
+            guard let self, self.workToken == token, case .working = self.pillState else { return }
             task.cancel()
             self.commandMode = false
             self.showTransientError("Cleanup took too long")
         }
+    }
+
+    private func checkActiveWork(_ token: UUID) throws {
+        try Task.checkCancellation()
+        guard workToken == token else { throw CancellationError() }
+    }
+
+    /// The cleanup time budget ends before typing starts. Paced delivery has
+    /// its own focus/cancellation checks and must not be cut off by that timer.
+    private func prepareForInsertion() {
+        watchdogTask?.cancel()
+        watchdogTask = nil
     }
 
     /// Waits for a physically held fn/F13 key to release before insertion.
@@ -738,11 +757,13 @@ final class AppModel: ObservableObject {
         try? await Task.sleep(for: Self.holdKeyReleaseSettleDelay)
     }
 
-    private func consumeStreamChunk(_ chunk: String) async {
-        guard let session = streamInsertSession else { return }
+    private func consumeStreamChunk(_ chunk: String, session: StreamInsertSession) async {
+        guard streamInsertSession === session, !Task.isCancelled else { return }
         if session.failure != nil { return }
         if !session.holdAwaited {
+            prepareForInsertion()
             await awaitHoldKeyRelease()
+            guard streamInsertSession === session, !Task.isCancelled else { return }
             session.holdAwaited = true
             workingNote = "Inserting"
         }
@@ -875,14 +896,18 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func process(audioPath: URL, target: TargetSnapshot, feeder: LiveDictationFeeder? = nil) async {
+    private func process(audioPath: URL, target: TargetSnapshot, feeder: LiveDictationFeeder? = nil, token: UUID) async {
         defer {
-            watchdogTask?.cancel()
-            watchdogTask = nil
-            workingTask = nil
-            streamInsertSession = nil
+            if workToken == token {
+                watchdogTask?.cancel()
+                watchdogTask = nil
+                workingTask = nil
+                streamInsertSession = nil
+                workToken = nil
+            }
         }
         do {
+            try checkActiveWork(token)
             let commandMode = Self.hasCommandSelection(target.selectedText)
             let selectedText = target.selectedText ?? ""
             let context = AXContextReader.context(for: target)
@@ -890,11 +915,12 @@ final class AppModel: ObservableObject {
             let knownTerms: Set<String> = commandMode
                 ? []
                 : Set((try? await engine.request(op: "dictionary.list"))?.terms?.map { $0.lowercased() } ?? [])
+            try checkActiveWork(token)
             if let feeder {
                 if commandMode {
                     await feeder.cancel()
                 } else if case .finished = try await processLive(
-                    feeder: feeder, audioPath: audioPath, target: target, knownTerms: knownTerms
+                    feeder: feeder, audioPath: audioPath, target: target, knownTerms: knownTerms, token: token
                 ) {
                     return
                 }
@@ -902,6 +928,7 @@ final class AppModel: ObservableObject {
             let transcript = try await engine.request(op: "transcribe", fields: [
                 "audio_path": .string(audioPath.path), "vocab_extra": .array(harvestedTerms.map(JSONValue.string))
             ])
+            try checkActiveWork(token)
             let raw = transcript.raw ?? ""
             guard transcript.noSpeech != true, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 statusText = "No speech detected"
@@ -937,6 +964,7 @@ final class AppModel: ObservableObject {
                 "app_bundle_id": .string(app), "guard_fired": .bool(false),
                 "model": .null, "audio_path": .string(audioPath.path)
             ])
+            try checkActiveWork(token)
             guard let rowID = recorded.rowID else {
                 throw EngineClientError.protocolViolation("history.record did not return row_id")
             }
@@ -954,7 +982,7 @@ final class AppModel: ObservableObject {
                     "context": .object(["before": .string(context.before), "after": .string(context.after), "selected": .string(context.selected)])
                 ]
                 result = try await engine.requestStream(op: "clean.stream", fields: cleanFields) { chunk in
-                    await self.consumeStreamChunk(chunk)
+                    await self.consumeStreamChunk(chunk, session: session)
                 }
             } else {
                 result = try await engine.request(op: "clean", fields: [
@@ -962,6 +990,7 @@ final class AppModel: ObservableObject {
                     "context": .object(["before": .string(context.before), "after": .string(context.after), "selected": .string(context.selected)])
                 ])
             }
+            try checkActiveWork(token)
             let text = commandMode
                 ? (result.rewrite ?? "")
                 : ([result.clean, result.cleanText]
@@ -977,7 +1006,9 @@ final class AppModel: ObservableObject {
                 "model": result.model.map(JSONValue.string) ?? .null,
                 "guard_fired": .bool(guardFired), "llm_ms": .number(llmMS)
             ])
+            try checkActiveWork(token)
             if let latest = try? await engine.request(op: "history.last") {
+                try checkActiveWork(token)
                 lastRow = latest.row
             }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -989,6 +1020,8 @@ final class AppModel: ObservableObject {
             let outcome: InsertOutcome
             let insertMS: Double
             let chunksSent = result.chunksSent ?? 0
+            try checkActiveWork(token)
+            prepareForInsertion()
             if commandMode || !usedStreamInsert || chunksSent == 0 {
                 await awaitHoldKeyRelease()
                 let insertStart = DispatchTime.now().uptimeNanoseconds
@@ -1008,6 +1041,7 @@ final class AppModel: ObservableObject {
         } catch is CancellationError {
             // The watchdog already reported the timeout and reset the pill.
         } catch {
+            guard workToken == token, !Task.isCancelled else { return }
             commandMode = false
             showTransientError(error.localizedDescription)
         }
@@ -1025,23 +1059,26 @@ final class AppModel: ObservableObject {
     /// rest. Throws after text was typed; before that, a failure means the
     /// one-shot path runs on the retained audio instead.
     private func processLive(feeder: LiveDictationFeeder, audioPath: URL, target: TargetSnapshot,
-                             knownTerms: Set<String>) async throws -> LiveOutcome {
+                             knownTerms: Set<String>, token: UUID) async throws -> LiveOutcome {
+        try checkActiveWork(token)
         let session = StreamInsertSession(target: target)
         streamInsertSession = session
         let typeEarly = StreamInsertion.enabled(requested: streamInsert, bundleID: target.bundleID)
         let result: EngineResponse
         do {
             result = try await feeder.finish(audioPath: audioPath) { chunk in
-                if typeEarly { await self.consumeStreamChunk(chunk) }
+                if typeEarly { await self.consumeStreamChunk(chunk, session: session) }
             }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            try checkActiveWork(token)
             streamInsertSession = nil
             guard session.committed.isEmpty else { throw error }
             Self.liveLog.notice("live dictation unavailable, using the one-shot path: \(error.localizedDescription, privacy: .public)")
             return .useOneShot
         }
+        try checkActiveWork(token)
         // Notice level persists in the unified log, so `log show --predicate
         // 'subsystem == "com.undertone.app" AND category == "live"'` can show
         // which path a dictation took hours later. Numbers only, no text.
@@ -1075,7 +1112,10 @@ final class AppModel: ObservableObject {
         guard let rowID = recorded.rowID else {
             throw EngineClientError.protocolViolation("history.record did not return row_id")
         }
-        if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+        if let latest = try? await engine.request(op: "history.last") {
+            try checkActiveWork(token)
+            lastRow = latest.row
+        }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             self.commandMode = false
             workingNote = nil
@@ -1084,6 +1124,8 @@ final class AppModel: ObservableObject {
         }
         let outcome: InsertOutcome
         let insertMS: Double
+        try checkActiveWork(token)
+        prepareForInsertion()
         if session.committed.isEmpty, session.failure == nil {
             // Nothing was typed during finish (no committed units, or typing
             // as it streams is off), so the whole text goes in at once.
@@ -1180,7 +1222,7 @@ final class AppModel: ObservableObject {
                 ? "Insertion failed, history update unknown"
                 : Self.failureMessage(reason)
             showTransientError(Self.pillFailureMessage(reason, appName: ToneCatalog.appName(for: target.bundleID)),
-                               retry: !commandMode && reason != .notTrusted)
+                               retry: Self.canRetryInsertion(reason, commandMode: commandMode))
         } else if historyUpdateFailed {
             statusText = "Inserted, history update unknown"
             showTransientState(keptRaw ? .guarded(totalMS: total) : .inserted(totalMS: total))
@@ -1539,6 +1581,10 @@ final class AppModel: ObservableObject {
         case .axRejected: return "Insertion failed: Accessibility rejected"
         case .typeFailed: return "Insertion failed: typing failed"
         case .prefixMismatch: return "Insertion failed: text changed while inserting"
+        case .partialInsertion: return "Partly typed; full text saved in History"
+        case .cancelled: return "Insertion cancelled; text saved"
+        case .deliveryBusy: return "Finish the current insertion first"
+        case .unsupportedCharacters: return "Remote typing cannot carry some characters; text saved"
         }
     }
 
@@ -1546,12 +1592,18 @@ final class AppModel: ObservableObject {
     /// way, so the message says so and Insert again can retry it.
     nonisolated static func pillFailureMessage(_ reason: InsertFailure, appName: String?) -> String {
         switch reason {
+        case .partialInsertion, .prefixMismatch: return "Partly typed. Full text saved."
+        case .unsupportedCharacters: return "Remote typing can't carry it. Text saved."
         case .notTrusted: return failureMessage(reason)
         case .emptyText: return "Nothing to insert"
         default:
             guard let appName, !appName.isEmpty else { return "Couldn't type it in. Text saved." }
             return "Couldn't type into \(appName). Text saved."
         }
+    }
+
+    nonisolated static func canRetryInsertion(_ reason: InsertFailure, commandMode: Bool) -> Bool {
+        !commandMode && ![.notTrusted, .partialInsertion, .prefixMismatch, .cancelled, .unsupportedCharacters].contains(reason)
     }
 
     func copyLast() {
