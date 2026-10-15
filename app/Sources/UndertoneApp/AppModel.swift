@@ -1073,7 +1073,9 @@ final class AppModel: ObservableObject {
         } catch {
             try checkActiveWork(token)
             streamInsertSession = nil
-            guard session.committed.isEmpty else { throw error }
+            guard StreamInsertion.canUseOneShotFallback(committed: session.committed, failure: session.failure) else {
+                throw error
+            }
             Self.liveLog.notice("live dictation unavailable, using the one-shot path: \(error.localizedDescription, privacy: .public)")
             return .useOneShot
         }

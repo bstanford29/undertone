@@ -51,6 +51,11 @@ enum DictationInsertRoute: Equatable {
 }
 
 enum StreamInsertion {
+    /// A failed live request may replay only when no part of its text landed.
+    static func canUseOneShotFallback(committed: String, failure: InsertOutcome?) -> Bool {
+        committed.isEmpty && failure != .failed(.partialInsertion)
+    }
+
     /// A later pre-post failure is still partial when an earlier chunk landed.
     static func failure(_ outcome: InsertOutcome, committed: String) -> InsertOutcome {
         guard outcome.isFailure, !committed.isEmpty else { return outcome }

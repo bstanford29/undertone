@@ -615,6 +615,24 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(StreamInsertion.failure(.inserted(.type), committed: "Alpha "), .inserted(.type))
     }
 
+    @MainActor func testLiveFailureAfterPartiallyTypedFirstChunkNeverReplaysWholeMessage() async {
+        var posted: [Int] = []
+        let delivery = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .zero,
+            isCurrent: { posted.isEmpty }, post: { posted.append($0) }, pause: { _ in })
+        XCTAssertEqual(posted, [1, 2], "a prefix landed before focus changed")
+        XCTAssertEqual(delivery, .failed(.partialInsertion))
+
+        // The first chunk did not finish, so committed is still empty even
+        // though its first stroke reached the field. A later engine failure
+        // must not replay the complete recording through the one-shot path.
+        let failure = StreamInsertion.failure(delivery, committed: "")
+        XCTAssertFalse(StreamInsertion.canUseOneShotFallback(committed: "", failure: failure))
+        XCTAssertFalse(AppModel.canRetryInsertion(.partialInsertion, commandMode: false))
+        XCTAssertFalse(StreamInsertion.canUseOneShotFallback(committed: "Completed chunk. ", failure: nil))
+        XCTAssertTrue(StreamInsertion.canUseOneShotFallback(committed: "", failure: .failed(.appChanged)),
+                      "a pre-post failure still permits recovery from the retained audio")
+    }
+
     func testRemoteDeliveryRejectsUnsupportedCharactersBeforeTypingAPrefix() {
         let key = RemoteTypingStep.key(LayoutKeyStroke(keyCode: 0, shift: false, option: false))
         XCTAssertTrue(RemoteDesktopTyping.canDeliver([key]))
