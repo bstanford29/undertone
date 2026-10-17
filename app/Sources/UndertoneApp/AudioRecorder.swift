@@ -11,10 +11,13 @@ import os
 /// `installTap` then raises an Objective-C exception that Swift cannot catch,
 /// so the app quits.
 final class AudioRecorder: @unchecked Sendable {
-    /// Engine restarts allowed within one recording before the recorder stops
-    /// following the input and keeps what it has. A Bluetooth headset can
-    /// change format more than once while it switches profiles.
-    static let maxInputRestarts = 4
+    /// Engine starts allowed within one recording after the first, counting
+    /// retries, before the recorder stops following the input and keeps what
+    /// it has. A Bluetooth headset can change format more than once, and
+    /// report no input for a moment, while it switches profiles.
+    static let maxInputRestarts = 8
+    /// Wait before trying again when the new input has no format yet.
+    static let inputRetryDelay = 0.25
 
     private static let log = Logger(subsystem: "com.undertone.app", category: "recorder")
 
@@ -24,7 +27,11 @@ final class AudioRecorder: @unchecked Sendable {
     /// Bumped for every engine started, so a late change notice from an
     /// engine that is already gone cannot restart the current one.
     private var engineGeneration: UInt64 = 0
+    /// Bumped for every recording, so a queued retry or a converter failure
+    /// from an earlier recording cannot touch the current one.
+    private var recordingID: UInt64 = 0
     private var inputRestarts = 0
+    private var inputGivenUp = false
     private(set) var currentURL: URL?
     private var recordingSampleRate: Double = 0
     /// Frames written / sample rate for the most recently stopped recording.
@@ -45,6 +52,8 @@ final class AudioRecorder: @unchecked Sendable {
     /// Set while a replacement microphone delivers a format other than the
     /// file's.
     private var converter: InputConverter?
+    /// The replacement microphone's format cannot be converted to the file's.
+    private var conversionFailed = false
 
     /// Receives mono samples at `LiveDictationFeeder.sampleRate` in frames of
     /// `LiveDictationFeeder.frameSamples`, on the audio thread, while a
@@ -83,9 +92,12 @@ final class AudioRecorder: @unchecked Sendable {
         recordingFailed = false
         framesWritten = 0
         converter = nil
+        conversionFailed = false
         writeLock.unlock()
         recordingSampleRate = newFile.processingFormat.sampleRate
+        recordingID &+= 1
         inputRestarts = 0
+        inputGivenUp = false
         liveLock.lock()
         liveResampler = liveHandler == nil
             ? nil
@@ -118,13 +130,13 @@ final class AudioRecorder: @unchecked Sendable {
     }
 
     /// Taps the engine's input and starts it. The tap asks for no format, so
-    /// it takes whatever the hardware delivers and cannot trip the format
-    /// check in `installTap`; `receive` converts anything that differs from
-    /// the file.
+    /// it takes the bus's format at install time rather than one read a
+    /// moment earlier; `receive` converts anything that differs from the file.
     private func run(_ audioEngine: AVAudioEngine) throws {
         let input = audioEngine.inputNode
-        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
-            self?.receive(buffer)
+        let recording = recordingID
+        try Self.installTap(on: input) { [weak self] buffer, _ in
+            self?.receive(buffer, recording: recording)
         }
         engineGeneration &+= 1
         let generation = engineGeneration
@@ -147,6 +159,18 @@ final class AudioRecorder: @unchecked Sendable {
         configurationObserver = observer
     }
 
+    /// On macOS 27 and later, a format that is no longer valid when the tap
+    /// installs (the input switched after the check) throws a Swift error.
+    /// Earlier systems raise an Objective-C exception instead, so the check
+    /// before each start remains the only guard there.
+    private static func installTap(on input: AVAudioInputNode, block: @escaping AVAudioNodeTapBlock) throws {
+        if #available(macOS 27, *) {
+            try input.__installTap(onBus: 0, bufferSize: 1024, format: nil, error: (), block: block)
+        } else {
+            input.installTap(onBus: 0, bufferSize: 1024, format: nil, block: block)
+        }
+    }
+
     private func stopEngine() {
         if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
         configurationObserver = nil
@@ -158,31 +182,55 @@ final class AudioRecorder: @unchecked Sendable {
 
     /// The engine stops itself when the input's sample rate or channel count
     /// changes. Start a fresh engine on whatever input is now the default and
-    /// keep writing to the same file. With no usable input, keep what was
-    /// recorded and tell the owner.
+    /// keep writing to the same file.
     private func inputChanged(generation: UInt64) {
         guard currentURL != nil, engine != nil, generation == engineGeneration else { return }
         stopEngine()
+        restartInput(recording: recordingID)
+    }
+
+    /// Starts a fresh engine on the current default input. An input with no
+    /// format yet, or one that fails to start, gets another try shortly; a
+    /// headset switching profiles can report no input for a moment. Every
+    /// try counts toward `maxInputRestarts`, and past it the recorder keeps
+    /// what it has.
+    private func restartInput(recording: UInt64) {
+        guard recording == recordingID, currentURL != nil, engine == nil, !inputGivenUp else { return }
         inputRestarts += 1
+        guard inputRestarts <= Self.maxInputRestarts else {
+            inputLost(RecorderError.inputUnstable, recording: recording)
+            return
+        }
         let replacement = AVAudioEngine()
         let format = replacement.inputNode.outputFormat(forBus: 0)
-        Self.log.notice("input changed mid-recording: \(Int(format.sampleRate), privacy: .public) Hz \(format.channelCount, privacy: .public) ch, restart \(self.inputRestarts, privacy: .public)")
+        Self.log.notice("input changed mid-recording: \(Int(format.sampleRate), privacy: .public) Hz \(format.channelCount, privacy: .public) ch, attempt \(self.inputRestarts, privacy: .public)")
         do {
-            guard inputRestarts <= Self.maxInputRestarts else { throw RecorderError.inputUnstable }
             guard Self.isUsableInput(sampleRate: format.sampleRate, channels: format.channelCount) else {
                 throw RecorderError.noInputDevice
             }
             try run(replacement)
         } catch {
-            Self.log.error("input lost mid-recording: \(error.localizedDescription, privacy: .public)")
-            inputLostHandler?()
+            Self.log.notice("input not ready, retrying: \(error.localizedDescription, privacy: .public)")
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.inputRetryDelay) { [weak self] in
+                self?.restartInput(recording: recording)
+            }
         }
     }
 
+    /// Stops following the input for this recording, keeps the file, and
+    /// tells the owner once.
+    private func inputLost(_ error: Error, recording: UInt64) {
+        guard recording == recordingID, currentURL != nil, !inputGivenUp else { return }
+        inputGivenUp = true
+        stopEngine()
+        Self.log.error("input lost mid-recording: \(error.localizedDescription, privacy: .public)")
+        inputLostHandler?()
+    }
+
     /// Runs on the tap thread for every buffer the input delivers.
-    private func receive(_ tapBuffer: AVAudioPCMBuffer) {
+    private func receive(_ tapBuffer: AVAudioPCMBuffer, recording: UInt64) {
         writeLock.lock()
-        guard let file, !recordingFailed else {
+        guard let file, !recordingFailed, !conversionFailed else {
             writeLock.unlock()
             return
         }
@@ -192,11 +240,21 @@ final class AudioRecorder: @unchecked Sendable {
         } else {
             if converter?.inputFormat != tapBuffer.format {
                 converter = InputConverter(from: tapBuffer.format, to: file.processingFormat)
-                if converter == nil {
-                    Self.log.error("no converter from \(tapBuffer.format.description, privacy: .public) to \(file.processingFormat.description, privacy: .public)")
-                }
             }
-            guard let converted = converter?.convert(tapBuffer), converted.frameLength > 0 else {
+            guard let converter else {
+                // Without a converter every later buffer would be dropped
+                // in silence. Stop and finish with what was recorded.
+                conversionFailed = true
+                let from = tapBuffer.format.description
+                let to = file.processingFormat.description
+                writeLock.unlock()
+                Self.log.error("no converter from \(from, privacy: .public) to \(to, privacy: .public)")
+                DispatchQueue.main.async { [weak self] in
+                    self?.inputLost(RecorderError.unsupportedFormat, recording: recording)
+                }
+                return
+            }
+            guard let converted = converter.convert(tapBuffer), converted.frameLength > 0 else {
                 writeLock.unlock()
                 return
             }
@@ -334,12 +392,14 @@ enum RecorderError: LocalizedError {
     case microphonePermission
     case noInputDevice
     case inputUnstable
+    case unsupportedFormat
 
     var errorDescription: String? {
         switch self {
         case .microphonePermission: "Microphone permission is required"
         case .noInputDevice: "no input device found"
         case .inputUnstable: "the input kept changing"
+        case .unsupportedFormat: "the new input's format cannot be converted"
         }
     }
 }
