@@ -1,19 +1,51 @@
 import AVFoundation
 import AVFAudio
 import Foundation
+import os
 
+/// Records one dictation to a WAV file.
+///
+/// Each recording gets a fresh `AVAudioEngine`. An engine reused across
+/// recordings can keep the input format it read before the default
+/// microphone changed (AirPods connecting, the lid closing, a dock), and
+/// `installTap` then raises an Objective-C exception that Swift cannot catch,
+/// so the app quits.
 final class AudioRecorder: @unchecked Sendable {
-    private let engine = AVAudioEngine()
-    private var file: AVAudioFile?
-    private var recordingFailed = false
+    /// Engine restarts allowed within one recording before the recorder stops
+    /// following the input and keeps what it has. A Bluetooth headset can
+    /// change format more than once while it switches profiles.
+    static let maxInputRestarts = 4
+
+    private static let log = Logger(subsystem: "com.undertone.app", category: "recorder")
+
+    // Main-queue state.
+    private var engine: AVAudioEngine?
+    private var configurationObserver: NSObjectProtocol?
+    /// Bumped for every engine started, so a late change notice from an
+    /// engine that is already gone cannot restart the current one.
+    private var engineGeneration: UInt64 = 0
+    private var inputRestarts = 0
     private(set) var currentURL: URL?
-    private var framesWritten: UInt64 = 0
     private var recordingSampleRate: Double = 0
     /// Frames written / sample rate for the most recently stopped recording.
     private(set) var lastRecordedSeconds: Double = 0
     var levelHandler: ((Double) -> Void)?
     var errorHandler: ((Error) -> Void)?
+    /// Called on the main queue when the microphone changed mid-recording
+    /// and no input could take over. Capture has stopped; the audio from
+    /// before the change stays in the file and `stop()` still returns it.
+    var inputLostHandler: (() -> Void)?
     var whisperMode = false
+
+    // Tap-thread state, guarded by `writeLock`.
+    private let writeLock = NSLock()
+    private var file: AVAudioFile?
+    private var recordingFailed = false
+    private var framesWritten: UInt64 = 0
+    /// Set while a replacement microphone delivers a format other than the
+    /// file's.
+    private var converter: InputConverter?
+
     /// Receives mono samples at `LiveDictationFeeder.sampleRate` in frames of
     /// `LiveDictationFeeder.frameSamples`, on the audio thread, while a
     /// recording runs. Set it before `start()`. `stop()` flushes the last
@@ -27,55 +59,163 @@ final class AudioRecorder: @unchecked Sendable {
     private var liveResampler: StreamingResampler?
     private var liveFrames = LiveFrameAssembler(frameSamples: LiveDictationFeeder.frameSamples)
 
+    /// A format a recording can be opened with. With no input device, or
+    /// mid-switch, the input reports 0 Hz or 0 channels, and tapping that
+    /// raises an exception.
+    static func isUsableInput(sampleRate: Double, channels: AVAudioChannelCount) -> Bool {
+        sampleRate > 0 && channels > 0
+    }
+
     func start() throws -> URL {
         guard AVAudioApplication.shared.recordPermission == .granted else { throw RecorderError.microphonePermission }
         let directory = URL(fileURLWithPath: NSString(string: "~/.undertone/audio").expandingTildeInPath, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        let audioEngine = AVAudioEngine()
+        let format = audioEngine.inputNode.outputFormat(forBus: 0)
+        guard Self.isUsableInput(sampleRate: format.sampleRate, channels: format.channelCount) else {
+            throw RecorderError.noInputDevice
+        }
         let url = directory.appendingPathComponent("\(UUID().uuidString).wav")
-        let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        do { file = try AVAudioFile(forWriting: url, settings: format.settings) }
-        catch { currentURL = nil; throw error }
+        let newFile = try AVAudioFile(forWriting: url, settings: format.settings)
+        writeLock.lock()
+        file = newFile
         recordingFailed = false
         framesWritten = 0
-        recordingSampleRate = format.sampleRate
+        converter = nil
+        writeLock.unlock()
+        recordingSampleRate = newFile.processingFormat.sampleRate
+        inputRestarts = 0
         liveLock.lock()
         liveResampler = liveHandler == nil
             ? nil
-            : StreamingResampler(fromRate: format.sampleRate, toRate: LiveDictationFeeder.sampleRate)
+            : StreamingResampler(fromRate: recordingSampleRate, toRate: LiveDictationFeeder.sampleRate)
         liveFrames = LiveFrameAssembler(frameSamples: LiveDictationFeeder.frameSamples)
         liveLock.unlock()
-        input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            if let self, self.whisperMode { Self.applyGain(to: buffer, multiplier: 1.8) }
-            do { try self?.file?.write(from: buffer) }
-            catch {
-                guard let self, !self.recordingFailed else { return }
-                self.recordingFailed = true
-                DispatchQueue.main.async { self.errorHandler?(error) }
-                return
-            }
-            self?.framesWritten += UInt64(buffer.frameLength)
-            self?.forwardLiveSamples(buffer)
-            let rms = Self.rms(buffer)
-            DispatchQueue.main.async { self?.levelHandler?(rms) }
+        do { try run(audioEngine) }
+        catch {
+            writeLock.lock(); file = nil; writeLock.unlock()
+            throw error
         }
-        do { try engine.start() }
-        catch { input.removeTap(onBus: 0); file = nil; currentURL = nil; throw error }
         currentURL = url
         return url
     }
 
     func stop() -> URL? {
         guard currentURL != nil else { return nil }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
+        stopEngine()
+        writeLock.lock()
         file = nil
+        converter = nil
+        let failed = recordingFailed
+        let frames = framesWritten
+        writeLock.unlock()
         flushLiveSamples()
-        lastRecordedSeconds = recordingSampleRate > 0 ? Double(framesWritten) / recordingSampleRate : 0
-        let result = recordingFailed ? nil : currentURL
+        lastRecordedSeconds = recordingSampleRate > 0 ? Double(frames) / recordingSampleRate : 0
+        let result = failed ? nil : currentURL
         currentURL = nil
         return result
+    }
+
+    /// Taps the engine's input and starts it. The tap asks for no format, so
+    /// it takes whatever the hardware delivers and cannot trip the format
+    /// check in `installTap`; `receive` converts anything that differs from
+    /// the file.
+    private func run(_ audioEngine: AVAudioEngine) throws {
+        let input = audioEngine.inputNode
+        input.installTap(onBus: 0, bufferSize: 1024, format: nil) { [weak self] buffer, _ in
+            self?.receive(buffer)
+        }
+        engineGeneration &+= 1
+        let generation = engineGeneration
+        // Posted on an engine thread. Calling back into the engine from
+        // there can deadlock, so the restart runs on the main queue.
+        let observer = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: audioEngine, queue: nil
+        ) { [weak self] _ in
+            DispatchQueue.main.async { self?.inputChanged(generation: generation) }
+        }
+        do {
+            audioEngine.prepare()
+            try audioEngine.start()
+        } catch {
+            NotificationCenter.default.removeObserver(observer)
+            input.removeTap(onBus: 0)
+            throw error
+        }
+        engine = audioEngine
+        configurationObserver = observer
+    }
+
+    private func stopEngine() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+        guard let engine else { return }
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        self.engine = nil
+    }
+
+    /// The engine stops itself when the input's sample rate or channel count
+    /// changes. Start a fresh engine on whatever input is now the default and
+    /// keep writing to the same file. With no usable input, keep what was
+    /// recorded and tell the owner.
+    private func inputChanged(generation: UInt64) {
+        guard currentURL != nil, engine != nil, generation == engineGeneration else { return }
+        stopEngine()
+        inputRestarts += 1
+        let replacement = AVAudioEngine()
+        let format = replacement.inputNode.outputFormat(forBus: 0)
+        Self.log.notice("input changed mid-recording: \(Int(format.sampleRate), privacy: .public) Hz \(format.channelCount, privacy: .public) ch, restart \(self.inputRestarts, privacy: .public)")
+        do {
+            guard inputRestarts <= Self.maxInputRestarts else { throw RecorderError.inputUnstable }
+            guard Self.isUsableInput(sampleRate: format.sampleRate, channels: format.channelCount) else {
+                throw RecorderError.noInputDevice
+            }
+            try run(replacement)
+        } catch {
+            Self.log.error("input lost mid-recording: \(error.localizedDescription, privacy: .public)")
+            inputLostHandler?()
+        }
+    }
+
+    /// Runs on the tap thread for every buffer the input delivers.
+    private func receive(_ tapBuffer: AVAudioPCMBuffer) {
+        writeLock.lock()
+        guard let file, !recordingFailed else {
+            writeLock.unlock()
+            return
+        }
+        let buffer: AVAudioPCMBuffer
+        if tapBuffer.format == file.processingFormat {
+            buffer = tapBuffer
+        } else {
+            if converter?.inputFormat != tapBuffer.format {
+                converter = InputConverter(from: tapBuffer.format, to: file.processingFormat)
+                if converter == nil {
+                    Self.log.error("no converter from \(tapBuffer.format.description, privacy: .public) to \(file.processingFormat.description, privacy: .public)")
+                }
+            }
+            guard let converted = converter?.convert(tapBuffer), converted.frameLength > 0 else {
+                writeLock.unlock()
+                return
+            }
+            buffer = converted
+        }
+        if whisperMode { Self.applyGain(to: buffer, multiplier: 1.8) }
+        do {
+            try file.write(from: buffer)
+            framesWritten += UInt64(buffer.frameLength)
+        } catch {
+            recordingFailed = true
+            writeLock.unlock()
+            DispatchQueue.main.async { [weak self] in self?.errorHandler?(error) }
+            return
+        }
+        writeLock.unlock()
+        forwardLiveSamples(buffer)
+        let rms = Self.rms(buffer)
+        DispatchQueue.main.async { [weak self] in self?.levelHandler?(rms) }
     }
 
     /// Resamples the tap buffer to the engine rate and hands over every full
@@ -149,7 +289,57 @@ final class AudioRecorder: @unchecked Sendable {
     }
 }
 
+/// Converts tap buffers from a replacement microphone into the format the
+/// recording file was opened with, so one file holds the whole dictation.
+/// It keeps its sample-rate state between buffers, so the joins stay
+/// continuous. Extra channels are mixed down, not dropped.
+final class InputConverter {
+    let inputFormat: AVAudioFormat
+    let outputFormat: AVAudioFormat
+    private let converter: AVAudioConverter
+
+    init?(from inputFormat: AVAudioFormat, to outputFormat: AVAudioFormat) {
+        guard let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else { return nil }
+        converter.downmix = true
+        self.inputFormat = inputFormat
+        self.outputFormat = outputFormat
+        self.converter = converter
+    }
+
+    /// The buffer in `outputFormat`. Nil when it is empty or the conversion
+    /// fails. The first call after a rate change can come back short while
+    /// the converter fills its filter; later calls catch up.
+    func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        guard buffer.frameLength > 0, inputFormat.sampleRate > 0 else { return nil }
+        let ratio = outputFormat.sampleRate / inputFormat.sampleRate
+        let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
+        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return nil }
+        var supplied = false
+        var error: NSError?
+        let status = converter.convert(to: output, error: &error) { _, inputStatus in
+            if supplied {
+                inputStatus.pointee = .noDataNow
+                return nil
+            }
+            supplied = true
+            inputStatus.pointee = .haveData
+            return buffer
+        }
+        guard status != .error, error == nil else { return nil }
+        return output
+    }
+}
+
 enum RecorderError: LocalizedError {
     case microphonePermission
-    var errorDescription: String? { "Microphone permission is required" }
+    case noInputDevice
+    case inputUnstable
+
+    var errorDescription: String? {
+        switch self {
+        case .microphonePermission: "Microphone permission is required"
+        case .noInputDevice: "no input device found"
+        case .inputUnstable: "the input kept changing"
+        }
+    }
 }

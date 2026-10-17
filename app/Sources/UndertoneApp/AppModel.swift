@@ -423,6 +423,13 @@ final class AppModel: ObservableObject {
             self.commandMode = false
             self.showTransientError("Recording failed: \(error.localizedDescription)")
         }
+        // The microphone went away mid-recording with nothing to take over.
+        // Finish with the audio captured so far rather than dropping it. A
+        // locked recording ends through the hotkey so its lock clears too.
+        recorder.inputLostHandler = { [weak self] in
+            guard let self, case .listening = self.pillState else { return }
+            if self.hotkey.isLocked { self.hotkey.stopByEscape() } else { self.endDictation() }
+        }
         hotkey.onStart = { [weak self] in self?.beginDictation() }
         hotkey.onStop = { [weak self] in self?.endDictation() }
         hotkey.onLockChange = { [weak self] locked in self?.dictationLocked = locked }
