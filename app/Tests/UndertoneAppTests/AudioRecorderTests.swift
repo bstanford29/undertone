@@ -25,7 +25,7 @@ final class AudioRecorderTests: XCTestCase {
         for index in 0..<20 {
             let buffer = try sine(format: input, frames: 512, startFrame: index * 512)
             inputFrames += 512
-            guard let converted = converter.convert(buffer) else { continue }
+            guard let converted = try converter.convert(buffer) else { continue }
             XCTAssertEqual(converted.format, output)
             outputFrames += Int(converted.frameLength)
             rightPeak = max(rightPeak, peak(converted, channel: 1))
@@ -57,7 +57,7 @@ final class AudioRecorderTests: XCTestCase {
         let output = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let converter = try XCTUnwrap(InputConverter(from: input, to: output))
         let empty = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: input, frameCapacity: 64))
-        XCTAssertNil(converter.convert(empty))
+        XCTAssertNil(try converter.convert(empty))
     }
 
     private func sine(format: AVAudioFormat, frames: Int, startFrame: Int) throws -> AVAudioPCMBuffer {

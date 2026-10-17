@@ -241,20 +241,24 @@ final class AudioRecorder: @unchecked Sendable {
             if converter?.inputFormat != tapBuffer.format {
                 converter = InputConverter(from: tapBuffer.format, to: file.processingFormat)
             }
-            guard let converter else {
-                // Without a converter every later buffer would be dropped
-                // in silence. Stop and finish with what was recorded.
+            let converted: AVAudioPCMBuffer?
+            do {
+                guard let converter else { throw RecorderError.unsupportedFormat }
+                converted = try converter.convert(tapBuffer)
+            } catch {
+                // Without a working converter every later buffer would be
+                // dropped in silence. Stop and finish with what was recorded.
                 conversionFailed = true
                 let from = tapBuffer.format.description
                 let to = file.processingFormat.description
                 writeLock.unlock()
-                Self.log.error("no converter from \(from, privacy: .public) to \(to, privacy: .public)")
+                Self.log.error("cannot convert \(from, privacy: .public) to \(to, privacy: .public): \(error.localizedDescription, privacy: .public)")
                 DispatchQueue.main.async { [weak self] in
                     self?.inputLost(RecorderError.unsupportedFormat, recording: recording)
                 }
                 return
             }
-            guard let converted = converter.convert(tapBuffer), converted.frameLength > 0 else {
+            guard let converted else {
                 writeLock.unlock()
                 return
             }
@@ -364,14 +368,20 @@ final class InputConverter {
         self.converter = converter
     }
 
-    /// The buffer in `outputFormat`. Nil when it is empty or the conversion
-    /// fails. The first call after a rate change can come back short while
-    /// the converter fills its filter; later calls catch up.
-    func convert(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard buffer.frameLength > 0, inputFormat.sampleRate > 0 else { return nil }
+    struct ConversionFailed: Error {}
+
+    /// The buffer in `outputFormat`, or nil when there is nothing to write
+    /// yet: an empty buffer, or the first call after a rate change while the
+    /// converter fills its filter. Throws when the conversion fails, so the
+    /// caller can stop instead of dropping audio in silence.
+    func convert(_ buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer? {
+        guard buffer.frameLength > 0 else { return nil }
+        guard inputFormat.sampleRate > 0 else { throw ConversionFailed() }
         let ratio = outputFormat.sampleRate / inputFormat.sampleRate
         let capacity = AVAudioFrameCount((Double(buffer.frameLength) * ratio).rounded(.up)) + 64
-        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return nil }
+        guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
+            throw ConversionFailed()
+        }
         var supplied = false
         var error: NSError?
         let status = converter.convert(to: output, error: &error) { _, inputStatus in
@@ -383,8 +393,8 @@ final class InputConverter {
             inputStatus.pointee = .haveData
             return buffer
         }
-        guard status != .error, error == nil else { return nil }
-        return output
+        if status == .error || error != nil { throw error ?? ConversionFailed() }
+        return output.frameLength > 0 ? output : nil
     }
 }
 
