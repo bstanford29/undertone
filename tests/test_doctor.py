@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import types
 import unittest
 import urllib.error
 from pathlib import Path
@@ -166,7 +167,9 @@ class RunChecksAndReportTests(unittest.TestCase):
             folder.mkdir()
             (folder / "config.json").write_text("{}")
             with patch.dict("os.environ", {"HF_HUB_CACHE": directory}, clear=False):
-                with _patch_opener(response=payload):
+                with _patch_opener(response=payload), patch.dict(
+                    "sys.modules", {"mlx_whisper": types.ModuleType("mlx_whisper")}
+                ):
                     checks = doctor.run_checks(dict(config.DEFAULTS))
         # Every check but the informational config-file check (no config
         # written in this temp home) should be a clean ok.
@@ -179,10 +182,13 @@ class RunChecksAndReportTests(unittest.TestCase):
     def test_run_checks_missing_everything_fails_required_only(self):
         with tempfile.TemporaryDirectory() as directory:
             with patch.dict("os.environ", {"HF_HUB_CACHE": directory}, clear=False):
-                with _patch_opener(error=urllib.error.URLError("refused")):
+                with _patch_opener(error=urllib.error.URLError("refused")), patch.dict(
+                    "sys.modules", {"mlx_whisper": None}
+                ):
                     checks = doctor.run_checks(dict(config.DEFAULTS))
         required_failures = [c for c in checks if not c.ok and not c.warn]
         names = {c.name for c in required_failures}
+        self.assertIn("mlx-whisper", names)
         self.assertIn("ollama", names)
         self.assertIn("cleanup_model", names)
         self.assertNotIn("cleanup_high_model", names)
