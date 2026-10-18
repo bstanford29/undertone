@@ -162,13 +162,17 @@ final class AudioRecorder: @unchecked Sendable {
     /// On macOS 27 and later, a format that is no longer valid when the tap
     /// installs (the input switched after the check) throws a Swift error.
     /// Earlier systems raise an Objective-C exception instead, so the check
-    /// before each start remains the only guard there.
+    /// before each start remains the only guard there. The throwing call
+    /// exists only in the macOS 27 SDK, which ships with Swift 6.4, so older
+    /// toolchains compile the plain call alone.
     private static func installTap(on input: AVAudioInputNode, block: @escaping AVAudioNodeTapBlock) throws {
+        #if compiler(>=6.4)
         if #available(macOS 27, *) {
             try input.__installTap(onBus: 0, bufferSize: 1024, format: nil, error: (), block: block)
-        } else {
-            input.installTap(onBus: 0, bufferSize: 1024, format: nil, block: block)
+            return
         }
+        #endif
+        input.installTap(onBus: 0, bufferSize: 1024, format: nil, block: block)
     }
 
     private func stopEngine() {
@@ -382,19 +386,34 @@ final class InputConverter {
         guard let output = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else {
             throw ConversionFailed()
         }
-        var supplied = false
+        let input = OneShotInput(buffer)
         var error: NSError?
         let status = converter.convert(to: output, error: &error) { _, inputStatus in
-            if supplied {
-                inputStatus.pointee = .noDataNow
-                return nil
-            }
-            supplied = true
-            inputStatus.pointee = .haveData
-            return buffer
+            input.next(inputStatus)
         }
         if status == .error || error != nil { throw error ?? ConversionFailed() }
         return output.frameLength > 0 ? output : nil
+    }
+}
+
+/// Hands one buffer to `AVAudioConverter`, then reports no data for now so
+/// the converter keeps its state for the next buffer. Some SDKs mark the
+/// input block `@Sendable`, so the one-shot flag lives here rather than in a
+/// captured `var`. The converter calls the block synchronously, on the
+/// caller's thread, within `convert`.
+private final class OneShotInput: @unchecked Sendable {
+    private var buffer: AVAudioPCMBuffer?
+
+    init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+
+    func next(_ status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard let buffer else {
+            status.pointee = .noDataNow
+            return nil
+        }
+        self.buffer = nil
+        status.pointee = .haveData
+        return buffer
     }
 }
 
