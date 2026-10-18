@@ -116,7 +116,7 @@ final class AppModel: ObservableObject {
     @Published var appPage: AppPage = .home
     private var mainWindow: NSWindow?
     @Published var soundsEnabled = true
-    @Published var streamInsert = true
+    @Published var streamInsert = false
     /// Stream audio to the engine while the key is held so transcription and
     /// cleanup happen during the hold and release only types.
     @Published var liveDictation = true
@@ -194,6 +194,7 @@ final class AppModel: ObservableObject {
     var onQuickNoteToggle: (() -> Void)?
     private var watchdogTask: Task<Void, Never>?
     private var workingTask: Task<Void, Never>?
+    private var workToken: UUID?
     private var lockEscapeMonitors: [Any] = []
     private var powerMonitor: PowerStateMonitor?
     private var meetingDetector: MeetingAppDetector?
@@ -221,7 +222,7 @@ final class AppModel: ObservableObject {
     /// why insertion has not happened yet.
     private static let holdKeyReleaseNoteDelay: Duration = .milliseconds(300)
 
-    private final class StreamInsertSession {
+    @MainActor private final class StreamInsertSession {
         let target: TargetSnapshot
         var committed = ""
         var firstKeystroke: UInt64?
@@ -601,6 +602,7 @@ final class AppModel: ObservableObject {
     }
 
     func beginDictation() {
+        guard !insertionInFlight else { return }
         guard !meetings.state.isRecording else {
             showTransientError("Stop meeting capture before dictating")
             return
@@ -611,6 +613,9 @@ final class AppModel: ObservableObject {
         case .listening, .working, .recording:
             return
         }
+        workingTask?.cancel()
+        workToken = nil
+        streamInsertSession = nil
         clearPendingLearningUnlessRecovering()
         cancelNudge()
         editWatcher.cancel()
@@ -704,20 +709,35 @@ final class AppModel: ObservableObject {
             return
         }
         pillState = .working
-        let task = Task { await self.process(audioPath: path, target: target, feeder: feeder) }
-        startWatchdog(for: task)
+        let token = UUID()
+        workToken = token
+        let task = Task { await self.process(audioPath: path, target: target, feeder: feeder, token: token) }
+        startWatchdog(for: task, token: token)
     }
 
-    private func startWatchdog(for task: Task<Void, Never>) {
+    private func startWatchdog(for task: Task<Void, Never>, token: UUID) {
         workingTask = task
         watchdogTask?.cancel()
         watchdogTask = Task { [weak self] in
             do { try await Task.sleep(for: Self.workingTimeout) } catch { return }
-            guard let self, case .working = self.pillState else { return }
+            guard !Task.isCancelled else { return }
+            guard let self, self.workToken == token, case .working = self.pillState else { return }
             task.cancel()
             self.commandMode = false
             self.showTransientError("Cleanup took too long")
         }
+    }
+
+    private func checkActiveWork(_ token: UUID) throws {
+        try Task.checkCancellation()
+        guard workToken == token else { throw CancellationError() }
+    }
+
+    /// The cleanup time budget ends before typing starts. Paced delivery has
+    /// its own focus/cancellation checks and must not be cut off by that timer.
+    private func prepareForInsertion() {
+        watchdogTask?.cancel()
+        watchdogTask = nil
     }
 
     /// Waits for a physically held fn/F13 key to release before insertion.
@@ -745,16 +765,18 @@ final class AppModel: ObservableObject {
         try? await Task.sleep(for: Self.holdKeyReleaseSettleDelay)
     }
 
-    private func consumeStreamChunk(_ chunk: String) async {
-        guard let session = streamInsertSession else { return }
+    private func consumeStreamChunk(_ chunk: String, session: StreamInsertSession) async {
+        guard streamInsertSession === session, !Task.isCancelled else { return }
         if session.failure != nil { return }
         if !session.holdAwaited {
+            prepareForInsertion()
             await awaitHoldKeyRelease()
+            guard streamInsertSession === session, !Task.isCancelled else { return }
             session.holdAwaited = true
             workingNote = "Inserting"
         }
         guard !Task.isCancelled else { return }
-        let outcome = inserter.appendStreamed(chunk, target: session.target)
+        let outcome = await inserter.appendStreamed(chunk, target: session.target)
         switch outcome {
         case .inserted:
             if session.firstKeystroke == nil {
@@ -763,7 +785,7 @@ final class AppModel: ObservableObject {
             session.lastKeystroke = DispatchTime.now().uptimeNanoseconds
             session.committed += chunk
         case .failed:
-            session.failure = outcome
+            session.failure = StreamInsertion.failure(outcome, committed: session.committed)
         }
     }
 
@@ -882,14 +904,18 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func process(audioPath: URL, target: TargetSnapshot, feeder: LiveDictationFeeder? = nil) async {
+    private func process(audioPath: URL, target: TargetSnapshot, feeder: LiveDictationFeeder? = nil, token: UUID) async {
         defer {
-            watchdogTask?.cancel()
-            watchdogTask = nil
-            workingTask = nil
-            streamInsertSession = nil
+            if workToken == token {
+                watchdogTask?.cancel()
+                watchdogTask = nil
+                workingTask = nil
+                streamInsertSession = nil
+                workToken = nil
+            }
         }
         do {
+            try checkActiveWork(token)
             let commandMode = Self.hasCommandSelection(target.selectedText)
             let selectedText = target.selectedText ?? ""
             let context = AXContextReader.context(for: target)
@@ -897,11 +923,12 @@ final class AppModel: ObservableObject {
             let knownTerms: Set<String> = commandMode
                 ? []
                 : Set((try? await engine.request(op: "dictionary.list"))?.terms?.map { $0.lowercased() } ?? [])
+            try checkActiveWork(token)
             if let feeder {
                 if commandMode {
                     await feeder.cancel()
                 } else if case .finished = try await processLive(
-                    feeder: feeder, audioPath: audioPath, target: target, knownTerms: knownTerms
+                    feeder: feeder, audioPath: audioPath, target: target, knownTerms: knownTerms, token: token
                 ) {
                     return
                 }
@@ -910,6 +937,12 @@ final class AppModel: ObservableObject {
                 "audio_path": .string(audioPath.path), "vocab_extra": .array(harvestedTerms.map(JSONValue.string))
             ])
             let raw = transcript.raw ?? ""
+            if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                try? retainRawTranscript(kind: commandMode ? "command" : "dictation",
+                                         rawText: commandMode ? selectedText : raw,
+                                         instructionText: commandMode ? raw : nil, alongside: audioPath)
+            }
+            try checkActiveWork(token)
             guard transcript.noSpeech != true, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 statusText = "No speech detected"
                 self.commandMode = false
@@ -917,18 +950,12 @@ final class AppModel: ObservableObject {
                 showPendingLearningRecoveryIfSafe()
                 return
             }
-            // Retain the raw transcript beside the audio before any history or
-            // cleanup request. This covers a history socket failure without
-            // printing or otherwise exposing transcript content.
             if commandMode {
-                try? retainRawTranscript(kind: "command", rawText: selectedText, instructionText: raw, alongside: audioPath)
                 guard Self.commandInstructionWithinLimit(raw) else {
                     self.commandMode = false
                     showTransientError("Command instruction exceeds the 4 KiB UTF-8 limit")
                     return
                 }
-            } else {
-                try? retainRawTranscript(kind: "dictation", rawText: raw, instructionText: nil, alongside: audioPath)
             }
             let app = target.bundleID ?? "unknown"
             let sttMS = transcript.sttMS ?? 0
@@ -944,11 +971,12 @@ final class AppModel: ObservableObject {
                 "app_bundle_id": .string(app), "guard_fired": .bool(false),
                 "model": .null, "audio_path": .string(audioPath.path)
             ])
+            try checkActiveWork(token)
             guard let rowID = recorded.rowID else {
                 throw EngineClientError.protocolViolation("history.record did not return row_id")
             }
             let result: EngineResponse
-            let usedStreamInsert = !commandMode && streamInsert
+            let usedStreamInsert = !commandMode && StreamInsertion.enabled(requested: streamInsert, bundleID: target.bundleID)
             if commandMode {
                 result = try await engine.request(op: "command", fields: [
                     "selected": .string(selectedText), "instruction": .string(raw)
@@ -961,7 +989,7 @@ final class AppModel: ObservableObject {
                     "context": .object(["before": .string(context.before), "after": .string(context.after), "selected": .string(context.selected)])
                 ]
                 result = try await engine.requestStream(op: "clean.stream", fields: cleanFields) { chunk in
-                    await self.consumeStreamChunk(chunk)
+                    await self.consumeStreamChunk(chunk, session: session)
                 }
             } else {
                 result = try await engine.request(op: "clean", fields: [
@@ -984,7 +1012,9 @@ final class AppModel: ObservableObject {
                 "model": result.model.map(JSONValue.string) ?? .null,
                 "guard_fired": .bool(guardFired), "llm_ms": .number(llmMS)
             ])
+            try checkActiveWork(token)
             if let latest = try? await engine.request(op: "history.last") {
+                try checkActiveWork(token)
                 lastRow = latest.row
             }
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -996,25 +1026,28 @@ final class AppModel: ObservableObject {
             let outcome: InsertOutcome
             let insertMS: Double
             let chunksSent = result.chunksSent ?? 0
+            try checkActiveWork(token)
+            prepareForInsertion()
             if commandMode || !usedStreamInsert || chunksSent == 0 {
                 await awaitHoldKeyRelease()
                 let insertStart = DispatchTime.now().uptimeNanoseconds
-                outcome = inserter.insert(text, target: target, axOnly: commandMode)
+                outcome = await inserter.insert(text, target: target, axOnly: commandMode)
                 insertMS = Double(DispatchTime.now().uptimeNanoseconds &- insertStart) / 1_000_000
             } else {
                 let session = streamInsertSession ?? StreamInsertSession(target: target)
-                let streamed = insertStreamRemainder(text, target: target, session: session)
+                let streamed = await insertStreamRemainder(text, target: target, session: session)
                 outcome = streamed.outcome
                 insertMS = streamed.insertMS
             }
             await completeDictation(
                 rowID: rowID, text: text, rawForUndo: commandMode ? selectedText : raw, outcome: outcome,
                 sttMS: sttMS, llmMS: llmMS, insertMS: insertMS, keptRaw: keptRaw, commandMode: commandMode,
-                target: target, knownTerms: knownTerms
+                target: target, knownTerms: knownTerms, token: token
             )
         } catch is CancellationError {
             // The watchdog already reported the timeout and reset the pill.
         } catch {
+            guard workToken == token, !Task.isCancelled else { return }
             commandMode = false
             showTransientError(error.localizedDescription)
         }
@@ -1032,20 +1065,24 @@ final class AppModel: ObservableObject {
     /// rest. Throws after text was typed; before that, a failure means the
     /// one-shot path runs on the retained audio instead.
     private func processLive(feeder: LiveDictationFeeder, audioPath: URL, target: TargetSnapshot,
-                             knownTerms: Set<String>) async throws -> LiveOutcome {
+                             knownTerms: Set<String>, token: UUID) async throws -> LiveOutcome {
+        try checkActiveWork(token)
         let session = StreamInsertSession(target: target)
         streamInsertSession = session
-        let typeEarly = streamInsert
+        let typeEarly = StreamInsertion.enabled(requested: streamInsert, bundleID: target.bundleID)
         let result: EngineResponse
         do {
             result = try await feeder.finish(audioPath: audioPath) { chunk in
-                if typeEarly { await self.consumeStreamChunk(chunk) }
+                if typeEarly { await self.consumeStreamChunk(chunk, session: session) }
             }
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            try checkActiveWork(token)
             streamInsertSession = nil
-            guard session.committed.isEmpty else { throw error }
+            guard StreamInsertion.canUseOneShotFallback(committed: session.committed, failure: session.failure) else {
+                throw error
+            }
             Self.liveLog.notice("live dictation unavailable, using the one-shot path: \(error.localizedDescription, privacy: .public)")
             return .useOneShot
         }
@@ -1055,6 +1092,7 @@ final class AppModel: ObservableObject {
         Self.liveLog.notice("live dictation: release \(Int(result.liveReleaseMS ?? 0)) ms, units \(result.liveUnits ?? 0), fallback \(result.liveFallback ?? "none", privacy: .public)")
         let raw = result.raw ?? ""
         guard result.noSpeech != true, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            try checkActiveWork(token)
             statusText = "No speech detected"
             self.commandMode = false
             pillState = .idle
@@ -1082,7 +1120,11 @@ final class AppModel: ObservableObject {
         guard let rowID = recorded.rowID else {
             throw EngineClientError.protocolViolation("history.record did not return row_id")
         }
-        if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+        try checkActiveWork(token)
+        if let latest = try? await engine.request(op: "history.last") {
+            try checkActiveWork(token)
+            lastRow = latest.row
+        }
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             self.commandMode = false
             workingNote = nil
@@ -1091,21 +1133,23 @@ final class AppModel: ObservableObject {
         }
         let outcome: InsertOutcome
         let insertMS: Double
+        try checkActiveWork(token)
+        prepareForInsertion()
         if session.committed.isEmpty, session.failure == nil {
             // Nothing was typed during finish (no committed units, or typing
             // as it streams is off), so the whole text goes in at once.
             await awaitHoldKeyRelease()
             let insertStart = DispatchTime.now().uptimeNanoseconds
-            outcome = inserter.insert(text, target: target, axOnly: false)
+            outcome = await inserter.insert(text, target: target, axOnly: false)
             insertMS = Double(DispatchTime.now().uptimeNanoseconds &- insertStart) / 1_000_000
         } else {
-            let streamed = insertStreamRemainder(text, target: target, session: session)
+            let streamed = await insertStreamRemainder(text, target: target, session: session)
             outcome = streamed.outcome
             insertMS = streamed.insertMS
         }
         await completeDictation(
             rowID: rowID, text: text, rawForUndo: raw, outcome: outcome, sttMS: sttMS, llmMS: llmMS,
-            insertMS: insertMS, keptRaw: keptRaw, commandMode: false, target: target, knownTerms: knownTerms
+            insertMS: insertMS, keptRaw: keptRaw, commandMode: false, target: target, knownTerms: knownTerms, token: token
         )
         return .finished
     }
@@ -1113,11 +1157,13 @@ final class AppModel: ObservableObject {
     /// Types whatever the final text adds beyond the streamed prefix and
     /// settles the session's outcome and keystroke timing.
     private func insertStreamRemainder(_ text: String, target: TargetSnapshot,
-                                       session: StreamInsertSession) -> (outcome: InsertOutcome, insertMS: Double) {
+                                       session: StreamInsertSession) async -> (outcome: InsertOutcome, insertMS: Double) {
         if session.failure == nil {
             if let rest = StreamInsertion.remainder(clean: text, committed: session.committed) {
-                if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !Task.isCancelled {
-                    let remOutcome = inserter.appendStreamed(rest, target: target)
+                if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, Task.isCancelled {
+                    session.failure = StreamInsertion.failure(.failed(.cancelled), committed: session.committed)
+                } else if !rest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let remOutcome = await inserter.appendStreamed(rest, target: target)
                     if case .inserted = remOutcome {
                         if session.firstKeystroke == nil {
                             session.firstKeystroke = DispatchTime.now().uptimeNanoseconds
@@ -1125,11 +1171,12 @@ final class AppModel: ObservableObject {
                         session.lastKeystroke = DispatchTime.now().uptimeNanoseconds
                         session.committed += rest
                     } else {
-                        session.failure = remOutcome
+                        session.failure = StreamInsertion.failure(remOutcome, committed: session.committed)
                     }
                 }
             } else {
                 InsertionController.logStreamPrefixMismatch(bundleID: target.bundleID)
+                session.failure = .failed(.prefixMismatch)
             }
         }
         let outcome: InsertOutcome
@@ -1146,7 +1193,7 @@ final class AppModel: ObservableObject {
         } else {
             insertMS = 0
         }
-        workingNote = nil
+        if streamInsertSession === session { workingNote = nil }
         return (outcome, insertMS)
     }
 
@@ -1154,8 +1201,20 @@ final class AppModel: ObservableObject {
     /// row's insertion fields, and the pill's receipt.
     private func completeDictation(rowID: Int, text: String, rawForUndo: String, outcome: InsertOutcome,
                                    sttMS: Double, llmMS: Double, insertMS: Double, keptRaw: Bool,
-                                   commandMode: Bool, target: TargetSnapshot, knownTerms: Set<String>) async {
+                                   commandMode: Bool, target: TargetSnapshot, knownTerms: Set<String>, token: UUID) async {
         let total = sttMS + llmMS + insertMS
+        // Per-row persistence belongs to the completed operation even when
+        // its UI work is stale. Only the current token may change app state.
+        var historyUpdateFailed = false
+        do {
+            _ = try await engine.request(op: "history.update", fields: [
+                "row_id": .number(Double(rowID)),
+                "insert_mode": .string(outcome.historyValue),
+                "insert_ms": .number(insertMS),
+                "total_ms": .number(total),
+            ])
+        } catch { historyUpdateFailed = true }
+        guard workToken == token, !Task.isCancelled else { return }
         if !outcome.isFailure {
             lastInsertTarget = target
             lastInsertedText = text
@@ -1167,26 +1226,17 @@ final class AppModel: ObservableObject {
                 }
             }
         }
-        var historyUpdateFailed = false
-        do {
-            _ = try await engine.request(op: "history.update", fields: [
-                "row_id": .number(Double(rowID)),
-                "insert_mode": .string(outcome.historyValue),
-                "insert_ms": .number(insertMS),
-                "total_ms": .number(total),
-            ])
-        } catch {
-            historyUpdateFailed = true
-        }
+        let latest = try? await engine.request(op: "history.last")
+        guard workToken == token, !Task.isCancelled else { return }
         self.commandMode = false
-        if let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }
+        if let latest { lastRow = latest.row }
         lastGuardRowID = keptRaw ? rowID : nil
         if case .failed(let reason) = outcome {
             statusText = historyUpdateFailed
                 ? "Insertion failed, history update unknown"
                 : Self.failureMessage(reason)
             showTransientError(Self.pillFailureMessage(reason, appName: ToneCatalog.appName(for: target.bundleID)),
-                               retry: !commandMode && reason != .notTrusted)
+                               retry: Self.canRetryInsertion(reason, commandMode: commandMode))
         } else if historyUpdateFailed {
             statusText = "Inserted, history update unknown"
             showTransientState(keptRaw ? .guarded(totalMS: total) : .inserted(totalMS: total))
@@ -1465,7 +1515,7 @@ final class AppModel: ObservableObject {
                     app.activate(options: [])
                 }
                 try? await Task.sleep(for: .milliseconds(120))
-                let outcome = self.inserter.replaceLastInsertion(priorText, with: replacement, target: priorTarget)
+                let outcome = await self.inserter.replaceLastInsertion(priorText, with: replacement, target: priorTarget)
                 if case .inserted = outcome {
                     self.lastInsertedText = replacement
                 } else if case .failed(let reason) = outcome {
@@ -1488,7 +1538,7 @@ final class AppModel: ObservableObject {
                     app.activate(options: [])
                 }
                 try? await Task.sleep(for: .milliseconds(120))
-                let outcome = insertHistoryText(text, target: capturedTarget)
+                let outcome = await insertHistoryText(text, target: capturedTarget)
                 if case .inserted = outcome {
                     lastInsertedText = text
                     lastInsertedRawText = row.rawText
@@ -1517,7 +1567,7 @@ final class AppModel: ObservableObject {
                 app.activate(options: [])
             }
             try? await Task.sleep(for: .milliseconds(120))
-            let outcome = self.insertHistoryText(text, target: selectedTarget)
+            let outcome = await self.insertHistoryText(text, target: selectedTarget)
             if case .inserted = outcome {
                 self.lastInsertedText = text
                 self.lastInsertedRawText = row.rawText
@@ -1528,8 +1578,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func insertHistoryText(_ text: String, target: TargetSnapshot) -> InsertOutcome {
-        let result = inserter.insert(text, target: target)
+    private func insertHistoryText(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
+        let result = await inserter.insert(text, target: target)
         if !result.isFailure { lastInsertTarget = target }
         return result
     }
@@ -1544,6 +1594,11 @@ final class AppModel: ObservableObject {
         case .elementChanged: return "Insertion failed: element changed"
         case .axRejected: return "Insertion failed: Accessibility rejected"
         case .typeFailed: return "Insertion failed: typing failed"
+        case .prefixMismatch: return "Insertion failed: text changed while inserting"
+        case .partialInsertion: return "Partly typed; full text saved in History"
+        case .cancelled: return "Insertion cancelled; text saved"
+        case .deliveryBusy: return "Finish the current insertion first"
+        case .unsupportedCharacters: return "Remote typing cannot carry some characters; text saved"
         }
     }
 
@@ -1551,12 +1606,18 @@ final class AppModel: ObservableObject {
     /// way, so the message says so and Insert again can retry it.
     nonisolated static func pillFailureMessage(_ reason: InsertFailure, appName: String?) -> String {
         switch reason {
+        case .partialInsertion, .prefixMismatch: return "Partly typed. Full text saved."
+        case .unsupportedCharacters: return "Remote typing can't carry it. Text saved."
         case .notTrusted: return failureMessage(reason)
         case .emptyText: return "Nothing to insert"
         default:
             guard let appName, !appName.isEmpty else { return "Couldn't type it in. Text saved." }
             return "Couldn't type into \(appName). Text saved."
         }
+    }
+
+    nonisolated static func canRetryInsertion(_ reason: InsertFailure, commandMode: Bool) -> Bool {
+        !commandMode && ![.notTrusted, .partialInsertion, .prefixMismatch, .cancelled, .unsupportedCharacters].contains(reason)
     }
 
     func copyLast() {
