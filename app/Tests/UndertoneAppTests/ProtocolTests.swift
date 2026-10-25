@@ -557,8 +557,8 @@ final class ProtocolTests: XCTestCase {
             bundleMatches: false, axFirst: true, snapshotHasElement: false, currentElementMatches: false
         ), .appChanged)
 
-        // Same app, not axFirst (the default for every app): type regardless
-        // of element state. This is the Messages/Electron fix: a hollow AX
+        // Same app, not axFirst (the default for every app): type when the
+        // field matches or its identity is unavailable. A hollow AX
         // success cannot be told apart from a real one by read-back, so
         // typed keystrokes are the default route everywhere.
         XCTAssertEqual(InsertionController.dictationInsertRoute(
@@ -569,21 +569,171 @@ final class ProtocolTests: XCTestCase {
         ), .type)
         XCTAssertEqual(InsertionController.dictationInsertRoute(
             bundleMatches: true, axFirst: false, snapshotHasElement: true, currentElementMatches: false
+        ), .elementChanged)
+        XCTAssertEqual(InsertionController.dictationInsertRoute(
+            bundleMatches: true, axFirst: false, snapshotHasElement: true, currentElementMatches: false,
+            currentHasElement: false
         ), .type)
 
         // Same app, axFirst bundle, but no element captured at key-down (or a
-        // different element is focused now): type, never fail.
+        // different element is focused now): reject a known different field.
         XCTAssertEqual(InsertionController.dictationInsertRoute(
             bundleMatches: true, axFirst: true, snapshotHasElement: false, currentElementMatches: false
         ), .type)
         XCTAssertEqual(InsertionController.dictationInsertRoute(
             bundleMatches: true, axFirst: true, snapshotHasElement: true, currentElementMatches: false
-        ), .type)
+        ), .elementChanged)
 
         // Same app, axFirst bundle, same element still focused: attempt AX.
         XCTAssertEqual(InsertionController.dictationInsertRoute(
             bundleMatches: true, axFirst: true, snapshotHasElement: true, currentElementMatches: true
         ), .axAttempt)
+    }
+
+    func testKnownDifferentFieldDoesNotReceiveEarlierDictation() {
+        XCTAssertNotEqual(InsertionController.dictationInsertRoute(
+            bundleMatches: true, axFirst: false, snapshotHasElement: true, currentElementMatches: false
+        ), .type)
+    }
+
+    func testRemoteViewersAlwaysWaitForCompleteText() {
+        XCTAssertFalse(StreamInsertion.enabled(requested: true, bundleID: "com.p5sys.jump.mac.viewer"))
+        XCTAssertFalse(StreamInsertion.enabled(requested: true, bundleID: "com.apple.ScreenSharing"))
+        XCTAssertFalse(StreamInsertion.enabled(requested: false, bundleID: "com.openai.codex"))
+        XCTAssertTrue(StreamInsertion.enabled(requested: true, bundleID: "com.openai.codex"))
+    }
+
+    func testLaterStreamFailureNeverRetriesAnAlreadyCommittedPrefix() {
+        for reason in [InsertFailure.appChanged, .elementChanged, .typeFailed, .deliveryBusy, .cancelled] {
+            let result = StreamInsertion.failure(.failed(reason), committed: "Alpha ")
+            XCTAssertEqual(result, .failed(.partialInsertion))
+            if case .failed(let failure) = result {
+                XCTAssertFalse(AppModel.canRetryInsertion(failure, commandMode: false))
+            }
+            XCTAssertEqual(StreamInsertion.failure(.failed(reason), committed: ""), .failed(reason))
+        }
+        XCTAssertEqual(StreamInsertion.failure(.inserted(.type), committed: "Alpha "), .inserted(.type))
+    }
+
+    @MainActor func testLiveFailureAfterPartiallyTypedFirstChunkNeverReplaysWholeMessage() async {
+        var posted: [Int] = []
+        let delivery = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .zero,
+            isCurrent: { posted.isEmpty }, post: { posted.append($0) }, pause: { _ in })
+        XCTAssertEqual(posted, [1, 2], "a prefix landed before focus changed")
+        XCTAssertEqual(delivery, .failed(.partialInsertion))
+
+        // The first chunk did not finish, so committed is still empty even
+        // though its first stroke reached the field. A later engine failure
+        // must not replay the complete recording through the one-shot path.
+        let failure = StreamInsertion.failure(delivery, committed: "")
+        XCTAssertFalse(StreamInsertion.canUseOneShotFallback(committed: "", failure: failure))
+        XCTAssertFalse(AppModel.canRetryInsertion(.partialInsertion, commandMode: false))
+        XCTAssertFalse(StreamInsertion.canUseOneShotFallback(committed: "Completed chunk. ", failure: nil))
+        XCTAssertTrue(StreamInsertion.canUseOneShotFallback(committed: "", failure: .failed(.appChanged)),
+                      "a pre-post failure still permits recovery from the retained audio")
+    }
+
+    func testRemoteDeliveryRejectsUnsupportedCharactersBeforeTypingAPrefix() {
+        let key = RemoteTypingStep.key(LayoutKeyStroke(keyCode: 0, shift: false, option: false))
+        XCTAssertTrue(RemoteDesktopTyping.canDeliver([key]))
+        XCTAssertFalse(RemoteDesktopTyping.canDeliver([key, .unicode(Array("😀".utf16))]))
+        XCTAssertFalse(RemoteDesktopTyping.canDeliver([]))
+    }
+
+    @MainActor func testPacedDeliveryPreservesEventOrderAndYieldsBetweenEvents() async {
+        var trace: [String] = []
+        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .milliseconds(3),
+            isCurrent: { true }, post: { trace.append("key\($0)") }, pause: { _ in trace.append("yield") })
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(trace, ["key1", "yield", "key2", "yield", "key3", "yield", "key4"])
+    }
+
+    @MainActor func testDeliveryStopsBeforeTypingIntoChangedField() async {
+        var posted: [Int] = []
+        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .zero,
+            isCurrent: { posted.isEmpty }, post: { posted.append($0) }, pause: { _ in })
+        XCTAssertEqual(result, .failed(.partialInsertion))
+        XCTAssertEqual(posted, [1, 2], "finish key-up before stopping; never type the next stroke")
+    }
+
+    @MainActor func testCancelledDeliveryReleasesModifiersAndStopsBeforeNextStroke() async {
+        var posted: [Int] = []
+        var delivery: Task<InsertOutcome, Never>?
+        delivery = Task { @MainActor in
+            await InsertionController().postKeyGroups([[1, 2, 3], [4, 5]], interval: .zero,
+                isCurrent: { true }, post: { posted.append($0) }, pause: { _ in delivery?.cancel() })
+        }
+        let result = await delivery!.value
+        XCTAssertEqual(result, .failed(.partialInsertion))
+        XCTAssertEqual(posted, [1, 2, 3], "complete modifier releases even when cancelled during a stroke")
+    }
+
+    @MainActor func testAlreadyCancelledDeliveryDoesNotPostAnything() async {
+        var posted: [Int] = []
+        let delivery = Task { @MainActor in
+            await Task.yield()
+            return await InsertionController().postKeyGroups([[1, 2]], interval: .zero,
+                isCurrent: { true }, post: { posted.append($0) }, pause: { _ in })
+        }
+        delivery.cancel()
+        let result = await delivery.value
+        XCTAssertEqual(result, .failed(.cancelled))
+        XCTAssertTrue(posted.isEmpty)
+    }
+
+    @MainActor func testCompletedDeliveryIsNotFailedByFocusChangeAfterLastEvent() async {
+        var posted: [Int] = []
+        let result = await InsertionController().postKeyGroups([[1, 2]], interval: .zero,
+            isCurrent: { posted.isEmpty }, post: { posted.append($0) }, pause: { _ in })
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(posted, [1, 2])
+    }
+
+    @MainActor func testTwoDeliveriesCannotInterleave() async {
+        let controller = InsertionController()
+        var posted: [Int] = []
+        var resumeFirst: CheckedContinuation<Void, Never>?
+        let first = Task { @MainActor in
+            await controller.postKeyGroups([[1, 2]], interval: .zero, isCurrent: { true },
+                post: { posted.append($0) }, pause: { _ in
+                    await withCheckedContinuation { resumeFirst = $0 }
+                })
+        }
+        while resumeFirst == nil { await Task.yield() }
+        let second = await controller.postKeyGroups([[3, 4]], interval: .zero, isCurrent: { true },
+            post: { posted.append($0) }, pause: { _ in })
+        XCTAssertEqual(second, .failed(.deliveryBusy))
+        resumeFirst?.resume()
+        let result = await first.value
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(posted, [1, 2])
+    }
+
+    @MainActor func testCancellationKeepsRealModifierReleasePacing() async {
+        var posted: [Int] = []
+        var delivery: Task<InsertOutcome, Never>?
+        let start = ContinuousClock.now
+        delivery = Task { @MainActor in
+            await InsertionController().postKeyGroups([[1, 2, 3], [4, 5]], interval: .milliseconds(10),
+                isCurrent: { true }, post: { event in
+                    posted.append(event)
+                    if event == 1 { delivery?.cancel() }
+                })
+        }
+        let result = await delivery!.value
+        XCTAssertEqual(result, .failed(.partialInsertion))
+        XCTAssertEqual(posted, [1, 2, 3])
+        XCTAssertGreaterThanOrEqual(start.duration(to: .now), .milliseconds(20))
+    }
+
+    func testPartialInsertionNeverOffersARetryThatDuplicatesThePrefix() {
+        for reason in [InsertFailure.partialInsertion, .prefixMismatch, .unsupportedCharacters] {
+            XCTAssertFalse(AppModel.canRetryInsertion(reason, commandMode: false))
+        }
+        XCTAssertTrue(AppModel.canRetryInsertion(.appChanged, commandMode: false))
+        XCTAssertFalse(AppModel.canRetryInsertion(.appChanged, commandMode: true))
+        XCTAssertEqual(AppModel.pillFailureMessage(.partialInsertion, appName: "Jump Desktop"),
+                       "Partly typed. Full text saved.")
     }
 
     func testInsertFailureRawValuesMatchHistoryFormat() {
@@ -606,6 +756,7 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(AppModel.failureMessage(.elementChanged), "Insertion failed: element changed")
         XCTAssertEqual(AppModel.failureMessage(.axRejected), "Insertion failed: Accessibility rejected")
         XCTAssertEqual(AppModel.failureMessage(.typeFailed), "Insertion failed: typing failed")
+        XCTAssertEqual(AppModel.failureMessage(.prefixMismatch), "Insertion failed: text changed while inserting")
     }
 
     func testConfirmedAXInsertionRequiresReadbackMatch() {

@@ -23,9 +23,9 @@ enum RemoteTypingStep: Equatable {
     /// A real key press the viewer can forward to the remote computer.
     case key(LayoutKeyStroke)
     /// No key on the current layout types this character in one press (an
-    /// emoji, or a letter that needs a dead-key sequence). It goes out as a
-    /// Unicode string event, the same as local typing, so the content is
-    /// not dropped here; the viewer may still drop it.
+    /// emoji, or a letter that needs a dead-key sequence). Delivery must
+    /// reject the complete plan before posting any keys; these viewers
+    /// cannot reliably forward attached Unicode text.
     case unicode([UInt16])
 }
 
@@ -96,6 +96,16 @@ enum RemoteDesktopTyping {
         isRemoteDesktopViewer(bundleID: bundleID) ? .layoutKeys : .unicodeChunks
     }
 
+    static func canDeliver(_ steps: [RemoteTypingStep]) -> Bool {
+        // A viewer cannot identify whether Return submits a message or Tab
+        // moves focus. Reject the whole plan before posting even its prefix.
+        !steps.isEmpty && steps.allSatisfy {
+            guard case .key(let stroke) = $0 else { return false }
+            return ![CGKeyCode(kVK_Return), CGKeyCode(kVK_Tab), CGKeyCode(kVK_ANSI_KeypadEnter)]
+                .contains(stroke.keyCode)
+        }
+    }
+
     /// Plans one step per character. Line breaks and tabs use the Return
     /// and Tab keys, which sit at the same key code on every layout.
     static func steps(for text: String, keyMap: [String: LayoutKeyStroke]) -> [RemoteTypingStep] {
@@ -107,6 +117,11 @@ enum RemoteDesktopTyping {
                 return .key(LayoutKeyStroke(keyCode: CGKeyCode(kVK_Tab), shift: false, option: false))
             default:
                 let string = String(character)
+                if character.unicodeScalars.contains(where: {
+                    $0.properties.generalCategory == .control ||
+                    $0.properties.generalCategory == .lineSeparator ||
+                    $0.properties.generalCategory == .paragraphSeparator
+                }) { return .unicode(Array(string.utf16)) }
                 if let stroke = keyMap[string] { return .key(stroke) }
                 return .unicode(Array(string.utf16))
             }
@@ -172,7 +187,7 @@ enum RemoteDesktopTyping {
     }
 
     /// The key map for the keyboard layout in use now. Empty when no layout
-    /// data is available, which sends every character as a Unicode event.
+    /// data is available, which rejects remote delivery before any typing.
     static func currentLayoutKeyMap() -> [String: LayoutKeyStroke] {
         for copySource in [TISCopyCurrentKeyboardLayoutInputSource, TISCopyCurrentASCIICapableKeyboardLayoutInputSource] {
             guard let source = copySource()?.takeRetainedValue(),

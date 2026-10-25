@@ -57,6 +57,21 @@ final class RemoteDesktopTypingTests: XCTestCase {
                        [.key(plainA), returnKey, .key(plainA), returnKey, .key(plainA), tabKey, .key(plainA)])
     }
 
+    func testRemoteControlKeysRejectTheWholePlanBeforeItsPrefix() {
+        for text in ["a\nb", "a\rb", "a\r\nb", "a\tb"] {
+            let plan = RemoteDesktopTyping.steps(for: text, keyMap: ["a": plainA, "b": plainA])
+            XCTAssertFalse(RemoteDesktopTyping.canDeliver(plan), "Return and Tab can send or move focus")
+        }
+        for code in [kVK_Return, kVK_Tab, kVK_ANSI_KeypadEnter] {
+            XCTAssertFalse(RemoteDesktopTyping.canDeliver([
+                .key(plainA), .key(LayoutKeyStroke(keyCode: CGKeyCode(code), shift: true, option: false))
+            ]), "Shift is not a universally safe remote line-break policy")
+        }
+        let maliciousMap = ["\u{2028}": plainA, "\u{0085}": plainA]
+        XCTAssertFalse(RemoteDesktopTyping.canDeliver(RemoteDesktopTyping.steps(for: "\u{2028}", keyMap: maliciousMap)))
+        XCTAssertFalse(RemoteDesktopTyping.canDeliver(RemoteDesktopTyping.steps(for: "\u{0085}", keyMap: maliciousMap)))
+    }
+
     func testCharacterWithoutAKeyStillGoesOutAsUnicode() {
         let steps = RemoteDesktopTyping.steps(for: "a😀é", keyMap: ["a": plainA])
         XCTAssertEqual(steps, [.key(plainA), .unicode(Array("😀".utf16)), .unicode(Array("é".utf16))])

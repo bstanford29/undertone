@@ -11,6 +11,7 @@ import socketserver
 import sqlite3
 import stat
 import threading
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -315,18 +316,40 @@ class Engine:
         return {"seq": seq, **progress}
 
     def _dictation_finish(self, r: dict, emit: Any) -> dict:
-        from .audio import load_wav
-
         session = self._live_session(r)
         final_audio = None
         audio_path = optional_text(r, "audio_path", 4096)
         if audio_path:
+            from .audio import load_wav
+
             path = Path(audio_path).expanduser()
             if not path.is_absolute() or not path.is_file():
                 raise ValueError("An existing absolute local audio path is required")
             final_audio = load_wav(str(path))
         self._live = None
-        result = session.finish(final_audio, emit=emit or (lambda _frame: None))
+        def retain_raw(raw: str) -> None:
+            if not audio_path or not raw:
+                return
+            sidecar = Path(audio_path).expanduser().with_name(Path(audio_path).name + ".json")
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=sidecar.parent,
+                                                 prefix=".undertone-raw-", delete=False) as handle:
+                    temporary = Path(handle.name)
+                    os.chmod(temporary, 0o600)
+                    json.dump({"kind": "dictation", "raw_text": raw}, handle, ensure_ascii=False)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                temporary.replace(sidecar)
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+
+        try:
+            result = session.finish(final_audio, emit=emit or (lambda _frame: None), retain_raw=retain_raw)
+        except Exception:
+            session.cancel()
+            raise
         if result.error is not None:
             raise RuntimeError("live dictation failed")
         self.whisper_status = "warm"

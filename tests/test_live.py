@@ -297,6 +297,45 @@ class WindowedTranscriberTests(unittest.TestCase):
 
 
 class LiveDictationTests(unittest.TestCase):
+    def test_whole_cleanup_retains_raw_before_waiting_for_queued_work(self):
+        saved: list[str] = []
+        raw = "Alpha\nBeta\tGamma."
+
+        def cleaner(text, *_args, **_kwargs):
+            self.assertEqual(saved, [raw])
+            return {"clean_text": text, "model": "test", "guard_fired": False}
+
+        session = LiveDictation(AmplitudeFake(), cleaner, level="medium", dictionary={}, config={})
+        drain = session._drain_quietly
+
+        def checked_drain(timeout):
+            self.assertEqual(saved, [raw], "raw must survive even if queued cleanup stalls")
+            drain(timeout)
+
+        session._drain_quietly = checked_drain
+        result = session._finish_whole(_pause(0.1), "cleanup_boundary", time.perf_counter(), 2,
+                                       raw=raw, retain_raw=saved.append)
+        self.assertEqual(result.raw, raw)
+        self.assertEqual(result.clean, raw)
+
+    def test_live_finish_retains_all_raw_before_emitting_a_prefix(self):
+        fake = AmplitudeFake()
+        calls: list[dict] = []
+        session = self._session(fake, calls)
+        audio = _sentences(15)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        saved: list[str] = []
+        frames: list[dict] = []
+
+        def emit(frame):
+            self.assertTrue(saved, "retain the complete decoded text before any target prefix")
+            frames.append(frame)
+
+        result = session.finish(audio, emit=emit, retain_raw=saved.append)
+        self.assertEqual(saved, [result.raw])
+        self.assertTrue(frames)
+
     def _session(self, fake, calls, **kwargs):
         return LiveDictation(
             fake, _fake_cleaner(calls, **kwargs.pop("cleaner", {})), level="medium", dictionary={"terms": []},
@@ -436,6 +475,23 @@ class LiveDictationTests(unittest.TestCase):
         self.assertTrue(result.no_speech)
         self.assertEqual(result.raw, "")
         self.assertEqual(calls, [])
+
+    def test_word_cap_recleans_the_whole_sentence_before_emitting_a_prefix(self):
+        fake = AmplitudeFake(relabel={i: f"w{i}" for i in range(14)})
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={}, min_unit_words=3, max_unit_words=8)
+        audio = _sentences(15)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertEqual(frames, [], "a mid-sentence edit must not be committed to the target field")
+        self.assertEqual(result.fallback, "cleanup_boundary")
+        self.assertEqual(result.raw.split(), [f"w{i}" for i in range(14)] + ["w14."])
+        self.assertEqual(result.clean, "[" + result.raw.upper() + "]")
+        self.assertEqual(calls[-1]["raw"], result.raw)
+        self.assertEqual(fake.whole_calls, [], "reuse the decoded words; no extra speech recognition")
 
     def test_cancel_closes_workers(self):
         fake = AmplitudeFake()

@@ -17,10 +17,11 @@ enum InsertStrategy: String { case ax, type }
 /// Why an insertion attempt did not land. Written into history as
 /// `"failed:<rawValue>"` so the failure mode is visible after the fact.
 enum InsertFailure: String {
-    case emptyText, notTrusted, appChanged, elementChanged, axRejected, typeFailed
+    case emptyText, notTrusted, appChanged, elementChanged, axRejected, typeFailed, prefixMismatch
+    case partialInsertion, cancelled, deliveryBusy, unsupportedCharacters
 }
 
-enum InsertOutcome {
+enum InsertOutcome: Equatable {
     case inserted(InsertStrategy)
     case failed(InsertFailure)
 
@@ -44,11 +45,28 @@ enum InsertOutcome {
 /// AX trust, the focused element do.
 enum DictationInsertRoute: Equatable {
     case appChanged
+    case elementChanged
     case type
     case axAttempt
 }
 
 enum StreamInsertion {
+    /// A failed live request may replay only when no part of its text landed.
+    static func canUseOneShotFallback(committed: String, failure: InsertOutcome?) -> Bool {
+        committed.isEmpty && failure != .failed(.partialInsertion)
+    }
+
+    /// A later pre-post failure is still partial when an earlier chunk landed.
+    static func failure(_ outcome: InsertOutcome, committed: String) -> InsertOutcome {
+        guard outcome.isFailure, !committed.isEmpty else { return outcome }
+        return .failed(.partialInsertion)
+    }
+
+    /// Viewers cannot confirm that an early prefix reached the remote field.
+    static func enabled(requested: Bool, bundleID: String?) -> Bool {
+        requested && !RemoteDesktopTyping.isRemoteDesktopViewer(bundleID: bundleID)
+    }
+
     /// Remainder of `clean` after `committed`, or nil when `committed` is not a prefix.
     static func remainder(clean: String, committed: String) -> String? {
         guard clean.hasPrefix(committed) else { return nil }
@@ -57,6 +75,7 @@ enum StreamInsertion {
 }
 
 final class InsertionController {
+    @MainActor private var deliveryInFlight = false
     /// Apps confirmed to report a trustworthy AX success for plain dictation,
     /// so it is worth trying `kAXSelectedText` before falling back to typed
     /// keystrokes. Empty by default: Messages and every Electron app tried so
@@ -73,11 +92,8 @@ final class InsertionController {
     /// so the modifier state change has settled. See
     /// `clearStuckFnFlagIfNeeded`.
     private static let fnClearSettleDelay: TimeInterval = 0.03
-    /// Pause between characters typed into a remote-desktop viewer. The
-    /// viewer sends every key event over the network. The gap is a hedge
-    /// against a burst of a few hundred events outrunning it, not a value
-    /// tuned on a real viewer. About 1 s for a 300-character dictation.
-    private static let remoteKeystrokeInterval: TimeInterval = 0.003
+    /// Give the target time to consume each event, including modifier changes.
+    private static let keystrokeInterval: Duration = .milliseconds(3)
 
     private static func allowsTypingFallback(for error: AXError) -> Bool {
         error == .attributeUnsupported || error == .notImplemented
@@ -101,7 +117,7 @@ final class InsertionController {
         return TargetSnapshot(bundleID: bundleID, element: element, value: value(of: element), selectedText: selectedText(element), selectedRange: selectedRange(element))
     }
 
-    /// Plain dictation only requires the frontmost app to match. Selected text
+    /// Plain dictation rejects a known different field in the same app. Selected text
     /// and range can legitimately move between key-down and insertion
     /// (autocomplete, cursor drift) and must not block insertion. Typed
     /// keystrokes are the default route for every app, because AX success
@@ -114,9 +130,11 @@ final class InsertionController {
     /// replacement keeps the strict contract: same element, same selected
     /// text, same selected range; see `isValidTarget(_:axOnly:)`.
     static func dictationInsertRoute(
-        bundleMatches: Bool, axFirst: Bool, snapshotHasElement: Bool, currentElementMatches: Bool
+        bundleMatches: Bool, axFirst: Bool, snapshotHasElement: Bool, currentElementMatches: Bool,
+        currentHasElement: Bool = true
     ) -> DictationInsertRoute {
         guard bundleMatches else { return .appChanged }
+        if snapshotHasElement, currentHasElement, !currentElementMatches { return .elementChanged }
         if axFirst, snapshotHasElement, currentElementMatches { return .axAttempt }
         return .type
     }
@@ -131,7 +149,7 @@ final class InsertionController {
         return readableValue.contains(text)
     }
 
-    func insert(_ text: String, target: TargetSnapshot, axOnly: Bool = false) -> InsertOutcome {
+    @MainActor func insert(_ text: String, target: TargetSnapshot, axOnly: Bool = false) async -> InsertOutcome {
         let bundleDescription = target.bundleID ?? "nil"
         let textLength = text.count
         // One diagnostic line per call, never the text itself: the target
@@ -153,8 +171,14 @@ final class InsertionController {
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return logAndReturn(route: axOnly ? "axOnly" : "dictation", axResult: nil, confirmed: nil, .failed(.emptyText))
         }
+        guard !deliveryInFlight else {
+            return logAndReturn(route: "busy", axResult: nil, confirmed: nil, .failed(.deliveryBusy))
+        }
         guard AXIsProcessTrusted() else {
             return logAndReturn(route: axOnly ? "axOnly" : "dictation", axResult: nil, confirmed: nil, .failed(.notTrusted))
+        }
+        guard !Task.isCancelled else {
+            return logAndReturn(route: "cancelled", axResult: nil, confirmed: nil, .failed(.cancelled))
         }
         let frontmostBundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier
         let bundleMatches = frontmostBundleID == target.bundleID && frontmostBundleID != Bundle.main.bundleIdentifier
@@ -173,9 +197,7 @@ final class InsertionController {
             let outcome: InsertOutcome = axResult == .success ? .inserted(.ax) : .failed(.axRejected)
             return logAndReturn(route: "axOnly", axResult: axResult, confirmed: nil, outcome)
         }
-        // Universal dictation strategy: the app must still be frontmost, but a
-        // changed or unreadable focused element only routes to typed
-        // keystrokes instead of blocking insertion outright.
+        // Unknown AX identity permits typing; a known different field does not.
         let currentElement = focusedElement()
         let currentElementMatches = target.element.map { expected in
             currentElement.map { CFEqual($0, expected) } ?? false
@@ -184,13 +206,15 @@ final class InsertionController {
             bundleMatches: bundleMatches,
             axFirst: Self.shouldAXFirst(bundleID: target.bundleID),
             snapshotHasElement: target.element != nil,
-            currentElementMatches: currentElementMatches
+            currentElementMatches: currentElementMatches, currentHasElement: currentElement != nil
         )
         switch route {
         case .appChanged:
             return logAndReturn(route: "appChanged", axResult: nil, confirmed: nil, .failed(.appChanged))
+        case .elementChanged:
+            return logAndReturn(route: "elementChanged", axResult: nil, confirmed: nil, .failed(.elementChanged))
         case .type:
-            let outcome: InsertOutcome = typeText(text, bundleID: target.bundleID) ? .inserted(.type) : .failed(.typeFailed)
+            let outcome = await typeText(text, target: target)
             return logAndReturn(route: "type", axResult: nil, confirmed: nil, outcome)
         case .axAttempt:
             let axResult = setSelectedText(text, element: target.element)
@@ -200,12 +224,12 @@ final class InsertionController {
                 return logAndReturn(route: "axAttempt", axResult: axResult, confirmed: true, .inserted(.ax))
             }
             // Any AX error, or a hollow success, falls back to typed keystrokes.
-            let outcome: InsertOutcome = typeText(text, bundleID: target.bundleID) ? .inserted(.type) : .failed(.typeFailed)
+            let outcome = await typeText(text, target: target)
             return logAndReturn(route: "axAttempt", axResult: axResult, confirmed: false, outcome)
         }
     }
 
-    func appendStreamed(_ text: String, target: TargetSnapshot) -> InsertOutcome {
+    @MainActor func appendStreamed(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
         let bundleDescription = target.bundleID ?? "nil"
         let textLength = text.count
         func logAndReturn(_ outcome: InsertOutcome) -> InsertOutcome {
@@ -227,7 +251,10 @@ final class InsertionController {
         guard bundleMatches else {
             return logAndReturn(.failed(.appChanged))
         }
-        let outcome: InsertOutcome = typeText(text, bundleID: target.bundleID) ? .inserted(.type) : .failed(.typeFailed)
+        if let expected = target.element, let current = focusedElement(), !CFEqual(expected, current) {
+            return logAndReturn(.failed(.elementChanged))
+        }
+        let outcome = await typeText(text, target: target)
         return logAndReturn(outcome)
     }
 
@@ -247,7 +274,9 @@ final class InsertionController {
         return settable.boolValue
     }
 
-    func replaceLastInsertion(_ inserted: String, with replacement: String, target: TargetSnapshot) -> InsertOutcome {
+    @MainActor func replaceLastInsertion(_ inserted: String, with replacement: String, target: TargetSnapshot) async -> InsertOutcome {
+        guard !Task.isCancelled else { return .failed(.cancelled) }
+        guard !deliveryInFlight else { return .failed(.deliveryBusy) }
         guard AXIsProcessTrusted() else { return .failed(.notTrusted) }
         guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleID else { return .failed(.appChanged) }
         guard isSameElement(target) else { return .failed(.elementChanged) }
@@ -265,7 +294,7 @@ final class InsertionController {
         guard let readBack = selectedRange(element), rangesEqual(readBack, replacementRange) else { return .failed(.elementChanged) }
         let axResult = setSelectedText(replacement, element: element)
         if axResult == .success { return .inserted(.ax) }
-        if Self.allowsTypingFallback(for: axResult), typeText(replacement, bundleID: target.bundleID) { return .inserted(.type) }
+        if Self.allowsTypingFallback(for: axResult) { return await typeText(replacement, target: target) }
         return .failed(.axRejected)
     }
 
@@ -401,18 +430,18 @@ final class InsertionController {
     /// Types `text` with the keystroke method that suits the target app.
     /// Remote-desktop viewers get real key presses; every other app gets
     /// Unicode string events. See `RemoteDesktopTyping`.
-    private func typeText(_ text: String, bundleID: String?) -> Bool {
-        switch RemoteDesktopTyping.keystrokeMethod(bundleID: bundleID) {
-        case .unicodeChunks: return typeUnicode(text)
-        case .layoutKeys: return typeLayoutKeys(text, bundleID: bundleID)
+    @MainActor private func typeText(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
+        switch RemoteDesktopTyping.keystrokeMethod(bundleID: target.bundleID) {
+        case .unicodeChunks: return await typeUnicode(text, target: target)
+        case .layoutKeys: return await typeLayoutKeys(text, target: target)
         }
     }
 
-    private func typeUnicode(_ text: String) -> Bool {
+    @MainActor private func typeUnicode(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
         clearStuckFnFlagIfNeeded()
         let chunks = Self.utf16Chunks(text)
         Self.insertLogger.info("typeUnicode: posting \(chunks.count, privacy: .public) chunks")
-        guard let source = CGEventSource(stateID: .privateState) else { return false }
+        guard let source = CGEventSource(stateID: .privateState) else { return .failed(.typeFailed) }
         var events: [(down: CGEvent, up: CGEvent)] = []
         events.reserveCapacity(chunks.count)
 
@@ -420,36 +449,33 @@ final class InsertionController {
         // Allocate every event before posting any of them. If event creation fails,
         // the caller can report failure without leaving a partially typed string.
         for chunk in chunks {
-            guard let pair = Self.unicodeKeyEvents(chunk, source: source) else { return false }
+            guard let pair = Self.unicodeKeyEvents(chunk, source: source) else { return .failed(.typeFailed) }
             events.append(pair)
         }
 
 
-        for event in events {
-            event.down.post(tap: .cghidEventTap)
-            event.up.post(tap: .cghidEventTap)
-        }
-        return true
+        return await postKeyGroups(events.map { [$0.down, $0.up] }, target: target)
     }
 
     /// Types `text` into a remote-desktop viewer as one real key press per
     /// character, with Shift and Option pressed as their own keys. The
     /// viewer forwards these to the remote computer the same way it
-    /// forwards physical typing. Characters with no key on the current
-    /// layout still go out as Unicode events, so nothing is dropped here.
+    /// forwards physical typing. Reject unsupported characters before typing
+    /// any part of the message; the complete text remains in History.
     /// The log line is at notice level so it persists for later diagnosis.
-    private func typeLayoutKeys(_ text: String, bundleID: String?) -> Bool {
-        clearStuckFnFlagIfNeeded()
+    @MainActor private func typeLayoutKeys(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
         let keyMap = RemoteDesktopTyping.currentLayoutKeyMap()
         let steps = RemoteDesktopTyping.steps(for: text, keyMap: keyMap)
         let unicodeSteps = steps.filter { if case .unicode = $0 { return true } else { return false } }.count
-        let bundleDescription = bundleID ?? "nil"
+        let bundleDescription = target.bundleID ?? "nil"
         Self.insertLogger.notice("""
             typeLayoutKeys: bundle=\(bundleDescription, privacy: .public) \
             keys=\(steps.count - unicodeSteps, privacy: .public) unicode=\(unicodeSteps, privacy: .public) \
             layoutKeys=\(keyMap.count, privacy: .public)
             """)
-        guard let source = CGEventSource(stateID: .privateState) else { return false }
+        guard RemoteDesktopTyping.canDeliver(steps) else { return .failed(.unsupportedCharacters) }
+        clearStuckFnFlagIfNeeded()
+        guard let source = CGEventSource(stateID: .privateState) else { return .failed(.typeFailed) }
         var groups: [[CGEvent]] = []
         groups.reserveCapacity(steps.count)
 
@@ -460,22 +486,61 @@ final class InsertionController {
                 var events: [CGEvent] = []
                 for press in RemoteDesktopTyping.keyPresses(for: stroke) {
                     guard let event = CGEvent(keyboardEventSource: source, virtualKey: press.keyCode,
-                                              keyDown: press.keyDown) else { return false }
+                                              keyDown: press.keyDown) else { return .failed(.typeFailed) }
                     event.flags = press.flags
                     events.append(event)
                 }
                 groups.append(events)
             case .unicode(let units):
-                guard let pair = Self.unicodeKeyEvents(units, source: source) else { return false }
+                guard let pair = Self.unicodeKeyEvents(units, source: source) else { return .failed(.typeFailed) }
                 groups.append([pair.down, pair.up])
             }
         }
 
-        for (index, events) in groups.enumerated() {
-            if index > 0 { Thread.sleep(forTimeInterval: Self.remoteKeystrokeInterval) }
-            for event in events { event.post(tap: .cghidEventTap) }
+        return await postKeyGroups(groups, target: target)
+    }
+
+    @MainActor private func postKeyGroups(_ groups: [[CGEvent]], target: TargetSnapshot) async -> InsertOutcome {
+        await postKeyGroups(groups, interval: Self.keystrokeInterval, isCurrent: {
+            NSWorkspace.shared.frontmostApplication?.bundleIdentifier == target.bundleID
+        }, post: { $0.post(tap: .cghidEventTap) })
+    }
+
+    /// A group is one complete stroke, including its modifier releases. Finish
+    /// that stroke before stopping, so cancellation cannot leave Shift held.
+    @MainActor func postKeyGroups<Event>(
+        _ groups: [[Event]], interval: Duration, isCurrent: () -> Bool,
+        post: (Event) -> Void,
+        pause: (Duration) async -> Void = InsertionController.waitForKeyEvent
+    ) async -> InsertOutcome {
+        guard !deliveryInFlight else { return .failed(.deliveryBusy) }
+        guard !groups.isEmpty else { return .failed(.emptyText) }
+        deliveryInFlight = true
+        defer { deliveryInFlight = false }
+        var posted = false
+        for (groupIndex, group) in groups.enumerated() {
+            guard !Task.isCancelled else { return .failed(posted ? .partialInsertion : .cancelled) }
+            guard isCurrent() else { return .failed(posted ? .partialInsertion : .appChanged) }
+            for (eventIndex, event) in group.enumerated() {
+                post(event)
+                posted = true
+                if groupIndex < groups.count - 1 || eventIndex < group.count - 1 {
+                    await pause(interval)
+                }
+            }
         }
-        return true
+        return .inserted(.type)
+    }
+
+    /// A cancellation must not collapse the key-up/modifier-release gaps.
+    nonisolated static func waitForKeyEvent(_ delay: Duration) async {
+        let parts = delay.components
+        let seconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + seconds) {
+                continuation.resume()
+            }
+        }
     }
 
     /// A key-down and key-up pair on key code 0 that carries `units` as its
