@@ -76,12 +76,14 @@ Everything runs on your Mac. The engine reaches the network twice, both one time
 
 ## Development
 
-Run the tests:
+Run the shared local and CI checks:
 
 ```sh
-swift test --package-path app
-PYTHONPATH=engine .venv/bin/python -m unittest discover -s tests
+scripts/verify.sh
 ```
+
+See [Verification](docs/VERIFICATION.md) for the lightweight test environment,
+GitHub Actions setup, and the app, audio, and model checks that remain local.
 
 The design brief for contributors is [docs/PLAN.md](docs/PLAN.md). The dock's visual spec is [docs/mockups-flowbar-v2.html](docs/mockups-flowbar-v2.html).
 
