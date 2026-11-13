@@ -5,6 +5,7 @@ import os
 import re
 import tempfile
 import threading
+import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,12 @@ DEFAULT_REPLACEMENTS = {
 
 # Rough cap on vocab prompt size. ~180 tokens at ~4 chars/token.
 VOCAB_CHAR_CAP = 180 * 4
+
+# Undertone types each replacement into the focused app. A line break types
+# as Return, and other control characters act as keys, so a replacement must
+# stay one line of plain text.
+MAX_REPLACEMENT_CHARS = 500
+_KEY_LIKE_CATEGORIES = {"Cc", "Zl", "Zp"}
 
 _LOCK = threading.RLock()
 
@@ -133,7 +140,19 @@ def remove_unique_term(term: str) -> str:
         return "removed"
 
 
+def is_plain_line(value: Any, limit: int = MAX_REPLACEMENT_CHARS) -> bool:
+    """True for a string of at most `limit` characters with no line break
+    or control character."""
+    return (
+        isinstance(value, str)
+        and len(value) <= limit
+        and not any(unicodedata.category(char) in _KEY_LIKE_CATEGORIES for char in value)
+    )
+
+
 def set_replacement(phrase: str, replacement: str) -> dict[str, Any]:
+    if not is_plain_line(phrase, limit=1000) or not is_plain_line(replacement):
+        raise ValueError("A replacement must be one line of plain text")
     with _dictionary_lock():
         data = _load_dictionary()
         data["replacements"][phrase] = replacement
@@ -157,6 +176,9 @@ def apply_replacements(text: str, dictionary: dict[str, Any] | None = None) -> s
     dictionary = load_dictionary() if dictionary is None else dictionary
     replacements = dictionary.get("replacements", {})
     for phrase, replacement in replacements.items():
+        # dictionary.yaml can be edited by hand, so check entries again here.
+        if not phrase or not is_plain_line(phrase, limit=1000) or not is_plain_line(replacement):
+            continue
         pattern = re.compile(rf"(?<!\w){re.escape(phrase)}(?!\w)", re.IGNORECASE)
         text = pattern.sub(lambda match: replacement, text)
     return text

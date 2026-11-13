@@ -517,6 +517,32 @@ class StreamCleanupTests(unittest.TestCase):
         self.assertEqual(result["chunks_sent"], 0)
         self.assertEqual(_without_chunks(result), expected)
 
+    def test_expansion_bound_applies_without_context(self):
+        expanded = "added " * 30
+        with patch.object(cleanup, "_call_ollama", return_value=expanded):
+            result = cleanup.clean_result(self.RAW, "medium", {}, cfg(cleanup_fallback_model=""))
+            raw_fallback = cleanup._raw_fallback_text(self.RAW)
+        self.assertTrue(result["guard_fired"])
+        self.assertEqual(result["clean_text"], raw_fallback)
+
+    def test_stream_stops_typing_runaway_output_without_context(self):
+        # 10-word raw: expansion cap is 18 words, threshold is 6.
+        deltas = ["one two three four five six ", "seven eight" + " extra" * 20]
+        result, chunks = self._stream(deltas)
+        self.assertTrue(chunks)
+        committed = "".join(frame["chunk"] for frame in chunks)
+        self.assertEqual(result["clean_text"], committed)
+        self.assertNotIn("extra", committed)
+        self.assertTrue(result["stream_truncated"])
+
+    def test_bounded_expansion_without_context_is_kept(self):
+        # Within max(raw * 1.8, raw + 8) words, cleanup output stands.
+        within = self.RAW + " and more words that still fit"
+        with patch.object(cleanup, "_call_ollama", return_value=within):
+            result = cleanup.clean_result(self.RAW, "medium", {}, cfg())
+        self.assertFalse(result["guard_fired"])
+        self.assertEqual(result["clean_text"], within)
+
     def test_interrupt_after_commits_keeps_committed_text(self):
         def fake_stream(*args, **kwargs):
             yield "one two three four five six seven eight "
