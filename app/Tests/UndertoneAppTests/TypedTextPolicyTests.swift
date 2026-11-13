@@ -42,11 +42,15 @@ final class TypedTextPolicyTests: XCTestCase {
             XCTAssertEqual(TypedTextPolicy.sanitized("a\u{1B}[Ab", bundleID: bundleID), "a[Ab")
             XCTAssertEqual(TypedTextPolicy.sanitized("a\u{7F}b\u{0}c\u{9B}d\u{3}e", bundleID: bundleID), "abcde")
             XCTAssertEqual(TypedTextPolicy.sanitized("\u{1B}\u{3}\u{7F}", bundleID: bundleID), "")
+            // AppKit function keys: Up Arrow, Forward Delete, Mode Switch.
+            XCTAssertEqual(TypedTextPolicy.sanitized("a\u{F700}b\u{F728}c\u{F747}d", bundleID: bundleID), "abcd")
+            // Separator controls part words, as the engine counts them.
+            XCTAssertEqual(TypedTextPolicy.sanitized("a\u{1C}b\u{1F}c", bundleID: bundleID), "a b c")
         }
     }
 
     func testOrdinaryTextIsUnchanged() {
-        let text = "Café, naïve e\u{301}t 日本語 😀 👍🏽 «quoted» 3.5% done."
+        let text = "Café, naïve e\u{301}t 日本語 😀 👍🏽 👨‍👩‍👧 «quoted» \u{F8FF} 3.5% done."
         for bundleID in [messages, mail, nil] {
             XCTAssertEqual(TypedTextPolicy.sanitized(text, bundleID: bundleID), text)
         }

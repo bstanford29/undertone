@@ -35,6 +35,15 @@ VOCAB_CHAR_CAP = 180 * 4
 # stay one line of plain text.
 MAX_REPLACEMENT_CHARS = 500
 _KEY_LIKE_CATEGORIES = {"Cc", "Zl", "Zp"}
+# AppKit's private-use code points for arrows, Delete, Home, End, and F keys.
+_FUNCTION_KEY_FIRST, _FUNCTION_KEY_LAST = 0xF700, 0xF747
+
+
+def _acts_as_key(char: str) -> bool:
+    return (
+        unicodedata.category(char) in _KEY_LIKE_CATEGORIES
+        or _FUNCTION_KEY_FIRST <= ord(char) <= _FUNCTION_KEY_LAST
+    )
 
 _LOCK = threading.RLock()
 
@@ -141,13 +150,9 @@ def remove_unique_term(term: str) -> str:
 
 
 def is_plain_line(value: Any, limit: int = MAX_REPLACEMENT_CHARS) -> bool:
-    """True for a string of at most `limit` characters with no line break
-    or control character."""
-    return (
-        isinstance(value, str)
-        and len(value) <= limit
-        and not any(unicodedata.category(char) in _KEY_LIKE_CATEGORIES for char in value)
-    )
+    """True for a string of at most `limit` characters with no line break,
+    control character, or function-key code point."""
+    return isinstance(value, str) and len(value) <= limit and not any(_acts_as_key(char) for char in value)
 
 
 def set_replacement(phrase: str, replacement: str) -> dict[str, Any]:

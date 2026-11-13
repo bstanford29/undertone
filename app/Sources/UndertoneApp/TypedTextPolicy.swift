@@ -21,6 +21,14 @@ enum TypedTextPolicy {
         "md.obsidian",
     ]
 
+    /// AppKit's private-use code points for arrows, Delete, Home, End, and
+    /// the F keys (`NSUpArrowFunctionKey` through `NSModeSwitchFunctionKey`).
+    /// Typed as text, they can act as those keys.
+    static let functionKeyScalars: ClosedRange<UInt32> = 0xF700...0xF747
+    /// File, group, record, and unit separators. The engine counts them as
+    /// whitespace between words, so they type as a space.
+    static let separatorControls: ClosedRange<UInt32> = 0x1C...0x1F
+
     static func allowsLineBreaks(bundleID: String?) -> Bool {
         guard let bundleID else { return false }
         return lineBreakBundleIDs.contains(bundleID)
@@ -33,8 +41,9 @@ enum TypedTextPolicy {
     ///   breaks and the spaces around it becomes one space, so words stay
     ///   apart. A leading break also becomes one space: a streamed chunk
     ///   carries its separator at the front.
-    /// - Tab becomes a space.
-    /// - Every other control character is dropped.
+    /// - Tab and the separator controls (U+001C to U+001F) become a space.
+    /// - Every other control character, and every AppKit function-key code
+    ///   point, is dropped.
     ///
     /// Words are never removed, so the content rule still holds.
     static func sanitized(_ text: String, bundleID: String?) -> String {
@@ -52,11 +61,13 @@ enum TypedTextPolicy {
                 }
                 continue
             }
-            let isControl = character.unicodeScalars.contains { $0.properties.generalCategory == .control }
+            let scalars = character.unicodeScalars
             let kept: Character
-            if character == "\t" {
+            if character == "\t" || scalars.contains(where: { separatorControls.contains($0.value) }) {
                 kept = " "
-            } else if isControl {
+            } else if scalars.contains(where: {
+                $0.properties.generalCategory == .control || functionKeyScalars.contains($0.value)
+            }) {
                 continue
             } else {
                 kept = character

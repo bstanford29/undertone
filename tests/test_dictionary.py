@@ -22,8 +22,9 @@ class DictionaryTests(unittest.TestCase):
                 dictionary, 'DICTIONARY_PATH', root / 'dictionary.yaml'
             ):
                 dictionary.set_replacement('sig', 'x' * dictionary.MAX_REPLACEMENT_CHARS)
+                dictionary.set_replacement('apple', 'Apple \uf8ff')
                 for unsafe in ('make deploy\n', 'line\rbreak', 'tab\there', 'esc\x1b[A',
-                               'del\x7f', 'next\x85line', 'sep\u2028line', 'para\u2029graph',
+                               'del\x7f', 'next\x85line', 'sep\u2028line', 'para\u2029graph', 'up\uf700arrow', 'f5\uf747',
                                'x' * (dictionary.MAX_REPLACEMENT_CHARS + 1)):
                     with self.assertRaises(ValueError):
                         dictionary.set_replacement('word', unsafe)
@@ -38,6 +39,7 @@ class DictionaryTests(unittest.TestCase):
         replacements = {
             'deploy': 'make deploy\n',
             'menu': 'a\tb',
+            'move': 'up\uf700',
             'note': 'x' * (dictionary.MAX_REPLACEMENT_CHARS + 1),
             'count': 42,
             7: 'seven',
@@ -45,8 +47,8 @@ class DictionaryTests(unittest.TestCase):
             'btw': 'by the way',
         }
         self.assertEqual(
-            dictionary.apply_replacements('deploy the menu note count btw', {'replacements': replacements}),
-            'deploy the menu note count by the way',
+            dictionary.apply_replacements('deploy the menu move note count btw', {'replacements': replacements}),
+            'deploy the menu move note count by the way',
         )
 
     def test_empty_explicit_dictionary_does_not_load_personal_data(self):

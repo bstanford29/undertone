@@ -532,7 +532,18 @@ class StreamCleanupTests(unittest.TestCase):
         self.assertTrue(chunks)
         committed = "".join(frame["chunk"] for frame in chunks)
         self.assertEqual(result["clean_text"], committed)
-        self.assertNotIn("extra", committed)
+        # Words inside the bound are typed; nothing past it is.
+        self.assertEqual(committed, "one two three four five six seven eight" + " extra" * 10)
+        self.assertTrue(result["stream_truncated"])
+
+    def test_stream_truncation_types_held_back_words_inside_the_bound(self):
+        # A 3-word replacement phrase holds back 2 words. One word per delta.
+        words = self.RAW.split() + ["extra"] * 20
+        dictionary = {"replacements": {"alpha beta gamma": "agb"}}
+        result, chunks = self._stream([word + " " for word in words], dictionary=dictionary)
+        committed = "".join(frame["chunk"] for frame in chunks)
+        self.assertEqual(result["clean_text"], committed)
+        self.assertEqual(len(committed.split()), 18)
         self.assertTrue(result["stream_truncated"])
 
     def test_bounded_expansion_without_context_is_kept(self):
