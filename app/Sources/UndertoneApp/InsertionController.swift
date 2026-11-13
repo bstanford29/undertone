@@ -437,9 +437,11 @@ final class InsertionController {
         }
     }
 
+    /// Types `text` as Unicode string events. `TypedTextPolicy` first drops
+    /// control characters and keeps line breaks only where Return is safe.
     @MainActor private func typeUnicode(_ text: String, target: TargetSnapshot) async -> InsertOutcome {
         clearStuckFnFlagIfNeeded()
-        let chunks = Self.utf16Chunks(text)
+        let chunks = Self.utf16Chunks(TypedTextPolicy.sanitized(text, bundleID: target.bundleID))
         Self.insertLogger.info("typeUnicode: posting \(chunks.count, privacy: .public) chunks")
         guard let source = CGEventSource(stateID: .privateState) else { return .failed(.typeFailed) }
         var events: [(down: CGEvent, up: CGEvent)] = []

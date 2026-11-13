@@ -296,9 +296,27 @@ def _raw_fallback_text(raw: str) -> str:
     return _remove_em_dashes(_basic_capitalize(raw))
 
 
-def _context_expanded(value: str, context: dict[str, str] | None, raw_word_count: int) -> bool:
-    # Check the model's own output before explicit dictionary snippets expand it.
-    return context is not None and len(value.split()) > max(raw_word_count * 1.8, raw_word_count + 8)
+def _output_word_cap(raw_word_count: int) -> int:
+    """The most words cleanup may return for a transcript of this length."""
+    return math.floor(max(raw_word_count * 1.8, raw_word_count + 8))
+
+
+def _output_expanded(value: str, raw_word_count: int) -> bool:
+    # Cleanup edits the transcript; it never adds much to it. Bound the
+    # model's own output with or without field context, so text the speaker
+    # never said cannot reach the focused app. Check before explicit
+    # dictionary snippets expand it.
+    return len(value.split()) > _output_word_cap(raw_word_count)
+
+
+def _end_of_word(text: str, count: int) -> int:
+    """Index just past the `count`-th word of `text`, or past its last word."""
+    end = 0
+    for number, match in enumerate(re.finditer(r"\S+", text), start=1):
+        end = match.end()
+        if number == count:
+            break
+    return end
 
 
 def _result_dict(
@@ -367,7 +385,7 @@ def _fallback_after_primary(
         logger.warning("cleanup call to %s failed (%s)", fallback_model, type(exc).__name__)
         fallback = ""
 
-    fallback_expanded = _context_expanded(fallback, context, raw_word_count)
+    fallback_expanded = _output_expanded(fallback, raw_word_count)
     fallback = _postprocess(fallback, dictionary)
     fallback_ok = bool(fallback) and _ratio_ok(fallback, raw_word_count) and not fallback_expanded
     output = fallback if fallback_ok else _raw_fallback_text(raw)
@@ -499,7 +517,7 @@ def clean_result(
         logger.warning("cleanup call to %s failed (%s)", primary_model, type(exc).__name__)
         primary = ""
 
-    primary_expanded = _context_expanded(primary, context, raw_word_count)
+    primary_expanded = _output_expanded(primary, raw_word_count)
     primary = _postprocess(primary, dictionary)
     primary_short = not _ratio_ok(primary, raw_word_count)
     if not primary_short and not primary_expanded:
@@ -559,10 +577,12 @@ def stream_clean_result(
     chunks_sent = 0
 
     def maybe_commit() -> None:
-        nonlocal committed, committed_raw_len, chunks_sent
         if len(accumulated.split()) < threshold:
             return
-        split = _committable_end(accumulated, holdback, finalized=False)
+        commit_to(_committable_end(accumulated, holdback, finalized=False))
+
+    def commit_to(split: int) -> None:
+        nonlocal committed, committed_raw_len, chunks_sent
         if split <= committed_raw_len:
             return
         span = accumulated[committed_raw_len:split]
@@ -604,8 +624,11 @@ def stream_clean_result(
         )
         for delta in stream:
             accumulated += delta
-            if _context_expanded(accumulated, validated, raw_word_count):
+            if _output_expanded(accumulated, raw_word_count):
                 if chunks_sent > 0:
+                    # Text is already typed. Type the words still inside the
+                    # bound, including held-back ones, then stop.
+                    commit_to(_end_of_word(accumulated, _output_word_cap(raw_word_count)))
                     return finalize_committed(truncated=True)
                 return fallback_from_primary(accumulated)
             maybe_commit()
@@ -621,7 +644,7 @@ def stream_clean_result(
         whole = accumulated.strip()
         primary = _postprocess(whole, dictionary)
         primary_short = not _ratio_ok(primary, raw_word_count)
-        primary_expanded = _context_expanded(whole, validated, raw_word_count)
+        primary_expanded = _output_expanded(whole, raw_word_count)
         if not primary_short and not primary_expanded:
             result = _result_dict(primary, primary_model, level, False, False, False)
             result["chunks_sent"] = 0

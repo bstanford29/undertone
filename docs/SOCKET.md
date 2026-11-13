@@ -159,7 +159,10 @@ If startup recovery cannot access either local store, the engine remains
 available and retains the journal for a later retry. `dictionary.remove`
 accepts a term up to 200 characters and cancels a matching pending add before
 removing it. `dictionary.replace` accepts a non-empty phrase up to 1,000
-characters and a replacement up to 10,000 characters. Responses contain the
+characters and a replacement up to 500 characters. Both must be one line of
+plain text: a line break, Tab, or other control character is rejected, because
+Undertone types the replacement into the focused app. Replacements that break
+this rule in a hand-edited `dictionary.yaml` are skipped. Responses contain the
 current `terms` and `replacements` maps.
 
 ## History
