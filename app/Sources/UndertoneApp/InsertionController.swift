@@ -536,7 +536,7 @@ final class InsertionController {
         return .inserted(.type)
     }
 
-    /// Waits the full delay even if the task is cancelled. The stroke loop
+    /// Suspends for `delay` without blocking the main actor. The stroke loop
     /// checks for cancellation right after each wait.
     nonisolated static func waitForKeyEvent(_ delay: Duration) async {
         let parts = delay.components

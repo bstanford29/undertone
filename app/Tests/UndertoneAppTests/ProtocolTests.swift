@@ -685,7 +685,7 @@ final class ProtocolTests: XCTestCase {
         }
         let result = await delivery!.value
         XCTAssertEqual(result, .failed(.partialInsertion))
-        XCTAssertEqual(posted, [1, 2, 3], "complete modifier releases even when cancelled during a stroke")
+        XCTAssertEqual(posted, [1, 2, 3], "cancelled in the pause after a stroke; the next stroke never starts")
     }
 
     @MainActor func testAlreadyCancelledDeliveryDoesNotPostAnything() async {
