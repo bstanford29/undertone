@@ -640,12 +640,32 @@ final class ProtocolTests: XCTestCase {
         XCTAssertFalse(RemoteDesktopTyping.canDeliver([]))
     }
 
-    @MainActor func testPacedDeliveryPreservesEventOrderAndYieldsBetweenEvents() async {
+    @MainActor func testPacedDeliveryPausesBetweenStrokesOnly() async {
         var trace: [String] = []
-        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .milliseconds(3),
-            isCurrent: { true }, post: { trace.append("key\($0)") }, pause: { _ in trace.append("yield") })
+        let result = await InsertionController().postKeyGroups([[1, 2, 3, 4], [5, 6], [7, 8]], interval: .milliseconds(3),
+            isCurrent: { true }, post: { trace.append("key\($0)") },
+            pause: { XCTAssertEqual($0, .milliseconds(3)); trace.append("pause") })
         XCTAssertEqual(result, .inserted(.type))
-        XCTAssertEqual(trace, ["key1", "yield", "key2", "yield", "key3", "yield", "key4"])
+        XCTAssertEqual(trace, ["key1", "key2", "key3", "key4", "pause", "key5", "key6", "pause", "key7", "key8"],
+                       "a stroke and its modifier releases go out together; one pause per stroke, none after the last")
+    }
+
+    @MainActor func testFocusIsCheckedAfterEachPauseBeforeTheNextStroke() async {
+        var trace: [String] = []
+        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .zero,
+            isCurrent: { trace.append("check"); return true }, post: { trace.append("key\($0)") },
+            pause: { _ in trace.append("pause") })
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(trace, ["check", "key1", "key2", "pause", "check", "key3", "key4"])
+    }
+
+    @MainActor func testFocusChangeDuringPauseStopsBeforeNextStroke() async {
+        var posted: [Int] = []
+        var focused = true
+        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4]], interval: .zero,
+            isCurrent: { focused }, post: { posted.append($0) }, pause: { _ in focused = false })
+        XCTAssertEqual(result, .failed(.partialInsertion))
+        XCTAssertEqual(posted, [1, 2])
     }
 
     @MainActor func testDeliveryStopsBeforeTypingIntoChangedField() async {
@@ -665,7 +685,7 @@ final class ProtocolTests: XCTestCase {
         }
         let result = await delivery!.value
         XCTAssertEqual(result, .failed(.partialInsertion))
-        XCTAssertEqual(posted, [1, 2, 3], "complete modifier releases even when cancelled during a stroke")
+        XCTAssertEqual(posted, [1, 2, 3], "cancelled in the pause after a stroke; the next stroke never starts")
     }
 
     @MainActor func testAlreadyCancelledDeliveryDoesNotPostAnything() async {
@@ -694,7 +714,7 @@ final class ProtocolTests: XCTestCase {
         var posted: [Int] = []
         var resumeFirst: CheckedContinuation<Void, Never>?
         let first = Task { @MainActor in
-            await controller.postKeyGroups([[1, 2]], interval: .zero, isCurrent: { true },
+            await controller.postKeyGroups([[1, 2], [5, 6]], interval: .zero, isCurrent: { true },
                 post: { posted.append($0) }, pause: { _ in
                     await withCheckedContinuation { resumeFirst = $0 }
                 })
@@ -706,13 +726,12 @@ final class ProtocolTests: XCTestCase {
         resumeFirst?.resume()
         let result = await first.value
         XCTAssertEqual(result, .inserted(.type))
-        XCTAssertEqual(posted, [1, 2])
+        XCTAssertEqual(posted, [1, 2, 5, 6])
     }
 
-    @MainActor func testCancellationKeepsRealModifierReleasePacing() async {
+    @MainActor func testCancellationDuringStrokeStillReleasesItsModifiers() async {
         var posted: [Int] = []
         var delivery: Task<InsertOutcome, Never>?
-        let start = ContinuousClock.now
         delivery = Task { @MainActor in
             await InsertionController().postKeyGroups([[1, 2, 3], [4, 5]], interval: .milliseconds(10),
                 isCurrent: { true }, post: { event in
@@ -722,8 +741,17 @@ final class ProtocolTests: XCTestCase {
         }
         let result = await delivery!.value
         XCTAssertEqual(result, .failed(.partialInsertion))
-        XCTAssertEqual(posted, [1, 2, 3])
-        XCTAssertGreaterThanOrEqual(start.duration(to: .now), .milliseconds(20))
+        XCTAssertEqual(posted, [1, 2, 3], "the stroke that was under way finishes, then delivery stops")
+    }
+
+    @MainActor func testRealPauseWaitsTheIntervalBetweenStrokes() async {
+        var posted: [Int] = []
+        let start = ContinuousClock.now
+        let result = await InsertionController().postKeyGroups([[1, 2], [3, 4], [5, 6]], interval: .milliseconds(10),
+            isCurrent: { true }, post: { posted.append($0) })
+        XCTAssertEqual(result, .inserted(.type))
+        XCTAssertEqual(posted, [1, 2, 3, 4, 5, 6])
+        XCTAssertGreaterThanOrEqual(start.duration(to: .now), .milliseconds(20), "two gaps for three strokes")
     }
 
     func testPartialInsertionNeverOffersARetryThatDuplicatesThePrefix() {
