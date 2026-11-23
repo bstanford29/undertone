@@ -862,7 +862,25 @@ class LiveDictation:
         # against the complete decoded text, including units still queued.
         corrects = applies_self_corrections(self.level, self.config)
         pieces = unit_raws + ([tail_raw] if tail_raw else [])
-        groups = self._join_groups(pieces, corrects=corrects, cut_check=not interrupted)
+        # A correction that opens a pause-cut chunk inside a unit ("...next
+        # Tuesday. I was going to [pause] no wait, Wednesday") can refer to
+        # the unit before, so that unit joins the one holding the chunk.
+        join_before: set[int] = set()
+        if corrects:
+            with self._condition:
+                first_unit: dict[int, int] = {}
+                for index, unit in enumerate(self._units[: len(unit_raws)]):
+                    for sequence in unit.chunk_sequences:
+                        first_unit.setdefault(sequence, index)
+            for chunk in run.chunks[1:]:
+                if not chunk.text or not starts_correction(chunk.text):
+                    continue
+                index = first_unit.get(chunk.sequence, len(unit_raws) if tail_raw else 0)
+                if index:
+                    join_before.add(index)
+        groups = self._join_groups(
+            pieces, corrects=corrects, cut_check=not interrupted, join_before=join_before,
+        )
 
         if retain_raw is not None:
             retain_raw(_join(pieces))
@@ -892,13 +910,17 @@ class LiveDictation:
             boundary_disagreements=run.boundary_disagreements, windows=run.windows,
         )
 
-    def _join_groups(self, pieces: list[str], *, corrects: bool, cut_check: bool) -> list[tuple[int, int]]:
+    def _join_groups(
+        self, pieces: list[str], *, corrects: bool, cut_check: bool, join_before: set[int] | None = None,
+    ) -> list[tuple[int, int]]:
         """Runs ``(first, last)`` of consecutive pieces to clean in one call.
 
         Pieces are the unit raws plus the tail. A piece joins the next one
-        when the hard cap cut it mid-sentence, or when the next one opens a
-        spoken correction. Every other piece is a run of one.
+        when the hard cap cut it mid-sentence, when the next one opens a
+        spoken correction, or when the next one's index is in
+        ``join_before``. Every other piece is a run of one.
         """
+        join_before = join_before or set()
         groups: list[tuple[int, int]] = []
         start = 0
         for index, raw in enumerate(pieces):
@@ -906,6 +928,7 @@ class LiveDictation:
             joins = following is not None and bool(raw) and (
                 (cut_check and self.level in {"medium", "high"} and not _ends_sentence(raw))
                 or (corrects and starts_correction(following))
+                or index + 1 in join_before
             )
             if not joins:
                 groups.append((start, index))

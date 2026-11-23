@@ -9,7 +9,7 @@ How well Undertone transcribes Brandon's own voice notes, where it goes wrong, w
 | How accurate is it today? | Short dictations: about 96 to 97% of words agree with a consensus of other speech models. Long recordings: **every note over about 7.5 minutes came back empty.** A guard meant to catch looping output treated any long transcript as a loop and threw it away. |
 | Is "Qwen" the right model? | Qwen is the *cleanup* model (`qwen3.5`, 9.7B, via Ollama). Speech-to-text is NVIDIA **Parakeet TDT 0.6B v3**. Keep both. Parakeet tied the best open model (Qwen3-ASR 1.7B) on accuracy and runs 4 times faster. For cleanup, qwen3.5 passed 27 of 34 brain-dump cases with the new prompt, up from 17. The larger qwen3.8 passed 30 and is a setting worth trying on this Mac. |
 | Brain-dump cleanup | New `tidy_speech` setting, on by default, with a switch in Settings → Cleanup. It removes ums, stutters, false starts, and applies spoken corrections ("no wait, I mean X" becomes X). History still keeps the raw transcript. |
-| Speed | Key up to text on his dictations: median 1.28 → **0.73 s**, worst 4.27 → **1.80 s**. On his hands-free brain dumps: median 22.4 → **1.0 s**, worst 30.6 → **2.4 s**. One-shot speech-to-text on long notes is twice as fast. One-shot cleanup of a long note takes as long as before but now actually cleans it. |
+| Speed | Key up to text on his dictations: median 1.28 → **0.72 s**, worst 4.27 → **1.78 s**. On his hands-free brain dumps: median 22.4 → **1.8 s**, worst 30.6 → **5.6 s**. One-shot speech-to-text on long notes is twice as fast. One-shot cleanup of a long note takes as long as before but now actually cleans it. |
 | Timestamps | No milliseconds anywhere a person reads them. Meeting notes show `[00:12]`, not `[12.345]`. The app shows `<1 s` or `2 s`, not `742 ms`. |
 
 ## How a dictation flows today
@@ -192,7 +192,7 @@ Today's release re-cleaned each brain dump in one call, and in one call the mode
 
 **Known limits.** "Clawed" for Claude is a speech-to-text error; cleanup does not fix names it has not been told about (see the plan). A legitimate "that that" can lose one "that". A correction that deletes more than 40% of a short dictation is blocked by the guard, so the raw words are typed.
 
-**Live dictation and corrections.** A unit never ends right before a correction ("No wait", "Sorry,", "Or rather", a bare "No,"). When one still lands at a unit boundary, for example after a pause ("…Tuesday. [pause] Sorry, Wednesday"), release cleans the unit before it and the unit it opens again, together, because the correction needs the words it corrects. Today that case re-cleaned the whole recording. It runs only when the active prompt applies corrections; with tidy off, Medium keeps every word anyway. Long one-shot transcripts are split the same way: a correction stays in the piece with the sentence it corrects.
+**Live dictation and corrections.** A unit never ends right before a correction ("No wait", "Sorry,", "Or rather", a bare "No,"). When one still lands at a unit boundary, for example after a pause ("…Tuesday. [pause] Sorry, Wednesday"), or opens a pause-cut chunk after a false start ("…Tuesday. I was going to [pause] no wait, Wednesday"), release cleans that unit and the one before it again, together, because the correction needs the words it corrects. Today that case re-cleaned the whole recording. It runs only when the active prompt applies corrections; with tidy off, Medium keeps every word anyway. Long one-shot transcripts are split the same way: a correction stays in the piece with the sentence it corrects.
 
 ## Speed: where the time goes
 
@@ -202,11 +202,11 @@ Undertone has two paths. Hold-to-talk and hands-free dictation use the **live pa
 
 | | Today | This PR |
 |---|---:|---:|
-| Median | 1.28 s | **0.73 s** |
-| Slowest 10% | 2.78 s | **1.26 s** |
-| Worst | 4.27 s | **1.80 s** |
-| Dictations under 30 s, median | 0.83 s | 0.62 s |
-| Dictations 30 s and over, median | 1.88 s | 0.89 s |
+| Median | 1.28 s | **0.72 s** |
+| Slowest 10% | 2.78 s | **1.25 s** |
+| Worst | 4.27 s | **1.78 s** |
+| Dictations under 30 s, median | 0.83 s | 0.61 s |
+| Dictations 30 s and over, median | 1.88 s | 0.90 s |
 | Releases that re-cleaned the whole recording | 21 of 50 | **0 of 50** |
 | Word error of what was transcribed | 3.42% | 3.42% |
 
@@ -224,12 +224,12 @@ After the change, release is the speech-to-text of the last words (about 0.1 s) 
 
 | | Today | This PR |
 |---|---:|---:|
-| Median | 22.4 s | **1.0 s** |
-| Worst | 30.6 s | **2.4 s** |
+| Median | 22.4 s | **1.8 s** |
+| Worst | 30.6 s | **5.6 s** |
 | Releases that re-cleaned the whole recording | 7 of 7 | **0 of 7** |
 | Words transcribed | 8,874 | 8,874 |
 
-On a 10-minute note, some boundary almost always carries a correction ("Sorry,", "No,") or a sentence longer than the cap. Today any one of them made release clean the whole note again in one call: 13 to 31 seconds for the six notes of 5 minutes or more (880 to 1,900 words). Now only the units on either side are cleaned again.
+On a 10-minute note, some boundary almost always carries a correction ("Sorry,", "No,") or a sentence longer than the cap. Today any one of them made release clean the whole note again in one call: 13 to 31 seconds for the six notes of 5 minutes or more (880 to 1,900 words). Now only the units on either side are cleaned again, one call per spot, so a note with several such spots waits a few seconds rather than half a minute.
 
 **One-shot path, same audio:**
 
@@ -285,6 +285,8 @@ Recommended next, not done here:
 | 6 | Use Apple SpeechTranscriber, not Whisper, as the fallback when Parakeet is missing | Medium, Swift side | Only matters on Macs without Parakeet |
 
 ## Other problems found, not fixed here
+
+Three limited findings from the independent review are tracked in #24: a long run-on can still be split right after a bare "No,", a tail cleaned beside a regrouped run can see superseded words as reference context, and a failed tail retry turns off cut repair between earlier units. None of them drops words.
 
 | Problem | Effect | Where |
 |---|---|---|
