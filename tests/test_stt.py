@@ -390,12 +390,21 @@ class RepetitionGuardTests(unittest.TestCase):
         self.assertTrue(_looks_repetitive("we should move on to the next item " * 60))
         self.assertTrue(_looks_repetitive("okay great " * 300))
 
-    def test_short_texts_keep_the_distinct_word_test(self):
+    def test_a_list_with_shared_openings_is_not_a_loop(self):
         from undertone.stt import _looks_repetitive
 
-        # Eight words in a loop of three: too few distinct words for real speech.
-        self.assertTrue(_looks_repetitive("go home now go home now go home now go home"))
+        text = ("First I need to send the deck to Priya. Then I need to send the deck to Sam. "
+                "Then I need to send the deck to Jordan. Then I need to send the deck to Alex.")
+        self.assertFalse(_looks_repetitive(text))
         self.assertFalse(_looks_repetitive("send the deck to Priya before the Friday review"))
+
+    def test_a_long_phrase_repeated_back_to_back_is_a_loop(self):
+        from undertone.stt import _looks_repetitive
+
+        phrase = "we should review the vendor list with the controller before the close starts next week okay "
+        self.assertTrue(_looks_repetitive(phrase * 20))
+        # Three times in a row is still speech; four or more over most of the text is a loop.
+        self.assertFalse(_looks_repetitive(phrase * 3))
 
 
 class BackendSwitchTests(unittest.TestCase):
@@ -521,12 +530,13 @@ class BackendSwitchTests(unittest.TestCase):
                 patch.object(stt, "PARAKEET_CHUNK_SECONDS", 2.0), \
                 patch.object(stt, "PARAKEET_OVERLAP_SECONDS", 0.5):
             text, tokens = transcriber._worker.submit(transcriber._run_aligned_on_worker, audio).result()
-        # 2 s windows every 1.5 s cover the 5 s: 0-2, 1.5-3.5, 3-5, 4.5-5.
-        self.assertEqual(windows, [2 * SAMPLE_RATE, 2 * SAMPLE_RATE, 2 * SAMPLE_RATE, SAMPLE_RATE // 2])
-        self.assertEqual(merges, [0.5, 0.5, 0.5])
-        self.assertEqual(text, "w1 w2 w3 w4")
+        # 2 s windows every 1.5 s cover the 5 s: 0-2, 1.5-3.5, 3-5. The window
+        # that reaches the end is the last; no redundant 4.5-5 decode follows.
+        self.assertEqual(windows, [2 * SAMPLE_RATE, 2 * SAMPLE_RATE, 2 * SAMPLE_RATE])
+        self.assertEqual(merges, [0.5, 0.5])
+        self.assertEqual(text, "w1 w2 w3")
         # Each window's token times move to the recording's own clock.
-        self.assertEqual([round(t.start, 2) for t in tokens], [0.2, 1.7, 3.2, 4.7])
+        self.assertEqual([round(t.start, 2) for t in tokens], [0.2, 1.7, 3.2])
 
     def test_short_parakeet_audio_is_one_pass(self):
         from undertone import stt

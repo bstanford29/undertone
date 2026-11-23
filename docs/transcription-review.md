@@ -57,7 +57,7 @@ There is no human-checked transcript of these recordings. So each system is scor
 
 What that means for the numbers:
 
-- They measure **disagreement with three other good models**, not truth. Where all four are wrong together, nobody is charged. Where the consensus is wrong, everybody is charged. Absolute WER is therefore an upper bound; the ranking is the signal.
+- They measure **disagreement with the other model families**, not truth. Where the models share a mistake, the consensus repeats it and nobody is charged, so a number can be too low. Where the consensus is wrong, every system that got it right is charged, so a number can be too high. Read the numbers as agreement, and trust the ranking only where the intervals below separate.
 - Noisy recordings and crosstalk break the consensus, so those rows say more about the audio than the models.
 - Differences come with 95% bootstrap intervals over clips.
 

@@ -113,10 +113,10 @@ LIGHT_FILLERS = re.compile(
     re.IGNORECASE,
 )
 # Pure filler sounds, removed before a tidy model call. Words such as "like"
-# or "I mean" can carry meaning, so only the model decides about them.
+# or "I mean" can carry meaning, so only the model decides about them. Only
+# lower case or a capital first letter counts: "UM" or "UH" is an acronym.
 FILLER_SOUNDS = re.compile(
-    r"(?:,[ \t]*)?(?<![\w'-])(?:um+|uh+|uhm+|erm+|hmm+)(?![\w'-])(?:[ \t]*,)?",
-    re.IGNORECASE,
+    r"(?:,[ \t]*)?(?<![\w'-])(?:[Uu]m+|[Uu]h+|[Uu]hm+|[Ee]rm+|[Hh]mm+)(?![\w'-])(?:[ \t]*,)?",
 )
 
 MIN_LENGTH_RATIO = 0.6
@@ -316,6 +316,51 @@ def _model_pair(level: str, config: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+# Phrases that take back something already said. Cleanup can only apply one
+# when the words it corrects are in the same model call.
+CORRECTION_PHRASES = (
+    "no wait", "wait no", "scratch that", "strike that", "i mean", "i meant",
+    "make that", "delete that", "never mind", "nevermind", "let me rephrase",
+    "rephrase that", "start over", "start again", "undo that", "actually no",
+)
+CORRECTION_LEAD_WORDS = 4
+_CORRECTION_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(phrase) for phrase in CORRECTION_PHRASES) + r")\b"
+)
+# Words that start a correction when they open the next sentence or chunk:
+# "Book it Tuesday. Sorry, Wednesday." A split never goes before one.
+CORRECTION_LEADS = ("no", "sorry", "or rather", "wait", "oops")
+# Words that mark a correction anywhere in a short dictation.
+_SHORT_CORRECTION_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(phrase) for phrase in CORRECTION_PHRASES + ("sorry", "or rather", "wait")) + r")\b"
+)
+
+
+def _correction_words(text: str, limit: int | None = None) -> list[str]:
+    words = text.split() if limit is None else text.split()[:limit]
+    normalized = ("".join(char for char in word.lower() if char.isalnum()) for word in words)
+    return [word for word in normalized if word]
+
+
+def opens_with_correction(text: str, *, lead_words: int = CORRECTION_LEAD_WORDS) -> bool:
+    """True when one of the correction phrases sits in the first few words."""
+    return bool(_CORRECTION_RE.search(" ".join(_correction_words(text, lead_words))))
+
+
+def starts_correction(text: str) -> bool:
+    """True when ``text`` opens a correction: a correction phrase in its first
+    words, or a lead word ("No", "Sorry", "Or rather") as its first words."""
+    if opens_with_correction(text):
+        return True
+    lead = " ".join(_correction_words(text, CORRECTION_LEAD_WORDS))
+    return any(lead == phrase or lead.startswith(phrase + " ") for phrase in CORRECTION_LEADS)
+
+
+def mentions_correction(text: str) -> bool:
+    """True when a correction phrase or "sorry", "or rather", "wait" appears anywhere."""
+    return bool(_SHORT_CORRECTION_RE.search(" ".join(_correction_words(text))))
+
+
 def tidy_enabled(config: dict[str, Any]) -> bool:
     """True when the brain-dump tidy pass is on (the default)."""
     return config.get("tidy_speech", True) is not False
@@ -427,7 +472,14 @@ def _fallback_after_primary(
     keep_alive: Any,
     num_ctx: int,
     primary_short: bool,
+    heard: str | None = None,
 ) -> dict[str, Any]:
+    """Retry once on the fallback model, else return the raw text.
+
+    ``raw`` is what the models saw. ``heard``, when given, is the transcript
+    before any filler stripping; the last-resort raw text types exactly that.
+    """
+    heard = raw if heard is None else heard
     if not fallback_model:
         # No fallback model configured: never cold-load a large model to
         # rescue garbage output. Fall straight through to the light-cleaned
@@ -438,7 +490,7 @@ def _fallback_after_primary(
             raw_word_count,
             len(primary.split()),
         )
-        return _result_dict(_raw_fallback_text(raw), None, level, True, False, primary_short)
+        return _result_dict(_raw_fallback_text(heard), None, level, True, False, primary_short)
 
     logger.warning(
         "cleanup output failed length guard from %s (raw=%d words, output=%d words); retrying with %s",
@@ -463,7 +515,7 @@ def _fallback_after_primary(
     fallback_expanded = _context_expanded(fallback, context, raw_word_count)
     fallback = _postprocess(fallback, dictionary)
     fallback_ok = bool(fallback) and _ratio_ok(fallback, raw_word_count) and not fallback_expanded
-    output = fallback if fallback_ok else _raw_fallback_text(raw)
+    output = fallback if fallback_ok else _raw_fallback_text(heard)
     return _result_dict(
         output,
         fallback_model if fallback_ok else None,
@@ -535,15 +587,18 @@ def _committable_end(text: str, holdback: int, finalized: bool) -> int:
 def split_for_cleanup(raw: str, piece_words: int = PIECE_WORDS) -> list[str]:
     """Split a long transcript into pieces of whole sentences, in order.
 
-    A sentence longer than twice ``piece_words`` (a run-on with no
-    punctuation) is cut at word boundaries so no piece grows without bound.
-    Joining the pieces with single spaces gives back the transcript's words.
+    A sentence that opens a correction ("No wait, Wednesday.") stays in the
+    piece with the sentence it corrects. A run-on longer than ``piece_words``
+    is cut at word boundaries into even parts. Joining the pieces with
+    single spaces gives back the transcript's words.
     """
     sentences: list[str] = []
     for sentence in re.split(r"(?<=[.!?])\s+", raw.strip()):
         words = sentence.split()
-        if len(words) > 2 * piece_words:
-            sentences.extend(" ".join(words[i : i + piece_words]) for i in range(0, len(words), piece_words))
+        if len(words) > piece_words:
+            parts = -(-len(words) // piece_words)
+            size = -(-len(words) // parts)
+            sentences.extend(" ".join(words[i : i + size]) for i in range(0, len(words), size))
         elif words:
             sentences.append(" ".join(words))
     pieces: list[str] = []
@@ -551,7 +606,7 @@ def split_for_cleanup(raw: str, piece_words: int = PIECE_WORDS) -> list[str]:
     count = 0
     for sentence in sentences:
         size = len(sentence.split())
-        if current and count + size > piece_words:
+        if current and count + size > piece_words and not starts_correction(sentence):
             pieces.append(" ".join(current))
             current, count = [], 0
         current.append(sentence)
@@ -614,9 +669,11 @@ def clean_result(
     raw_word_count = len(raw.split())
 
     short_utterance_words = config.get("short_utterance_words", DEFAULT_SHORT_UTTERANCE_WORDS)
-    if level in ("medium", "high") and raw_word_count <= short_utterance_words:
+    spoken_correction = applies_self_corrections(level, config) and mentions_correction(raw)
+    if level in ("medium", "high") and raw_word_count <= short_utterance_words and not spoken_correction:
         # Too short for the LLM to earn its latency; use the deterministic
-        # light path instead and skip the network call entirely.
+        # light path instead and skip the network call entirely. A short
+        # correction ("Tuesday, sorry, Wednesday") still goes to the model.
         candidate = _postprocess(_light_clean(raw), dictionary)
         short = not _ratio_ok(candidate, raw_word_count)
         output = _raw_fallback_text(raw) if short else candidate
@@ -647,9 +704,11 @@ def clean_result(
     ollama_url = config.get("ollama_url", DEFAULT_OLLAMA_URL)
     keep_alive = config.get("ollama_keep_alive", DEFAULT_KEEP_ALIVE)
     num_ctx = config.get("ollama_num_ctx", DEFAULT_NUM_CTX)
+    heard = raw
     if tidy_enabled(config):
         # Filler sounds never carry content, so the model never sees them and
-        # the 60% guard counts only the words that remain.
+        # the 60% guard counts only the words that remain. The raw fallback
+        # still types exactly what was heard.
         raw = strip_filler_sounds(raw) or raw
         raw_word_count = len(raw.split())
 
@@ -671,7 +730,7 @@ def clean_result(
     return _fallback_after_primary(
         raw, raw_word_count, level, dictionary, system_prompt, context,
         primary, primary_model, fallback_model, ollama_url, keep_alive, num_ctx,
-        primary_short,
+        primary_short, heard=heard,
     )
 
 
@@ -702,6 +761,7 @@ def stream_clean_result(
     if not stripped or level in ("none", "light") or (
         level in ("medium", "high") and raw_word_count <= short_utterance_words
     ):
+        # clean_result decides between the light path and one model call.
         result = dict(clean_result(raw, level, dictionary, config, app=app, context=context))
         result["chunks_sent"] = 0
         return result
@@ -714,6 +774,7 @@ def stream_clean_result(
     ollama_url = config.get("ollama_url", DEFAULT_OLLAMA_URL)
     keep_alive = config.get("ollama_keep_alive", DEFAULT_KEEP_ALIVE)
     num_ctx = config.get("ollama_num_ctx", DEFAULT_NUM_CTX)
+    heard = stripped
     if tidy_enabled(config):
         stripped = strip_filler_sounds(stripped) or stripped
         raw_word_count = len(stripped.split())
@@ -758,7 +819,7 @@ def stream_clean_result(
         result = _fallback_after_primary(
             stripped, raw_word_count, level, dictionary, system_prompt, validated,
             primary, primary_model, fallback_model, ollama_url, keep_alive, num_ctx,
-            primary_short,
+            primary_short, heard=heard,
         )
         result["chunks_sent"] = 0
         return result

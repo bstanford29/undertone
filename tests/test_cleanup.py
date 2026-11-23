@@ -453,9 +453,8 @@ class TidySpeechTests(unittest.TestCase):
         with patch.object(cleanup, "_call_ollama", side_effect=fake_call):
             result = cleanup.clean_result(self.RAW, "medium", {}, cfg(tidy_speech=True, cleanup_fallback_model=""))
         self.assertTrue(result["guard_fired"])
-        self.assertNotIn("um", result["clean_text"].lower().split())
-        self.assertIn("Wednesday", result["clean_text"])
-        self.assertIn("Tuesday", result["clean_text"])
+        # The last resort types exactly what was heard, fillers included.
+        self.assertEqual(result["clean_text"], "Um so the the plan is uh we send it Tuesday no wait Wednesday.")
 
     def test_which_levels_apply_self_corrections(self):
         self.assertTrue(cleanup.applies_self_corrections("medium", {"tidy_speech": True}))
@@ -472,6 +471,50 @@ class TidySpeechTests(unittest.TestCase):
         self.assertEqual(strip("Hmm? What?"), "What?")
         self.assertEqual(strip("umbrella, human, uh-oh, Uhura"), "umbrella, human, uh-oh, Uhura")
         self.assertEqual(strip("um uh"), "")
+
+    def test_a_short_correction_goes_to_the_model(self):
+        calls = []
+
+        def fake_call(system, raw, model, url, keep_alive, num_ctx=None):
+            calls.append(raw)
+            return "I need Wednesday please."
+
+        short = "I need Tuesday, sorry, Wednesday please"
+        with patch.object(cleanup, "_call_ollama", side_effect=fake_call):
+            tidy = cleanup.clean_result(short, "medium", {}, cfg(tidy_speech=True))
+            plain = cleanup.clean_result(short, "medium", {}, cfg(tidy_speech=False))
+            ordinary = cleanup.clean_result("Send the deck to Priya", "medium", {}, cfg(tidy_speech=True))
+        self.assertEqual(calls, [short])
+        self.assertEqual(tidy["clean_text"], "I need Wednesday please.")
+        self.assertEqual(plain["model"], "light")
+        self.assertEqual(ordinary["model"], "light")
+
+    def test_correction_detection(self):
+        self.assertTrue(cleanup.starts_correction("Sorry, Wednesday at two."))
+        self.assertTrue(cleanup.starts_correction("No"))
+        self.assertTrue(cleanup.starts_correction("or rather Tuesday"))
+        self.assertTrue(cleanup.starts_correction("um no wait"))
+        self.assertFalse(cleanup.starts_correction("Nothing else today."))
+        self.assertFalse(cleanup.starts_correction("I have no idea."))
+        self.assertTrue(cleanup.mentions_correction("I need Tuesday, sorry, Wednesday please"))
+        self.assertFalse(cleanup.mentions_correction("Send the deck to Priya"))
+
+    def test_acronyms_are_not_filler_sounds(self):
+        self.assertEqual(cleanup.strip_filler_sounds("The UM engineering team met UH staff"),
+                         "The UM engineering team met UH staff")
+        self.assertEqual(cleanup.strip_filler_sounds("Um, the team. Uh, hmm, okay"), "the team. okay")
+
+    def test_raw_fallback_types_exactly_what_was_heard(self):
+        heard = "um the UM engineering team uh wants the budget by Friday please"
+        for stream in (False, True):
+            with patch.object(cleanup, "_call_ollama", side_effect=ConnectionError("down")), \
+                    patch.object(cleanup, "_stream_ollama", side_effect=ConnectionError("down")):
+                if stream:
+                    result = cleanup.stream_clean_result(heard, "medium", {}, cfg(tidy_speech=True, cleanup_fallback_model=""))
+                else:
+                    result = cleanup.clean_result(heard, "medium", {}, cfg(tidy_speech=True, cleanup_fallback_model=""))
+            self.assertTrue(result["guard_fired"])
+            self.assertEqual(result["clean_text"], "Um the UM engineering team uh wants the budget by Friday please.")
 
     def test_stream_path_also_strips_filler_sounds(self):
         captured = {}
@@ -525,6 +568,19 @@ class LongTranscriptTests(unittest.TestCase):
         self.assertIn("ITEM 0 IS READY", result["clean_text"])
         self.assertIn("Item 30 is ready", result["clean_text"])
         self.assertEqual(result["model"], "qwen3.5:latest")
+
+    def test_a_correction_stays_in_the_piece_it_corrects(self):
+        lead = " ".join(f"Item {index} is ready for the close review today." for index in range(17))
+        text = lead + " Send it Tuesday. No wait, Wednesday. " + " ".join(f"Item {i} is ready." for i in range(30))
+        pieces = cleanup.split_for_cleanup(text)
+        self.assertEqual(" ".join(pieces), " ".join(text.split()))
+        holder = next(piece for piece in pieces if "Tuesday." in piece)
+        self.assertIn("Send it Tuesday. No wait, Wednesday.", holder)
+
+    def test_a_long_run_on_is_split_into_even_parts(self):
+        text = " ".join(["word"] * 280)
+        pieces = cleanup.split_for_cleanup(text)
+        self.assertEqual([len(piece.split()) for piece in pieces], [140, 140])
 
     def test_short_transcript_is_one_call(self):
         calls = []
