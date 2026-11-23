@@ -693,6 +693,36 @@ class LiveDictationTests(unittest.TestCase):
         self.assertTrue(any("w4. w5" in call["raw"] and "no wait" in call["raw"] for call in calls))
         self.assertEqual(result.raw.split()[-1], "w14.")
 
+    def test_a_bare_no_inside_a_retried_tail_joins_the_unit_before(self):
+        # "...w4. w5 w6 w7 w8, No, Wednesday w11. ..." with the tail window
+        # failed: the bare "No," sits mid-clause in the retried text.
+        parts: list[np.ndarray] = []
+        for index in range(15):
+            parts.append(_word(index))
+            parts.append(_pause(0.5 if index == 8 else 0.1))
+        audio = np.concatenate(parts)
+        relabel = {index: f"w{index}" for index in range(15)}
+        relabel.update({4: "w4.", 8: "w8,", 9: "No,", 10: "Wednesday", 11: "w11.", 14: "w14."})
+        fake = AmplitudeFake(relabel=relabel, fail_windows=(2,))
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={"tidy_speech": True}, min_unit_words=3, max_unit_words=40)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertEqual(result.regrouped, 1)
+        self.assertEqual(frames, [], "the corrected sentence must not be typed first")
+        self.assertTrue(any("w4. w5" in call["raw"] and "No, Wednesday" in call["raw"] for call in calls))
+
+    def test_a_correction_lead_counts_at_any_clause_start(self):
+        from undertone.live import _correction_anywhere
+
+        self.assertTrue(_correction_anywhere("we set it for w8, No, Wednesday at two."))
+        self.assertTrue(_correction_anywhere("we set it for Tuesday. Sorry, Wednesday."))
+        self.assertTrue(_correction_anywhere("I was going to no wait Wednesday"))
+        self.assertFalse(_correction_anywhere("No one has replied yet, and we can file it on Friday."))
+
     def test_an_ordinary_no_at_a_unit_boundary_is_not_a_correction(self):
         audio = _sentences(15)
         fake = AmplitudeFake(relabel={5: "No", 6: "one"})

@@ -123,6 +123,19 @@ def adaptive_rms_threshold(
     return float(min(VAD_MAX_RMS, max(base, floor * VAD_FLOOR_GAIN)))
 
 
+def _correction_anywhere(text: str) -> bool:
+    """A correction phrase anywhere in ``text``, or a correction lead ("No,",
+    "Sorry,") at the start of any clause."""
+    if mentions_correction(text):
+        return True
+    words = text.split()
+    return any(
+        starts_correction(" ".join(words[index : index + CORRECTION_LEAD_WORDS]))
+        for index in range(len(words))
+        if index == 0 or words[index - 1][-1:] in ",.;:!?"
+    )
+
+
 def plan_word_units(
     words: list[str],
     *,
@@ -879,7 +892,7 @@ class LiveDictation:
                 index = first_unit.get(chunk.sequence, len(unit_raws) if tail_raw else 0)
                 if index:
                     join_before.add(index)
-            if run.error and unit_raws and tail_raw and mentions_correction(tail_raw):
+            if run.error and unit_raws and tail_raw and _correction_anywhere(tail_raw):
                 # A failed window's words came back as one retried tail, so
                 # where its chunks began is unknown. A correction anywhere in
                 # it may refer to the unit before.
