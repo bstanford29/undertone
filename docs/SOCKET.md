@@ -9,7 +9,7 @@ This document describes the operations implemented by `engine/undertone/server.p
 - Request and response frames are capped at 4 MiB.
 - The server reads a frame for at most 30 seconds and rejects an unterminated frame.
 - At most 32 client handlers run at once. The listen queue is also 32. An additional client receives `busy` and is closed.
-- Non-status engine operations share one lock, so model work is serialized. `status` stays responsive while Whisper or Ollama is warming or processing.
+- Non-status engine operations share one lock, so model work is serialized. `status` stays responsive while Whisper or Ollama is warming or processing. The `update.*` operations take no lock, so a GitHub check never waits for dictation or delays it.
 - The socket is created with mode `0600`. An active existing socket is never replaced. A stale socket may be removed only after a refused connection; a non-socket path and symlink are rejected.
 - Error responses contain stable generic messages. Transcript text and model exception payloads are not logged or returned as errors.
 - Whisper uses the local cached model path. Ollama is accepted only at an HTTP `localhost`, `127.0.0.1`, or `::1` URL.
@@ -272,6 +272,29 @@ already removed), `preserved` (another active learning action owns the term),
 `superseded` (a later explicit dictionary action owns it), and `undone` (the
 action was already consumed). These operations change only the vocabulary
 term owned by the action; edited destination text is unaffected.
+
+## Updates
+
+The engine updates its own git checkout to GitHub's `main`. The work runs in a separate process (`undertone update --apply`), so it outlives the engine restart at its end. See `engine/undertone/updater.py`.
+
+```json
+{"id":30,"op":"update.check"}
+{"id":31,"op":"update.apply","app_path":"/Users/example/Applications/Undertone.app"}
+{"id":32,"op":"update.status"}
+{"id":33,"op":"update.undo"}
+```
+
+`update.check` runs one `git fetch` of `main` and changes nothing else. It returns `update` and the last run as `update_run`:
+
+```json
+{"id":30,"update":{"state":"ready","message":"2 new changes ready to install.","behind":2,"ahead":0,"head":"<sha>","remote":"<sha>","changes":[{"commit":"abc1234","time":1763900000,"title":"Synthetic change"}],"app_changed":true,"engine_changed":false,"deps_changed":false,"app_commit":"<sha>","checked_at":1763900100},"update_run":{"state":"idle","can_undo":false,"log_path":"/Users/example/.undertone/update.log"}}
+```
+
+`state` is `current`, `ready`, `blocked` (with a reason in `message`: a branch other than `main`, uncommitted changes, local commits, or an app change on a Mac without Xcode or the signing identity), or `error` (GitHub could not be reached).
+
+`update.apply` and `update.undo` start a run and return at once with `update_run`. `app_path` is optional and must be `~/Applications/Undertone.app` or `/Applications/Undertone.app`. Both refuse with `state: blocked` while a live dictation runs or another run holds the lock. `update.status` returns `update_run`: `state` is `idle`, `running` (with a step `message`), `done`, or `failed`. When `done` has `relaunch: true`, the app was replaced and the caller reopens `app_path`. A run whose process is gone reads as `failed`.
+
+An apply fast-forwards the checkout, installs Python packages only when `pyproject.toml` changed, builds and signs the app only when `app/` changed, keeps the replaced app as `Undertone (previous).app`, and restarts the `com.undertone.engine` agent when engine code changed. If a step fails, the checkout moves back and the installed app is not touched. Every run is logged to `~/.undertone/update.log`.
 
 ## Error responses
 

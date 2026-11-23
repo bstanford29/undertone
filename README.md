@@ -56,6 +56,18 @@ The build script requires a real signing identity; it will not produce an ad hoc
 
 Copy the built app to `~/Applications`, then launch it and grant Microphone, Accessibility, Input Monitoring, and System Audio Recording Only when asked. macOS also binds the fn (globe) key to an input-source action by default; set it to **Do Nothing** in System Settings, or use the button Undertone offers on first launch to do it for you.
 
+## Update
+
+Settings → Updates checks GitHub for newer commits on `main` and installs them with one click. The same steps run from Terminal:
+
+```sh
+.venv/bin/undertone update            # check only
+.venv/bin/undertone update --apply    # install the newest main
+.venv/bin/undertone update --undo     # go back to the version before the last update
+```
+
+An update needs a clean checkout on `main`. It pulls, installs Python packages if they changed, rebuilds the app with the same signing identity if the app changed (this needs Xcode), keeps the old app as `Undertone (previous).app`, and restarts the engine. If any step fails, nothing changes. The first rebuild asks for keychain access to your signing key; choose Always Allow.
+
 ## Use
 
 Hold fn to dictate; release to insert the cleaned text. Double-tap fn to lock into hands-free dictation; press Escape or tap fn once more to stop and transcribe. A small dock sits at the screen edge and shows Dictate, New note, and Quick note controls. Option+M starts or stops meeting notes. Option+S opens a quick note panel for a note that is not tied to a meeting. The menu bar icon opens History, Dictionary, and Meetings.
@@ -72,7 +84,7 @@ Meeting capture records two channels: your microphone and the system's audio out
 
 ## Privacy
 
-Everything runs on your Mac. The engine reaches the network twice, both one time and both to fetch models: Ollama pulls its models from ollama.com when you run `ollama pull`, and the first transcription downloads the Whisper model from Hugging Face. After that the only network call is to Ollama on localhost. History (transcripts and, optionally, audio) lives in `~/.undertone`. Nothing is uploaded anywhere; exporting a note to Obsidian is an explicit, user-initiated action.
+Everything runs on your Mac. The engine reaches the network twice, both one time and both to fetch models: Ollama pulls its models from ollama.com when you run `ollama pull`, and the first transcription downloads the Whisper model from Hugging Face. After that the only network call is to Ollama on localhost, plus a `git fetch` from GitHub when you check for updates. The check sends no audio, transcripts, or settings, and runs only when you ask. History (transcripts and, optionally, audio) lives in `~/.undertone`. Nothing is uploaded anywhere; exporting a note to Obsidian is an explicit, user-initiated action.
 
 ## Development
 

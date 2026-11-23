@@ -127,6 +127,9 @@ Core Audio audio-only capture on macOS 14.4+ (ScreenCaptureKit fallback on older
 ### Phase 7. Daily use
 Two weeks of daily use. Compare history tables. Proof: daily use, no paste fallbacks, no guard fires.
 
+### Phase 10. Update button
+Settings → Updates and "Check for Updates…" in the menu bar. The engine fetches GitHub's `main`, lists the new commits, and on Update runs `undertone update --apply` in its own process: fast-forward, install packages if `pyproject.toml` changed, build and sign the app if `app/` changed (same identity, so permissions stay), keep the old app for one-step undo, restart the engine, and reopen the app. A dirty checkout, another branch, or local commits block it. A failed step moves the checkout back. Checks run only when asked. Proof: on the Mac that runs Undertone, update from an older commit, confirm permissions and dictation still work with `pbpaste` unchanged, force a failed build, and undo.
+
 ## Repo layout
 
 ```
