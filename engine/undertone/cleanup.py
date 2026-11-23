@@ -745,11 +745,10 @@ def clean_result(
     num_ctx = config.get("ollama_num_ctx", DEFAULT_NUM_CTX)
     heard = raw
     if tidy_enabled(config):
-        # Filler sounds never carry content, so the model never sees them and
-        # the 60% guard counts only the words that remain. The raw fallback
-        # still types exactly what was heard.
+        # Filler sounds never carry content, so the model never sees them.
+        # The 60% guard still counts every word heard, fillers included, and
+        # the raw fallback types exactly what was heard.
         raw = strip_filler_sounds(raw) or raw
-        raw_word_count = len(raw.split())
 
     try:
         if context is None:
@@ -815,8 +814,8 @@ def stream_clean_result(
     num_ctx = config.get("ollama_num_ctx", DEFAULT_NUM_CTX)
     heard = stripped
     if tidy_enabled(config):
+        # The model sees no filler sounds; the guard counts every word heard.
         stripped = strip_filler_sounds(stripped) or stripped
-        raw_word_count = len(stripped.split())
     threshold = math.ceil(raw_word_count * MIN_LENGTH_RATIO)
     holdback = _holdback_words(dictionary)
     accumulated = ""

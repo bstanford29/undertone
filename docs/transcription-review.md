@@ -151,7 +151,7 @@ On his 50 real dictations, both with the tidy prompt, the two Qwen models remove
 - deletes false starts, keeping only the restart,
 - applies spoken corrections: "send it Tuesday, no wait, Wednesday" becomes "send it Wednesday".
 
-Pure filler sounds (um, uh, hmm) are removed by a rule before the model sees the text. The rule ignores all-caps "UM" and "UH", which are acronyms, and "uh-oh". The 60% guard counts the words that remain; if it fires, Undertone types exactly what was heard. Everything else is the model's call, inside the same guard, the same "never answer the dictation" rule, and the same proper-noun list. A short dictation (6 words or fewer) normally skips the model; one that contains a correction ("Tuesday, sorry, Wednesday") goes to the model when tidy is on.
+Pure filler sounds (um, uh, hmm) are removed by a rule before the model sees the text. The rule ignores all-caps "UM" and "UH", which are acronyms, and "uh-oh". The 60% guard still counts every word heard, fillers included, so a filler-heavy dictation cannot hide lost content; if it fires, Undertone types exactly what was heard. Everything else is the model's call, inside the same guard, the same "never answer the dictation" rule, and the same proper-noun list. A short dictation (6 words or fewer) normally skips the model; one that contains a correction ("Tuesday, sorry, Wednesday") goes to the model when tidy is on.
 
 **Turning it off.** Settings → Cleanup → Brain dumps → "Tidy how you think out loud", or `tidy_speech: false` in `config.yaml`. Off restores exactly the earlier Medium and High prompts. None and Light are unchanged either way.
 
