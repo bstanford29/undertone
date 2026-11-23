@@ -71,9 +71,9 @@ final class UpdateDisplayTests: XCTestCase {
         XCTAssertEqual(done.headline, "Step or result.")
     }
 
-    func testAnInstalledUpdateFinishesOnlyWhenNothingIsInProgress() {
+    func testAChangeOnDiskFinishesOnlyWhenNothingIsInProgress() {
         let idle = UpdateDisplay.make(check: nil, run: run("done"), checking: false, busy: nil, pending: true)
-        XCTAssertEqual(idle.headline, "Update installed")
+        XCTAssertEqual(idle.headline, "Ready to finish")
         XCTAssertEqual(idle.action, .finish)
 
         let busy = UpdateDisplay.make(check: nil, run: run("done"), checking: false,

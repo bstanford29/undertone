@@ -171,6 +171,22 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(self.apply()["state"], "done")
         self.assertTrue((self.checkout / "engine/undertone/a.py/inner.py").is_file())
 
+    def test_a_tracked_symlink_or_case_change_that_becomes_a_folder_is_not_a_collision(self):
+        (self.upstream / "link").symlink_to("engine/undertone")
+        git(self.upstream, "add", "link")
+        git(self.upstream, "commit", "--quiet", "-m", "Add a symlink")
+        git(self.upstream, "push", "--quiet", "origin", "main")
+        self.assertEqual(self.apply()["state"], "done")
+        git(self.upstream, "rm", "--quiet", "link", "engine/undertone/a.py")
+        (self.upstream / "link").mkdir()
+        (self.upstream / "link/a.py").write_text("x = 1\n")  # a.py also exists in the old symlink's target
+        (self.upstream / "engine/undertone/A.py").mkdir(parents=True)
+        (self.upstream / "engine/undertone/A.py/inner.py").write_text("y = 2\n")  # a.py -> A.py/, case only
+        git(self.upstream, "add", "link/a.py", "engine/undertone/A.py/inner.py")
+        git(self.upstream, "commit", "--quiet", "-m", "Turn a symlink and a file into folders")
+        git(self.upstream, "push", "--quiet", "origin", "main")
+        self.assertEqual(updater.check(self.checkout, self.app)["state"], "ready")
+
     def test_only_a_github_origin_is_updated_from(self):
         self.push("engine/undertone/a.py", "Fix the engine")
         git(self.checkout, "remote", "set-url", "origin", str(self.origin))

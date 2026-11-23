@@ -93,7 +93,7 @@ struct UpdateDisplay: Equatable {
         }
         let runTime = run?.finishedAt ?? run?.startedAt ?? 0
         if pending {
-            return UpdateDisplay(headline: "Update installed",
+            return UpdateDisplay(headline: "Ready to finish",
                                  detail: busy.map { "It finishes when this ends: \($0)" }
                                     ?? "Restart the engine and reopen Undertone to use it.",
                                  action: busy == nil ? .finish : .none, tone: .neutral)
@@ -142,6 +142,7 @@ final class UpdateModel: ObservableObject {
     @Published private(set) var finishing: String?
     /// Why the last attempt to finish failed, with the Terminal recovery command.
     @Published private(set) var finishProblem: String?
+    private var finishProblemAt: Double = 0
     /// The checkout has engine or package changes the running engine has not loaded.
     @Published private(set) var engineStale = false
     /// The commit stamped into this app's bundle on disk, read fresh. It differs
@@ -203,6 +204,15 @@ final class UpdateModel: ObservableObject {
     /// "up to date" run or a Terminal update cannot hide it.
     var pending: Bool { needsEngineRestart || needsReopen }
 
+    /// Takes a run result. A run started after a failed finish (Go back, or a
+    /// new update) supersedes that failure, so its advice is not shown again.
+    private func take(_ latest: UpdateRun) {
+        run = latest
+        if finishProblem != nil, (latest.startedAt ?? 0) > finishProblemAt {
+            finishProblem = nil
+        }
+    }
+
     /// Takes the live state from any `update.*` answer.
     private func adopt(_ response: EngineResponse) {
         engineCommit = response.engineCommit
@@ -226,7 +236,7 @@ final class UpdateModel: ObservableObject {
         guard !previewMode, let response = try? await engine.request(op: "update.status") else { return }
         adopt(response)
         guard let latest = response.updateRun else { return }
-        run = latest
+        take(latest)
         if latest.state == "running" { poll() }
     }
 
@@ -239,7 +249,7 @@ final class UpdateModel: ObservableObject {
             let response = try await engine.request(op: "update.check", fields: appPathField)
             check = response.update ?? .failure("The engine sent no update details.")
             adopt(response)
-            if let latest = response.updateRun { run = latest }
+            if let latest = response.updateRun { take(latest) }
         } catch {
             check = .failure("The engine did not answer. Is it running?")
         }
@@ -268,11 +278,12 @@ final class UpdateModel: ObservableObject {
     }
 
     private func start(op: String, fields: [String: JSONValue]) async {
+        finishProblem = nil
         do {
             let response = try await engine.request(op: op, fields: fields)
             adopt(response)
             guard let latest = response.updateRun else { return }
-            run = latest
+            take(latest)
             if latest.state == "running" {
                 acceptedRunID = latest.runID
                 poll()
@@ -307,7 +318,7 @@ final class UpdateModel: ObservableObject {
                 }
                 misses = 0
                 self.adopt(response)
-                self.run = latest
+                self.take(latest)
                 guard latest.state != "running" else { continue }
                 if latest.state == "done", latest.runID != nil, latest.runID == self.acceptedRunID {
                     self.acceptedRunID = nil
@@ -342,6 +353,7 @@ final class UpdateModel: ObservableObject {
             if needsEngineRestart || !answered {
                 finishing = nil
                 let folder = checkoutPath ?? "the Undertone folder"
+                finishProblemAt = Date().timeIntervalSince1970
                 finishProblem = "The engine did not come back on the new version. To go back, run `.venv/bin/undertone update --undo` in Terminal in \(folder), then use Restart in Settings → Privacy."
                 return
             }
