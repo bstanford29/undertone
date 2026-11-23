@@ -323,6 +323,15 @@ class ServerTests(unittest.TestCase):
         self.engine.dispatch({"op":"history.update", "row_id":row_id, "insert_mode":"ax", "insert_ms":1, "total_ms":13})
         with self.assertRaises(ValueError): self.engine.dispatch(request)
 
+    def test_dictionary_replace_rejects_text_that_types_keys(self):
+        request = {'op': 'dictionary.replace', 'phrase': 'deploy'}
+        for unsafe in ('make deploy\n', 'a\tb', 'x' * (dictionary.MAX_REPLACEMENT_CHARS + 1)):
+            with self.assertRaises(ValueError):
+                self.engine.dispatch({**request, 'replacement': unsafe})
+        self.assertNotIn('deploy', self.engine.dispatch({'op': 'dictionary.list'})['replacements'])
+        saved = self.engine.dispatch({**request, 'replacement': 'ship the build'})
+        self.assertEqual(saved['replacements']['deploy'], 'ship the build')
+
     def test_dictionary_and_settings_persist(self):
         self.engine.dispatch({'op':'dictionary.add','term':'Fixture'})
         self.assertEqual(self.engine.dispatch({'op':'dictionary.list'})['terms'][0], 'Fixture')

@@ -15,6 +15,42 @@ class DictionaryTests(unittest.TestCase):
     def test_replacement_is_literal_not_a_regex_template(self):
         self.assertEqual(dictionary.apply_replacements('Use path please', {'replacements':{'path':r'C:\new\thing'}}), r'Use C:\new\thing please')
 
+    def test_set_replacement_accepts_only_one_line_of_plain_text(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch.object(dictionary, 'DICTIONARY_DIR', root), patch.object(
+                dictionary, 'DICTIONARY_PATH', root / 'dictionary.yaml'
+            ):
+                dictionary.set_replacement('sig', 'x' * dictionary.MAX_REPLACEMENT_CHARS)
+                dictionary.set_replacement('apple', 'Apple \uf8ff')
+                for unsafe in ('make deploy\n', 'line\rbreak', 'tab\there', 'esc\x1b[A',
+                               'del\x7f', 'next\x85line', 'sep\u2028line', 'para\u2029graph', 'up\uf700arrow', 'f5\uf747',
+                               'x' * (dictionary.MAX_REPLACEMENT_CHARS + 1)):
+                    with self.assertRaises(ValueError):
+                        dictionary.set_replacement('word', unsafe)
+                with self.assertRaises(ValueError):
+                    dictionary.set_replacement('two\nlines', 'safe')
+                saved = dictionary.load_dictionary()['replacements']
+                self.assertNotIn('word', saved)
+                self.assertNotIn('two\nlines', saved)
+                self.assertEqual(len(saved['sig']), dictionary.MAX_REPLACEMENT_CHARS)
+
+    def test_apply_replacements_skips_hand_edited_unsafe_entries(self):
+        replacements = {
+            'deploy': 'make deploy\n',
+            'menu': 'a\tb',
+            'move': 'up\uf700',
+            'note': 'x' * (dictionary.MAX_REPLACEMENT_CHARS + 1),
+            'count': 42,
+            7: 'seven',
+            '': 'empty phrase',
+            'btw': 'by the way',
+        }
+        self.assertEqual(
+            dictionary.apply_replacements('deploy the menu move note count btw', {'replacements': replacements}),
+            'deploy the menu move note count by the way',
+        )
+
     def test_empty_explicit_dictionary_does_not_load_personal_data(self):
         with patch.object(dictionary, 'load_dictionary') as load:
             self.assertEqual(dictionary.vocab_prompt({}), '')

@@ -512,7 +512,9 @@ class Engine:
                 phrase = text_field(r, "phrase", 1000).strip()
                 if not phrase:
                     raise ValueError("Phrase is empty")
-                return dictionary.set_replacement(phrase, text_field(r, "replacement", 10000))
+                return dictionary.set_replacement(
+                    phrase, text_field(r, "replacement", dictionary.MAX_REPLACEMENT_CHARS)
+                )
         if op == "transcribe":
             from .audio import load_wav
             from .stt import make_transcriber
