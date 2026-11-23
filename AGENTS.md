@@ -13,6 +13,7 @@ Read `docs/PLAN.md` first. It is the build brief. `docs/mockups.html` is the UI 
 
 ## Verify before claiming
 
+- Verify command: `scripts/verify.sh`. It runs the Python and Swift test suites. The `CI` check runs it on every pull request. See `docs/VERIFICATION.md`.
 - Engine: `.venv/bin/undertone once --file bench/dictation.wav --no-insert` must return "Ollama" and "Qwen" spelled right and keep every sentence.
 - Cleanup quality: `python3 bench/eval_cleanup.py --model <m> --n 30`.
 - Insertion: a text field in a real app, `pbpaste` unchanged before and after.

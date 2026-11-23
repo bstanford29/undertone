@@ -29,11 +29,11 @@ The command does not run private benchmarks or upload artifacts.
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs the command for pull requests, pushes to `main`, and
-manual dispatches. The hosted Apple Silicon `macos-26` runner uses Xcode 26.5 and
-Python 3.12. Actions are pinned to commit SHAs, the token has read-only contents
-permission, checkout does not retain credentials, and superseded runs are
-cancelled. A run has a 20-minute limit.
+`.github/workflows/ci.yml` runs the command on pull requests only. Pushes to `main`
+and manual runs do not start it. The hosted Apple Silicon `macos-26` runner uses
+Xcode 26.5 and Python 3.12. Actions are pinned to commit SHAs, the token has
+read-only contents permission, checkout does not retain credentials, and
+superseded runs are cancelled. A run has a 20-minute limit.
 
 When updating the toolchain, check the [runner image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md)
 for the selected Xcode path. Hosted images change; the workflow records toolchain
