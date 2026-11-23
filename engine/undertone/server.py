@@ -359,10 +359,10 @@ class Engine:
                 self.error = None
         logger.info(
             "live dictation: audio=%.1fs chunks=%d units=%d windows=%d release=%.0fms stt=%.0fms llm=%.0fms "
-            "stt_total=%.0fms llm_total=%.0fms fallback=%s disagreements=%d",
+            "stt_total=%.0fms llm_total=%.0fms fallback=%s regrouped=%d disagreements=%d",
             result.audio_seconds, len(result.chunks), len(result.units), result.windows, result.release_ms,
             result.stt_ms, result.llm_ms, result.stt_total_ms, result.llm_total_ms, result.fallback,
-            result.boundary_disagreements,
+            result.regrouped, result.boundary_disagreements,
         )
         response = {
             "raw": result.raw,
@@ -385,6 +385,7 @@ class Engine:
             "live_stt_total_ms": result.stt_total_ms,
             "live_llm_total_ms": result.llm_total_ms,
             "live_boundary_disagreements": result.boundary_disagreements,
+            "live_regrouped": result.regrouped,
         }
         if result.stream_interrupted:
             response["stream_interrupted"] = True
@@ -453,7 +454,7 @@ class Engine:
         if op == "config.update":
             changes = r.get("config")
             booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert",
-                        "double_tap_lock", "learn_from_corrections", "live_dictation"}
+                        "double_tap_lock", "learn_from_corrections", "live_dictation", "tidy_speech"}
             allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset",
                                   "app_prompt_variants"}
             if not isinstance(changes, dict) or set(changes) - allowed:

@@ -30,7 +30,6 @@ capitalization and marks the guard, exactly as ``clean_result`` does.
 from __future__ import annotations
 
 import logging
-import re
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -39,7 +38,14 @@ from typing import Any, Callable
 import numpy as np
 
 from .audio import SAMPLE_RATE
-from .cleanup import _raw_fallback_text
+from .cleanup import (
+    CORRECTION_LEAD_WORDS,
+    _raw_fallback_text,
+    applies_self_corrections,
+    mentions_correction,
+    opens_with_correction,
+    starts_correction,
+)
 from .streaming import DEFAULT_FRAME_MS, DEFAULT_VAD_RMS, context_tail, find_pauses, frame_rms
 from .stt import Word, restore_sound_alikes
 
@@ -62,6 +68,10 @@ FORCED_CUT_TAIL_GUARD_S = 0.5
 
 DEFAULT_MIN_UNIT_WORDS = 8
 DEFAULT_MAX_UNIT_WORDS = 40
+# A unit may run past the word cap to finish its sentence, up to this many
+# times the cap. On the author's own dictations the longest sentence was 80
+# words and one in ten ran past 40.
+RUN_ON_FACTOR = 2.5
 SENTENCE_END = (".", "?", "!")
 # Reference text sent with each unit: the cleaned text so far (preceded by the
 # app's own text before the caret) and a little of what follows the caret.
@@ -95,24 +105,9 @@ def _normalize_word(text: str) -> str:
     return "".join(char for char in text.lower() if char.isalnum())
 
 
-# Phrases that take back something already said. When one opens a chunk cut at
-# a pause, it usually refers to text in an earlier unit, which per-unit cleanup
-# cannot edit, so release falls back to cleaning the whole recording at once.
-CORRECTION_PHRASES = (
-    "no wait", "wait no", "scratch that", "strike that", "i mean", "i meant",
-    "make that", "delete that", "never mind", "nevermind", "let me rephrase",
-    "rephrase that", "start over", "start again", "undo that", "actually no",
-)
-CORRECTION_LEAD_WORDS = 4
-_CORRECTION_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(phrase) for phrase in CORRECTION_PHRASES) + r")\b"
-)
-
-
-def opens_with_correction(text: str, *, lead_words: int = CORRECTION_LEAD_WORDS) -> bool:
-    """True when one of the correction phrases sits in the first few words."""
-    lead = " ".join(_normalize_word(word) for word in text.split()[:lead_words])
-    return bool(_CORRECTION_RE.search(lead))
+# A correction phrase that opens a chunk cut at a pause usually refers to text
+# in an earlier unit, which per-unit cleanup cannot edit, so release falls back
+# to cleaning the whole recording at once. The phrase lists live in cleanup.
 
 
 def adaptive_rms_threshold(
@@ -128,27 +123,55 @@ def adaptive_rms_threshold(
     return float(min(VAD_MAX_RMS, max(base, floor * VAD_FLOOR_GAIN)))
 
 
-def plan_units(
-    texts: list[str],
+def _correction_anywhere(text: str) -> bool:
+    """A correction phrase anywhere in ``text``, or a correction lead ("No,",
+    "Sorry,") at the start of any clause."""
+    if mentions_correction(text):
+        return True
+    words = text.split()
+    return any(
+        starts_correction(" ".join(words[index : index + CORRECTION_LEAD_WORDS]))
+        for index in range(len(words))
+        if index == 0 or words[index - 1][-1:] in ",.;:!?"
+    )
+
+
+def plan_word_units(
+    words: list[str],
     *,
     min_words: int = DEFAULT_MIN_UNIT_WORDS,
     max_words: int = DEFAULT_MAX_UNIT_WORDS,
+    can_end: list[bool] | None = None,
 ) -> list[int]:
-    """Lengths (in chunks) of the complete units at the front of ``texts``.
+    """Lengths (in words) of the complete units at the front of ``words``.
 
-    A unit closes at the first chunk where the accumulated text has at least
-    ``min_words`` words and ends a sentence, or reaches ``max_words``.
-    Trailing chunks that close no unit are left for later.
+    A unit closes at the first word that ends a sentence once it holds at
+    least ``min_words`` words. This may fall inside a pause-cut chunk: people
+    often pause mid-sentence and finish a sentence without pausing, so
+    closing only at chunk ends left most units cut at the word cap, and
+    release then had to re-clean the whole recording.
+
+    ``max_words`` is a soft cap. A unit past it still waits for its sentence
+    to end, because a unit cut mid-sentence makes release re-clean the whole
+    recording. Only a run-on of ``RUN_ON_FACTOR`` times the cap is cut.
+    A unit never closes just before a correction phrase or lead word ("No
+    wait, ...", "Sorry, ..."), because per-unit cleanup could not then edit
+    the words it corrects. ``can_end[i]`` False forbids ending after word i.
+    Trailing words that close no unit wait for more speech.
     """
+    hard_max = max(max_words, int(max_words * RUN_ON_FACTOR))
     units: list[int] = []
-    words = 0
     count = 0
-    for text in texts:
+    for index, word in enumerate(words):
         count += 1
-        words += len(text.split())
-        if (words >= min_words and _ends_sentence(text)) or words >= max_words:
+        at_sentence_end = count >= min_words and _ends_sentence(word)
+        if at_sentence_end and index + 1 < len(words):
+            following = " ".join(words[index + 1 : index + 1 + CORRECTION_LEAD_WORDS])
+            at_sentence_end = not starts_correction(following)
+        if can_end is not None and not can_end[index]:
+            continue
+        if at_sentence_end or count >= hard_max:
             units.append(count)
-            words = 0
             count = 0
     return units
 
@@ -518,6 +541,8 @@ class LiveResult:
     audio_seconds: float
     boundary_disagreements: int = 0
     windows: int = 0
+    # Runs of units cleaned again together at release (cuts and corrections).
+    regrouped: int = 0
 
 
 class LiveDictation:
@@ -571,6 +596,9 @@ class LiveDictation:
         self._degraded: str | None = None
         self._chunks: list[LiveChunk] = []
         self._unit_chunk_end = 0
+        # Words of the chunk at ``_unit_chunk_end`` already in a unit. A unit
+        # may end at a sentence end inside a chunk.
+        self._unit_word_offset = 0
         self._units: list[LiveUnit] = []
         self._queue: list[LiveUnit] = []
         self._unit_sequence = 0
@@ -638,16 +666,65 @@ class LiveDictation:
                 self._form_units_locked()
 
     def _form_units_locked(self) -> None:
-        texts: list[str] = []
-        for chunk in self._chunks[self._unit_chunk_end :]:
+        # Every decoded word not yet in a unit, with the index of its chunk,
+        # and whether a unit may end after it.
+        pending: list[tuple[int, str]] = []
+        can_end: list[bool] = []
+        for index in range(self._unit_chunk_end, len(self._chunks)):
+            chunk = self._chunks[index]
             if chunk.error is not None or chunk.final:
                 # Never clean past a failed chunk; finish decides the fallback.
                 break
-            texts.append(chunk.text or "")
-        for length in plan_units(texts, min_words=self.min_unit_words, max_words=self.max_unit_words):
-            members = self._chunks[self._unit_chunk_end : self._unit_chunk_end + length]
-            self._unit_chunk_end += length
-            self._enqueue_unit_locked(members, final=False)
+            words = (chunk.text or "").split()
+            # A sound-alike rewrite ("all IMA" to "Ollama") changes the word
+            # count, so the text no longer lines up with the word timings that
+            # mark a split in the audio. Such a chunk is only ever whole.
+            splittable = len(words) == len(chunk.words)
+            if index == self._unit_chunk_end:
+                words = words[self._unit_word_offset :]
+            pending.extend((index, word) for word in words)
+            can_end.extend(splittable or position == len(words) - 1 for position in range(len(words)))
+        lengths = plan_word_units(
+            [word for _, word in pending], min_words=self.min_unit_words, max_words=self.max_unit_words,
+            can_end=can_end,
+        )
+        # Where ``pending`` started, before any unit below moves the marker.
+        start_chunk, start_offset = self._unit_chunk_end, self._unit_word_offset
+        used = 0
+        for length in lengths:
+            unit_words = pending[used : used + length]
+            used += length
+            last_index = unit_words[-1][0]
+            members = self._chunks[self._unit_chunk_end : last_index + 1]
+            consumed = sum(1 for index, _ in pending[:used] if index == last_index)
+            if last_index == start_chunk:
+                consumed += start_offset
+            if consumed >= len((self._chunks[last_index].text or "").split()):
+                self._unit_chunk_end, self._unit_word_offset = last_index + 1, 0
+            else:
+                self._unit_chunk_end, self._unit_word_offset = last_index, consumed
+            self._enqueue_unit_locked(members, final=False, raw=" ".join(word for _, word in unit_words))
+
+    def _committed_audio_end_locked(self) -> int:
+        """The sample where audio not yet covered by a unit begins."""
+        end = max((chunk.end_sample for chunk in self._chunks[: self._unit_chunk_end]), default=0)
+        if not self._unit_word_offset or self._unit_chunk_end >= len(self._chunks):
+            return end
+        chunk = self._chunks[self._unit_chunk_end]
+        if len(chunk.words) != len((chunk.text or "").split()):
+            # Units never split such a chunk, so this does not happen. If it
+            # did, redoing the whole chunk repeats words rather than drop them.
+            return max(end, chunk.start_sample)
+        last = chunk.words[self._unit_word_offset - 1]
+        split = chunk.window_start + int(round(last.end * self.sample_rate))
+        return max(end, min(chunk.end_sample, split))
+
+    def _uncommitted_text(self, chunks: list[LiveChunk]) -> str:
+        """Text of ``chunks`` (starting at ``_unit_chunk_end``) not yet in a unit."""
+        texts = [chunk.text or "" for chunk in chunks]
+        if texts and self._unit_word_offset:
+            texts[0] = " ".join(texts[0].split()[self._unit_word_offset :])
+        return _join(texts)
 
     def _enqueue_unit_locked(
         self, members: list[LiveChunk], *, final: bool, raw: str | None = None
@@ -765,9 +842,7 @@ class LiveDictation:
 
         with self._condition:
             committed = self._committed_clean_locked()
-            committed_audio_end = max(
-                (chunk.end_sample for chunk in self._chunks[: self._unit_chunk_end]), default=0
-            )
+            committed_audio_end = self._committed_audio_end_locked()
 
         # The tail window is short, so decoding it before emitting costs little
         # and lets the correction check see the whole recording first.
@@ -792,29 +867,48 @@ class LiveDictation:
                 logger.warning("live tail retry failed (%s); audio retained", type(exc).__name__)
                 interrupted = True
             stt_ms += (self._clock() - retry_started) * 1000.0
-            later_openings = [tail_raw]
         else:
-            tail_raw = _join([chunk.text or "" for chunk in remaining])
-            later_openings = [chunk.text or "" for chunk in run.chunks[1:]]
-        if committed and any(opens_with_correction(text) for text in later_openings):
-            return self._finish_whole(
-                audio, "correction", release_started, timeout, stt_ms=stt_ms, raw=_join(unit_raws + [tail_raw]), retain_raw=retain_raw,
-            )
-
-        # A word cap may close a unit in the middle of a thought. Cleaning
-        # the continuation separately cannot repair punctuation or wording
-        # already committed at that cut. Reuse all decoded words in one
-        # cleanup before any prefix is emitted.
-        if not interrupted and self.level in {"medium", "high"} and any(
-            raw and not _ends_sentence(raw) for raw in unit_raws
-        ):
-            return self._finish_whole(
-                audio, "cleanup_boundary", release_started, timeout, stt_ms=stt_ms,
-                raw=_join(unit_raws + [tail_raw]), retain_raw=retain_raw,
-            )
+            tail_raw = self._uncommitted_text(remaining)
+        # Units that must be cleaned in one call: a unit the hard cap cut
+        # mid-sentence joins what follows it, and so does a unit followed by
+        # a spoken correction (only when the prompt applies corrections;
+        # Medium with tidy off keeps every word anyway). Boundaries are read
+        # against the complete decoded text, including units still queued.
+        corrects = applies_self_corrections(self.level, self.config)
+        pieces = unit_raws + ([tail_raw] if tail_raw else [])
+        # A correction that opens a pause-cut chunk inside a unit ("...next
+        # Tuesday. I was going to [pause] no wait, Wednesday") can refer to
+        # the unit before, so that unit joins the one holding the chunk.
+        join_before: set[int] = set()
+        if corrects:
+            with self._condition:
+                first_unit: dict[int, int] = {}
+                for index, unit in enumerate(self._units[: len(unit_raws)]):
+                    for sequence in unit.chunk_sequences:
+                        first_unit.setdefault(sequence, index)
+            for chunk in run.chunks[1:]:
+                if not chunk.text or not starts_correction(chunk.text):
+                    continue
+                index = first_unit.get(chunk.sequence, len(unit_raws) if tail_raw else 0)
+                if index:
+                    join_before.add(index)
+            if run.error and unit_raws and tail_raw and _correction_anywhere(tail_raw):
+                # A failed window's words came back as one retried tail, so
+                # where its chunks began is unknown. A correction anywhere in
+                # it may refer to the unit before.
+                join_before.add(len(unit_raws))
+        groups = self._join_groups(
+            pieces, corrects=corrects, cut_check=not interrupted, join_before=join_before,
+        )
 
         if retain_raw is not None:
-            retain_raw(_join(unit_raws + [tail_raw]))
+            retain_raw(_join(pieces))
+        if any(end > start for start, end in groups):
+            return self._finish_regrouped(
+                pieces, groups, len(unit_raws), remaining, run, audio, emit=emit, timeout=timeout,
+                release_started=release_started, stt_ms=stt_ms, interrupted=interrupted,
+            )
+
         emitted = bool(committed)
         if emitted and emit is not None:
             emit({"seq": 0, "chunk": committed})
@@ -833,6 +927,128 @@ class LiveDictation:
             release_started=release_started, fallback=None, interrupted=interrupted,
             stt_total_ms=sum(chunk.compute_ms for chunk in run.chunks),
             boundary_disagreements=run.boundary_disagreements, windows=run.windows,
+        )
+
+    def _join_groups(
+        self, pieces: list[str], *, corrects: bool, cut_check: bool, join_before: set[int] | None = None,
+    ) -> list[tuple[int, int]]:
+        """Runs ``(first, last)`` of consecutive pieces to clean in one call.
+
+        Pieces are the unit raws plus the tail. A piece joins the next one
+        when the hard cap cut it mid-sentence, when the next one opens a
+        spoken correction, or when the next one's index is in
+        ``join_before``. Every other piece is a run of one.
+        """
+        join_before = join_before or set()
+        groups: list[tuple[int, int]] = []
+        start = 0
+        for index, raw in enumerate(pieces):
+            following = pieces[index + 1] if index + 1 < len(pieces) else None
+            joins = following is not None and bool(raw) and (
+                (cut_check and self.level in {"medium", "high"} and not _ends_sentence(raw))
+                or (corrects and starts_correction(following))
+                or index + 1 in join_before
+            )
+            if not joins:
+                groups.append((start, index))
+                start = index + 1
+        return groups
+
+    def _finish_regrouped(
+        self,
+        pieces: list[str],
+        groups: list[tuple[int, int]],
+        unit_count: int,
+        remaining: list[LiveChunk],
+        run: WindowedRun,
+        audio: np.ndarray,
+        *,
+        emit: Callable[[dict[str, Any]], None] | None,
+        timeout: float | None,
+        release_started: float,
+        stt_ms: float,
+        interrupted: bool,
+    ) -> LiveResult:
+        """Clean again only the runs of units that belong together.
+
+        The cleaned units before the first such run are emitted at once.
+        Units inside a run leave the queue, each run gets one cleanup with
+        the cleaned text before it as context, and every other unit keeps
+        its own cleanup. This replaces cleaning the whole recording again,
+        which took 20 to 30 seconds after a 10-minute note.
+        """
+        first_joined = next(start for start, end in groups if end > start)
+        has_tail = len(pieces) > unit_count
+        with self._condition:
+            units = list(self._units[:unit_count])
+            joined = {
+                units[index].sequence
+                for start, end in groups if end > start
+                for index in range(start, min(end, unit_count - 1) + 1)
+            }
+            self._queue = [unit for unit in self._queue if unit.sequence not in joined]
+            prefix: list[str] = []
+            for unit in units[:first_joined]:
+                if not unit.done:
+                    break
+                prefix.append(unit.clean)
+            committed = _join(prefix)
+        if committed and emit is not None:
+            emit({"seq": 0, "chunk": committed})
+
+        llm_started = self._clock()
+        tail_alone = has_tail and groups[-1] == (len(pieces) - 1, len(pieces) - 1)
+        with self._condition:
+            tail_unit = self._enqueue_unit_locked(remaining, final=True, raw=pieces[-1]) if tail_alone else None
+        self._close_cleanup_worker(timeout)
+        with self._condition:
+            current = {unit.sequence: unit for unit in self._units}
+
+        out: list[LiveUnit] = []
+        for start, end in groups:
+            if start == end:
+                unit = tail_unit if start >= unit_count else units[start]
+                out.append(current.get(unit.sequence, unit))
+                continue
+            raw = _join(pieces[start : end + 1])
+            before = _join([self.context.get("before", ""), _join([unit.clean for unit in out])])
+            context = {
+                "before": before[-CONTEXT_BEFORE_CHARS:],
+                "after": self.context.get("after", "")[:CONTEXT_AFTER_CHARS],
+                "selected": "",
+            }
+            started_at = self._clock()
+            try:
+                result = self.cleaner(raw, self.level, self.dictionary, self.config, app=self.app, context=context)
+                clean = str(result.get("clean_text", result.get("text", "")))
+                model = result.get("model")
+                guard = bool(result.get("guard_fired", False))
+                error = None
+            except Exception as exc:
+                logger.warning("live regroup cleanup failed (%s); keeping raw text", type(exc).__name__)
+                clean, model, guard, error = _raw_fallback_text(raw), None, True, type(exc).__name__
+            members = tuple(
+                sequence
+                for index in range(start, min(end, unit_count - 1) + 1)
+                for sequence in units[index].chunk_sequences
+            ) + (tuple(chunk.sequence for chunk in remaining) if end >= unit_count else ())
+            with self._condition:
+                self._unit_sequence += 1
+                sequence = self._unit_sequence
+            out.append(LiveUnit(
+                sequence=sequence, raw=raw, chunk_sequences=members, queued_at=started_at, clean=clean,
+                model=model, guard_fired=guard, started_at=started_at, finished_at=self._clock(),
+                error=error, final=end == len(pieces) - 1,
+            ))
+        with self._condition:
+            self._closed = True
+        llm_ms = (self._clock() - llm_started) * 1000.0
+        return self._result(
+            tuple(out), run.chunks, committed, audio, stt_ms=stt_ms, llm_ms=llm_ms,
+            release_started=release_started, fallback=None, interrupted=interrupted,
+            stt_total_ms=sum(chunk.compute_ms for chunk in run.chunks),
+            boundary_disagreements=run.boundary_disagreements, windows=run.windows,
+            regrouped=sum(1 for start, end in groups if end > start),
         )
 
     def cancel(self) -> None:
@@ -941,6 +1157,7 @@ class LiveDictation:
         stt_total_ms: float,
         boundary_disagreements: int = 0,
         windows: int = 0,
+        regrouped: int = 0,
     ) -> LiveResult:
         raw = _join([unit.raw for unit in units])
         clean = _join([unit.clean for unit in units])
@@ -978,4 +1195,5 @@ class LiveDictation:
             audio_seconds=audio.size / self.sample_rate,
             boundary_disagreements=boundary_disagreements,
             windows=windows,
+            regrouped=regrouped,
         )

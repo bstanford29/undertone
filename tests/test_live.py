@@ -15,11 +15,12 @@ import numpy as np
 from undertone import cleanup, config, dictionary, history
 from undertone.live import (
     opens_with_correction,
+    LiveChunk,
     LiveDictation,
     WindowedTranscriber,
     adaptive_rms_threshold,
     assign_words,
-    plan_units,
+    plan_word_units,
     quietest_cut,
 )
 from undertone.server import Engine, Server
@@ -150,12 +151,27 @@ class HelperTests(unittest.TestCase):
         self.assertFalse(opens_with_correction("the plan was fine but no wait"))
         self.assertFalse(opens_with_correction(""))
 
-    def test_plan_units_closes_at_sentence_end_after_min_words_or_at_cap(self):
-        texts = ["one two.", "three four five.", "six seven", "eight nine ten eleven.", "twelve"]
-        self.assertEqual(plan_units(texts, min_words=4, max_words=40), [2, 2])
-        self.assertEqual(plan_units(texts, min_words=1, max_words=40), [1, 1, 2])
-        self.assertEqual(plan_units(["a b", "c d", "e f"], min_words=3, max_words=4), [2])
+    def test_units_close_at_sentence_end_after_min_words_or_at_cap(self):
+        words = "a b. c d. e f g. h".split()
+        self.assertEqual(plan_word_units(words, min_words=4, max_words=40), [4])
+        self.assertEqual(plan_word_units(words, min_words=1, max_words=40), [2, 2, 3])
+        # The cap is soft: a unit waits for its sentence to end, and only a
+        # run-on of 2.5 times the cap is cut.
+        self.assertEqual(plan_word_units("a b c d e f g.".split(), min_words=3, max_words=4), [7])
+        self.assertEqual(plan_word_units(("w " * 12).split(), min_words=3, max_words=4), [10])
 
+    def test_a_unit_never_closes_before_a_correction_lead(self):
+        words = "book it for Tuesday. Sorry, Wednesday at two. Thanks a lot.".split()
+        self.assertEqual(plan_word_units(words, min_words=3, max_words=40), [8, 3])
+        # Only "No" of "No wait" was decoded so far: the unit still waits.
+        self.assertEqual(plan_word_units("send the report on Tuesday. No".split(), min_words=3, max_words=40), [])
+
+    def test_a_unit_never_closes_right_before_a_correction(self):
+        words = "send the report on Tuesday. No wait, Wednesday. Thanks a lot.".split()
+        # The first sentence end is followed by "No wait", so the unit runs on.
+        self.assertEqual(plan_word_units(words, min_words=3, max_words=40), [8, 3])
+        # The correction lands in the same unit as the words it corrects.
+        self.assertIn("Tuesday. No wait, Wednesday.", " ".join(words[:8]))
     def test_adaptive_threshold_tracks_the_room_floor_within_bounds(self):
         quiet = np.full(200, 0.0005, dtype=np.float32)
         self.assertEqual(adaptive_rms_threshold(quiet), 0.004)
@@ -448,9 +464,10 @@ class LiveDictationTests(unittest.TestCase):
         self.assertTrue(result.units[0].clean.startswith("W0"))
         self.assertEqual(result.raw.split(), [_label(index) for index in range(15)])
 
-    def test_correction_after_a_pause_cleans_the_whole_recording_once(self):
+    def test_correction_after_a_pause_recleans_only_the_units_around_it(self):
         # Word 5 opens the chunk after the first sentence's pause; "scratch
-        # that" there refers back to the unit that was already cleaned.
+        # that" there refers back to the unit that was already cleaned. The
+        # two units are cleaned again together; the last unit keeps its own.
         fake = AmplitudeFake(relabel={5: "scratch", 6: "that"})
         calls: list[dict] = []
         session = self._session(fake, calls)
@@ -460,11 +477,19 @@ class LiveDictationTests(unittest.TestCase):
         frames: list[dict] = []
         result = session.finish(audio, emit=frames.append)
         self.assertEqual(frames, [])
-        self.assertEqual(result.fallback, "correction")
+        self.assertIsNone(result.fallback)
+        self.assertEqual(result.regrouped, 1)
         self.assertEqual(fake.whole_calls, [])
         self.assertEqual(result.raw.split()[5:7], ["scratch", "that"])
-        self.assertEqual(result.clean, "[" + result.raw.upper() + "]")
-        self.assertEqual(calls[-1]["raw"], result.raw)
+        # The correction is cleaned in the same call as the words it corrects.
+        # Whether the last sentence joins that call depends on whether its
+        # unit had formed before release; both keep every word in order.
+        joined = [call["raw"] for call in calls if "w4. scratch that" in call["raw"]]
+        self.assertEqual(len(joined), 1)
+        self.assertTrue(joined[0].startswith("w0 w1 w2 w3 w4. scratch that w7 w8 w9."))
+        self.assertTrue(result.clean.startswith("[W0 W1 W2 W3 W4. SCRATCH THAT W7 W8 W9."))
+        self.assertEqual(result.clean.replace("[", "").replace("]", ""), result.raw.upper())
+        self.assertTrue(result.units[-1].final)
 
     def test_silent_recording_is_no_speech(self):
         fake = AmplitudeFake()
@@ -477,21 +502,277 @@ class LiveDictationTests(unittest.TestCase):
         self.assertEqual(calls, [])
 
     def test_word_cap_recleans_the_whole_sentence_before_emitting_a_prefix(self):
-        fake = AmplitudeFake(relabel={i: f"w{i}" for i in range(14)})
+        # A 25-word run-on passes the hard cap (2.5 x 8 = 20 words).
+        fake = AmplitudeFake(relabel={i: f"w{i}" for i in range(24)})
         calls: list[dict] = []
         session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
                                 config={}, min_unit_words=3, max_unit_words=8)
-        audio = _sentences(15)
+        audio = _sentences(25)
         _feed(session, audio)
         self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
         frames: list[dict] = []
         result = session.finish(audio, emit=frames.append)
         self.assertEqual(frames, [], "a mid-sentence edit must not be committed to the target field")
-        self.assertEqual(result.fallback, "cleanup_boundary")
-        self.assertEqual(result.raw.split(), [f"w{i}" for i in range(14)] + ["w14."])
+        self.assertIsNone(result.fallback)
+        self.assertEqual(result.regrouped, 1)
+        self.assertEqual(result.raw.split(), [f"w{i}" for i in range(24)] + ["w24."])
         self.assertEqual(result.clean, "[" + result.raw.upper() + "]")
         self.assertEqual(calls[-1]["raw"], result.raw)
         self.assertEqual(fake.whole_calls, [], "reuse the decoded words; no extra speech recognition")
+
+    def test_units_close_at_sentence_ends_inside_chunks(self):
+        # Long pauses fall mid-sentence (after w1, w6, w11) and sentences end
+        # without a pause, the way people think out loud. Units must still
+        # end at the sentence ends, so release cleans only the last words.
+        parts: list[np.ndarray] = []
+        for index in range(15):
+            parts.append(_word(index))
+            parts.append(_pause(0.5 if index % 5 == 1 else 0.1))
+        audio = np.concatenate(parts)
+        fake = AmplitudeFake()
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={}, min_unit_words=3, max_unit_words=8)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 2))
+        before_release = len(calls)
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertIsNone(result.fallback)
+        self.assertEqual(result.raw.split(), [_label(index) for index in range(15)])
+        self.assertEqual([unit.raw for unit in result.units[:2]], ["w0 w1 w2 w3 w4.", "w5 w6 w7 w8 w9."])
+        self.assertEqual(frames, [{"seq": 0, "chunk": "[W0 W1 W2 W3 W4.] [W5 W6 W7 W8 W9.]"}])
+        self.assertEqual(result.clean, "[W0 W1 W2 W3 W4.] [W5 W6 W7 W8 W9.] [W10 W11 W12 W13 W14.]")
+        # Release cleaned only the words after the last sentence end.
+        self.assertEqual(len(calls) - before_release, 1)
+        self.assertEqual(calls[-1]["raw"], "w10 w11 w12 w13 w14.")
+        self.assertEqual(fake.whole_calls, [])
+
+    def test_several_units_inside_one_chunk_keep_every_word(self):
+        session = LiveDictation(AmplitudeFake(), _fake_cleaner([]), level="medium", dictionary={},
+                                config={}, min_unit_words=2, max_unit_words=40)
+        def timed(text):
+            return tuple(Word(word, index * 0.1, index * 0.1 + 0.05) for index, word in enumerate(text.split()))
+
+        first = LiveChunk(sequence=1, start_sample=0, end_sample=SR, text="a b. c d. e f. g", words=timed("a b. c d. e f. g"))
+        second = LiveChunk(sequence=2, start_sample=SR, end_sample=2 * SR, text="h i. j", words=timed("h i. j"))
+        with session._condition:
+            session._finishing = True  # plan units by hand; no workers
+            session._chunks = [first]
+            session._form_units_locked()
+            self.assertEqual([unit.raw for unit in session._units], ["a b.", "c d.", "e f."])
+            self.assertEqual((session._unit_chunk_end, session._unit_word_offset), (0, 6))
+            session._chunks.append(second)
+            session._form_units_locked()
+            self.assertEqual([unit.raw for unit in session._units], ["a b.", "c d.", "e f.", "g h i."])
+            self.assertEqual((session._unit_chunk_end, session._unit_word_offset), (1, 2))
+            self.assertEqual(session._uncommitted_text([second]), "j")
+            session._queue.clear()
+        session.cancel()
+
+    def test_a_chunk_with_a_sound_alike_rewrite_is_never_split(self):
+        session = LiveDictation(AmplitudeFake(), _fake_cleaner([]), level="medium", dictionary={},
+                                config={}, min_unit_words=2, max_unit_words=40)
+        words = tuple(Word(text, index * 0.3, index * 0.3 + 0.2) for index, text in
+                      enumerate(["we", "run", "it.", "through", "all", "IMA", "locally."]))
+        # restore_sound_alikes turned "all IMA" into "Ollama": six words of text, seven timings.
+        chunk = LiveChunk(sequence=1, start_sample=0, end_sample=3 * SR, text="we run it. through Ollama locally.",
+                          words=words, window_start=0)
+        with session._condition:
+            session._finishing = True
+            session._chunks = [chunk]
+            session._form_units_locked()
+            self.assertEqual([unit.raw for unit in session._units], ["we run it. through Ollama locally."])
+            self.assertEqual((session._unit_chunk_end, session._unit_word_offset), (1, 0))
+            session._queue.clear()
+        session.cancel()
+
+    def test_committed_audio_end_splits_a_chunk_at_the_last_unit_word(self):
+        fake = AmplitudeFake()
+        session = LiveDictation(fake, _fake_cleaner([]), level="medium", dictionary={},
+                                config={}, min_unit_words=3, max_unit_words=8)
+        words = (Word("a", 0.0, 0.3), Word("b.", 0.4, 0.7), Word("c", 0.8, 1.1))
+        chunk = LiveChunk(sequence=1, start_sample=SR, end_sample=3 * SR, text="a b. c",
+                          words=words, window_start=SR)
+        with session._condition:
+            session._chunks = [chunk]
+            session._unit_chunk_end, session._unit_word_offset = 0, 2
+            self.assertEqual(session._committed_audio_end_locked(), SR + int(0.7 * SR))
+            self.assertEqual(session._uncommitted_text([chunk]), "c")
+        session.cancel()
+
+    def test_a_unit_boundary_before_a_correction_lead_recleans_with_tidy(self):
+        # "Sorry" opens the second pause-cut chunk, after a unit already
+        # closed at "w4.". It is not one of the chunk-opening phrases, so only
+        # the unit-boundary check can catch it.
+        audio = _sentences(15)
+        fake = AmplitudeFake(relabel={5: "Sorry", 6: "Wednesday"})
+        for tidy, expected in ((True, 1), (False, 0)):
+            calls: list[dict] = []
+            session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                    config={"tidy_speech": tidy}, min_unit_words=3, max_unit_words=40)
+            _feed(session, audio)
+            self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 2))
+            frames: list[dict] = []
+            result = session.finish(audio, emit=frames.append)
+            self.assertIsNone(result.fallback)
+            self.assertEqual(result.regrouped, expected, f"tidy={tidy}")
+            if expected:
+                self.assertEqual(frames, [], "nothing is typed before the corrected units are cleaned")
+                self.assertIn("w0 w1 w2 w3 w4. Sorry Wednesday w7 w8 w9.", [call["raw"] for call in calls])
+
+    def test_a_correction_is_caught_while_earlier_units_still_wait_for_cleanup(self):
+        audio = _sentences(15)
+        fake = AmplitudeFake(relabel={5: "Sorry", 6: "Wednesday"})
+        calls: list[dict] = []
+        slow = _fake_cleaner(calls)
+
+        def cleaner(*args, **kwargs):
+            time.sleep(0.3)
+            return slow(*args, **kwargs)
+
+        session = LiveDictation(fake, cleaner, level="medium", dictionary={},
+                                config={"tidy_speech": True}, min_unit_words=3, max_unit_words=40)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units"] >= 2))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertIsNone(result.fallback)
+        self.assertEqual(result.regrouped, 1)
+        self.assertEqual(frames, [])
+        self.assertIn("w0 w1 w2 w3 w4. Sorry Wednesday w7 w8 w9.", [call["raw"] for call in calls])
+        self.assertEqual(result.raw.split(), ["w0", "w1", "w2", "w3", "w4.", "Sorry", "Wednesday"]
+                         + [_label(index) for index in range(7, 15)])
+
+    def test_a_correction_after_a_false_start_joins_the_unit_it_corrects(self):
+        # "...w4. w5 w6 w7 w8 [pause] no wait w11. ...": the unit closed at w4.,
+        # then a false start, then a pause, then the correction. It opens a
+        # chunk but not a unit, and it still refers to the closed unit.
+        parts: list[np.ndarray] = []
+        for index in range(15):
+            parts.append(_word(index))
+            parts.append(_pause(0.5 if index == 8 else 0.1))
+        audio = np.concatenate(parts)
+        relabel = {index: f"w{index}" for index in range(15)}
+        relabel.update({4: "w4.", 9: "no", 10: "wait", 11: "w11.", 14: "w14."})
+        for tidy, expected in ((True, 1), (False, 0)):
+            calls: list[dict] = []
+            session = LiveDictation(AmplitudeFake(relabel=relabel), _fake_cleaner(calls), level="medium",
+                                    dictionary={}, config={"tidy_speech": tidy}, min_unit_words=3, max_unit_words=40)
+            _feed(session, audio)
+            self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+            frames: list[dict] = []
+            result = session.finish(audio, emit=frames.append)
+            self.assertEqual(result.regrouped, expected, f"tidy={tidy}")
+            self.assertEqual(result.raw.split()[9:11], ["no", "wait"])
+            if expected:
+                self.assertEqual(frames, [], "the corrected sentence must not be typed first")
+                self.assertTrue(any("w4. w5" in call["raw"] and "no wait" in call["raw"] for call in calls))
+
+    def test_a_correction_in_a_retried_tail_joins_the_unit_before(self):
+        # Same false start as above, but the tail window fails, so the words
+        # after "w4." come back from one retried decode.
+        parts: list[np.ndarray] = []
+        for index in range(15):
+            parts.append(_word(index))
+            parts.append(_pause(0.5 if index == 8 else 0.1))
+        audio = np.concatenate(parts)
+        relabel = {index: f"w{index}" for index in range(15)}
+        relabel.update({4: "w4.", 9: "no", 10: "wait", 11: "w11.", 14: "w14."})
+        fake = AmplitudeFake(relabel=relabel, fail_windows=(2,))
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={"tidy_speech": True}, min_unit_words=3, max_unit_words=40)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertEqual(len(fake.whole_calls), 1, "the failed tail is decoded again once")
+        self.assertEqual(result.regrouped, 1)
+        self.assertEqual(frames, [], "the corrected sentence must not be typed first")
+        self.assertTrue(any("w4. w5" in call["raw"] and "no wait" in call["raw"] for call in calls))
+        self.assertEqual(result.raw.split()[-1], "w14.")
+
+    def test_a_bare_no_inside_a_retried_tail_joins_the_unit_before(self):
+        # "...w4. w5 w6 w7 w8, No, Wednesday w11. ..." with the tail window
+        # failed: the bare "No," sits mid-clause in the retried text.
+        parts: list[np.ndarray] = []
+        for index in range(15):
+            parts.append(_word(index))
+            parts.append(_pause(0.5 if index == 8 else 0.1))
+        audio = np.concatenate(parts)
+        relabel = {index: f"w{index}" for index in range(15)}
+        relabel.update({4: "w4.", 8: "w8,", 9: "No,", 10: "Wednesday", 11: "w11.", 14: "w14."})
+        fake = AmplitudeFake(relabel=relabel, fail_windows=(2,))
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={"tidy_speech": True}, min_unit_words=3, max_unit_words=40)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertEqual(result.regrouped, 1)
+        self.assertEqual(frames, [], "the corrected sentence must not be typed first")
+        self.assertTrue(any("w4. w5" in call["raw"] and "No, Wednesday" in call["raw"] for call in calls))
+
+    def test_a_correction_lead_counts_at_any_clause_start(self):
+        from undertone.live import _correction_anywhere
+
+        self.assertTrue(_correction_anywhere("we set it for w8, No, Wednesday at two."))
+        self.assertTrue(_correction_anywhere("we set it for Tuesday. Sorry, Wednesday."))
+        self.assertTrue(_correction_anywhere("I was going to no wait Wednesday"))
+        self.assertFalse(_correction_anywhere("No one has replied yet, and we can file it on Friday."))
+
+    def test_an_ordinary_no_at_a_unit_boundary_is_not_a_correction(self):
+        audio = _sentences(15)
+        fake = AmplitudeFake(relabel={5: "No", 6: "one"})
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={"tidy_speech": True}, min_unit_words=3, max_unit_words=40)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 2))
+        result = session.finish(audio, emit=lambda frame: None)
+        self.assertIsNone(result.fallback)
+
+    def test_medium_without_tidy_skips_the_correction_reclean(self):
+        audio = _sentences(15)
+        fake = AmplitudeFake(relabel={10: "no", 11: "wait"})
+        for tidy, expected in ((False, 0), (True, 1)):
+            calls: list[dict] = []
+            session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                    config={"tidy_speech": tidy}, min_unit_words=3, max_unit_words=40)
+            _feed(session, audio)
+            self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 2))
+            frames: list[dict] = []
+            result = session.finish(audio, emit=frames.append)
+            self.assertIsNone(result.fallback, f"tidy={tidy}")
+            self.assertEqual(result.regrouped, expected, f"tidy={tidy}")
+            # With tidy on, the unit before "no wait" is cleaned again with the
+            # tail, so only the first sentence is typed at once. The final text
+            # extends exactly what was typed.
+            first = "[W0 W1 W2 W3 W4.]" if tidy else "[W0 W1 W2 W3 W4.] [W5 W6 W7 W8 W9.]"
+            self.assertEqual(frames[0]["chunk"], first)
+            self.assertTrue(result.clean.startswith(frames[0]["chunk"]))
+            self.assertFalse(result.stream_interrupted)
+            self.assertEqual(result.raw.split(), [_label(i) for i in range(10)] + ["no", "wait"]
+                             + [_label(i) for i in range(12, 15)])
+
+    def test_a_long_sentence_past_the_soft_cap_is_not_cut(self):
+        # Twelve words with no sentence end, then a period: past the cap of 8
+        # but under the hard cap of 20, so the unit waits for the sentence end.
+        fake = AmplitudeFake(relabel={**{i: f"w{i}" for i in range(11)}, 11: "w11."})
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={}, min_unit_words=3, max_unit_words=8)
+        audio = _sentences(20)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertIsNone(result.fallback)
+        self.assertEqual(result.units[0].raw.split(), [f"w{i}" for i in range(11)] + ["w11."])
+        self.assertEqual(result.raw.split()[-1], "w19.")
+        self.assertEqual(len(frames), 1)
 
     def test_cancel_closes_workers(self):
         fake = AmplitudeFake()

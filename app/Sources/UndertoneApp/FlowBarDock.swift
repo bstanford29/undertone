@@ -543,7 +543,7 @@ enum FlowBarDock {
             }
             return RibbonSpec(pieces)
         case .inserted(let totalMS):
-            let reading = "\(Int(totalMS.rounded())) ms"
+            let reading = TimeText.duration(milliseconds: totalMS)
             var pieces: [RibbonPiece] = [.glyph(.check), .mono(reading, reserve: reading)]
             if inputs.canUndo { pieces.append(.button(.undo)) }
             return RibbonSpec(pieces)

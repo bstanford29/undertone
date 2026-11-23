@@ -116,6 +116,13 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(suggestion.reason, "capitalized")
     }
 
+    func testTidySpeechSettingDefaultsOnAndReadsPersistedConfig() {
+        XCTAssertTrue(TidySpeechSetting.value(from: [:]))
+        XCTAssertFalse(TidySpeechSetting.value(from: [TidySpeechSetting.key: .bool(false)]))
+        XCTAssertTrue(TidySpeechSetting.value(from: [TidySpeechSetting.key: .string("no")]))
+        XCTAssertEqual(TidySpeechSetting.key, "tidy_speech")
+    }
+
     func testCorrectionLearningSettingDefaultsOffAndReadsPersistedConfig() {
         XCTAssertFalse(CorrectionLearningSetting.value(from: [:]))
         XCTAssertTrue(CorrectionLearningSetting.value(from: [CorrectionLearningSetting.key: .bool(true)]))

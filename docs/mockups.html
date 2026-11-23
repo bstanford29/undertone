@@ -214,7 +214,7 @@ footer{margin-top:64px;font-size:13px;color:var(--muted);border-top:1px solid va
 <div class="states" aria-label="Pill states">
 <div class="state"><div class="pill on mac"><span class="dot-rec"></span><div class="wave" data-wave></div></div><div class="cap"><b>Listening</b>Rises on key down. Bars follow your voice.</div></div>
 <div class="state"><div class="pill on mac"><span class="spin"></span><span class="lbl">Cleaning up</span></div><div class="cap"><b>Working</b>Key up. Whisper then the model. Usually under 1 s.</div></div>
-<div class="state"><div class="pill on mac"><span class="chk"><svg viewBox="0 0 12 12"><path d="M2 6.5l2.6 2.6L10 3.7" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Inserted</span><span class="ms">957 ms</span></div><div class="cap"><b>Done</b>Shows the round trip, then drops away.</div></div>
+<div class="state"><div class="pill on mac"><span class="chk"><svg viewBox="0 0 12 12"><path d="M2 6.5l2.6 2.6L10 3.7" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Inserted</span><span class="ms">&lt;1 s</span></div><div class="cap"><b>Done</b>Shows the round trip, then drops away.</div></div>
 <div class="state"><div class="pill on mac"><span class="chk" style="background:var(--warn)"><svg viewBox="0 0 12 12"><path d="M6 2.5v4.5M6 9v.5" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/></svg></span><span>Kept raw</span><span class="ms">guard</span></div><div class="cap"><b>Guard fired</b>Model dropped text, so the raw transcript went in instead.</div></div>
 </div>
 <p class="note">Sounds: a short low tick on key down, a higher tick on insert. Both off by a setting. The pill never takes focus, so your caret stays where it was.</p>
@@ -266,17 +266,17 @@ footer{margin-top:64px;font-size:13px;color:var(--muted);border-top:1px solid va
 <div class="hist">
 <div class="list">
 <div class="srch">⌕ Search history<span style="margin-left:auto">All apps ▾</span></div>
-<div class="row on"><span class="app cx">C</span><div><div class="t1">Hey, can you send me the report by Wednesday? I'm out of the office Tuesday, so just send it to my work email.</div><div class="t2">15 s · 957 ms · Codex</div></div><span class="when">3:39 PM</span></div>
-<div class="row"><span class="app cl">A</span><div><div class="t1">One of the best features I love about this thing is that it doesn't take over my clipboard.</div><div class="t2">9 s · 640 ms · Claude</div></div><span class="when">12:27 PM</span></div>
-<div class="row"><span class="app cx">C</span><div><div class="t1">Okay, can you tell me what you fixed, because I just see a lot here right now?</div><div class="t2">4 s · 349 ms · Codex</div></div><span class="when">11:52 AM</span></div>
-<div class="row"><span class="app gh">G</span><div><div class="t1">git commit dash m tidy the release notes</div><div class="t2">3 s · 0 ms · Ghostty · raw</div></div><span class="when">11:40 AM</span></div>
-<div class="row"><span class="app ms">M</span><div><div class="t1">Tell Jordan the pickup is at three, not four.</div><div class="t2">3 s · 410 ms · Messages</div></div><span class="when">Yesterday</span></div>
+<div class="row on"><span class="app cx">C</span><div><div class="t1">Hey, can you send me the report by Wednesday? I'm out of the office Tuesday, so just send it to my work email.</div><div class="t2">15 s audio · done in &lt;1 s · Codex</div></div><span class="when">3:39 PM</span></div>
+<div class="row"><span class="app cl">A</span><div><div class="t1">One of the best features I love about this thing is that it doesn't take over my clipboard.</div><div class="t2">9 s audio · done in &lt;1 s · Claude</div></div><span class="when">12:27 PM</span></div>
+<div class="row"><span class="app cx">C</span><div><div class="t1">Okay, can you tell me what you fixed, because I just see a lot here right now?</div><div class="t2">4 s audio · done in &lt;1 s · Codex</div></div><span class="when">11:52 AM</span></div>
+<div class="row"><span class="app gh">G</span><div><div class="t1">git commit dash m tidy the release notes</div><div class="t2">3 s audio · done in 0 s · Ghostty · raw</div></div><span class="when">11:40 AM</span></div>
+<div class="row"><span class="app ms">M</span><div><div class="t1">Tell Jordan the pickup is at three, not four.</div><div class="t2">3 s audio · done in &lt;1 s · Messages</div></div><span class="when">Yesterday</span></div>
 </div>
 <div class="detail">
 <div class="tabs"><span>Raw</span><span class="on">Cleaned</span><span>Diff</span></div>
 <div class="txt"><del>Um so hey</del> Hey, can you <del>uh</del> send me <del>the</del> the report by <del>Tuesday no wait</del> Wednesday<ins>?</ins> <del>actually because um</del> I'm out of the office Tuesday<ins>, so</ins> <del>and uh yeah just</del> just send it to my work email. <del>And also</del> <ins>Also,</ins> the plan is Northwind pulls from the Obsidian Vault and then we run it through Ollama locally<ins>,</ins> <del>Probably</del> <ins>probably</ins> the Qwen model.</div>
 <div class="audio"><span class="play"></span><span>0:06</span><span class="bar"></span><span>0:15</span></div>
-<div class="meta"><span>stt 174 ms</span><span>llm 783 ms</span><span>insert 30 ms</span><span>qwen3.5 · medium</span><span>ax insert</span></div>
+<div class="meta"><span>speech to text &lt;1 s</span><span>cleanup &lt;1 s</span><span>typing &lt;1 s</span><span>qwen3.5 · medium</span><span>ax insert</span></div>
 <div class="acts"><span class="mb pri">Insert again</span><span class="mb">Copy cleaned</span><span class="mb">Copy raw</span><span class="mb">Add words to dictionary</span><span class="mb">Delete</span></div>
 </div>
 </div>
@@ -390,8 +390,8 @@ footer{margin-top:64px;font-size:13px;color:var(--muted);border-top:1px solid va
   var states = {
     idle: function(){ pill.className='pill mac'; key.classList.remove('down'); field.innerHTML=''; field.appendChild(document.createTextNode(baseText)); field.appendChild(caret); lbl.textContent='idle'; },
     listening: function(){ pill.innerHTML='<span class="dot-rec"></span><div class="wave" data-wave></div>'; var w=pill.querySelector('[data-wave]'); for(var i=0;i<14;i++) w.appendChild(document.createElement('i')); waves=document.querySelectorAll('[data-wave]'); pill.className='pill mac on'; key.classList.add('down'); lbl.textContent='key down · listening'; },
-    working: function(){ key.classList.remove('down'); pill.innerHTML='<span class="spin"></span><span class="lbl">Cleaning up</span>'; lbl.textContent='key up · whisper 174 ms · model 783 ms'; },
-    inserted: function(){ pill.innerHTML='<span class="chk"><svg viewBox="0 0 12 12"><path d="M2 6.5l2.6 2.6L10 3.7" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Inserted</span><span class="ms">957 ms</span>'; typeIn(cleaned); lbl.textContent='inserted · clipboard untouched'; },
+    working: function(){ key.classList.remove('down'); pill.innerHTML='<span class="spin"></span><span class="lbl">Cleaning up</span>'; lbl.textContent='key up · speech to text, then cleanup'; },
+    inserted: function(){ pill.innerHTML='<span class="chk"><svg viewBox="0 0 12 12"><path d="M2 6.5l2.6 2.6L10 3.7" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>Inserted</span><span class="ms">&lt;1 s</span>'; typeIn(cleaned); lbl.textContent='inserted · clipboard untouched'; },
     gone: function(){ pill.className='pill mac'; lbl.textContent='pill dropped away'; }
   };
   var order = ['idle','listening','working','inserted','gone'];

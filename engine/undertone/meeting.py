@@ -37,6 +37,16 @@ MAX_SUMMARY_INPUT_CHARS = 12_000
 MAX_SUMMARY_ROUNDS = 8
 
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def clock_time(seconds: float) -> str:
+    """A transcript offset to the whole second: 04:05, or 1:02:03 past an hour."""
+    total = max(0, int(round(float(seconds))))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
 _SPEAKERS = {"me", "others"}
 # A meeting that has finished. "needs_vault" is ended too; it only lacks an
 # Obsidian export because no vault is configured.
@@ -430,7 +440,9 @@ class MeetingService:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as output:
                 for seq, offset_s, speaker, text in chunks:
-                    output.write(json.dumps({"seq": seq, "timestamp": offset_s, "speaker": speaker, "text": text}, ensure_ascii=False) + "\n")
+                    # Whole seconds: the transcript file never carries milliseconds.
+                    stamp = max(0, int(round(float(offset_s))))
+                    output.write(json.dumps({"seq": seq, "timestamp": stamp, "speaker": speaker, "text": text}, ensure_ascii=False) + "\n")
                 output.flush()
                 os.fsync(output.fileno())
             os.replace(temporary_name, destination)
@@ -538,7 +550,7 @@ class MeetingService:
                 (session_id,),
             ).fetchall()
         lines = [
-            f"[{offset_s:.3f}] {speaker}: {text}"
+            f"[{clock_time(offset_s)}] {speaker}: {text}"
             for _, offset_s, speaker, text in rows
             if isinstance(text, str) and text.strip()
         ]
@@ -751,7 +763,7 @@ class MeetingService:
             "",
         ]
         for chunk in sorted(session["chunks"], key=lambda item: (item["offset_s"], item["seq"])):
-            lines.append(f"[{chunk['offset_s']:.3f}] **{chunk['speaker']}**: {chunk['text'] or ''}")
+            lines.append(f"[{clock_time(chunk['offset_s'])}] **{chunk['speaker']}**: {chunk['text'] or ''}")
         return "\n".join(lines) + "\n"
 
     def _all_chunks(self, session_id: str) -> list[dict[str, Any]]:
