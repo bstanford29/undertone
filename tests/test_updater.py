@@ -163,6 +163,14 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("docs", result["message"])
         self.assertEqual((self.checkout / "docs").read_text(), "my notes, saved as a file called docs\n")
 
+    def test_a_tracked_file_that_becomes_a_folder_is_not_a_collision(self):
+        git(self.upstream, "rm", "--quiet", "engine/undertone/a.py")
+        commit(self.upstream, "engine/undertone/a.py/inner.py", "x = 1\n", "Turn a file into a folder")
+        git(self.upstream, "push", "--quiet", "origin", "main")
+        self.assertEqual(updater.check(self.checkout, self.app)["state"], "ready")
+        self.assertEqual(self.apply()["state"], "done")
+        self.assertTrue((self.checkout / "engine/undertone/a.py/inner.py").is_file())
+
     def test_only_a_github_origin_is_updated_from(self):
         self.push("engine/undertone/a.py", "Fix the engine")
         git(self.checkout, "remote", "set-url", "origin", str(self.origin))

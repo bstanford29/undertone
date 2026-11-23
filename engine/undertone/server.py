@@ -242,22 +242,25 @@ class Engine:
         expect = optional_text(r, "expect", 64)
         if expect is not None and not re.fullmatch(r"[0-9a-f]{40}", expect):
             raise ValueError("expect must be a full commit id")
-        # The commit this engine process started from, so the app can tell
-        # whether a finished update still needs an engine restart.
-        running = {"engine_commit": self.started_commit, "checkout": str(updater.REPO_ROOT),
-                   "engine_stale": updater.engine_stale(self.started_commit)}
+        def answer(**fields: Any) -> dict:
+            # Sampled after the run status above was read: if a run finished in
+            # between, its checkout move is already visible here. The app uses
+            # this to tell whether the engine still runs older code.
+            return {**fields, "engine_commit": self.started_commit, "checkout": str(updater.REPO_ROOT),
+                    "engine_stale": updater.engine_stale(self.started_commit)}
         if op == "update.check":
-            return {"update": updater.check(app=app), "update_run": updater.read_status(), **running}
+            update = updater.check(app=app)
+            return answer(update=update, update_run=updater.read_status())
         if op == "update.status":
-            return {"update_run": updater.read_status(), **running}
+            return answer(update_run=updater.read_status())
         if op in {"update.apply", "update.undo"}:
             if self._live is not None:
-                return {"update_run": {"state": "blocked", "message": "Finish dictating, then update."}, **running}
+                return answer(update_run={"state": "blocked", "message": "Finish dictating, then update."})
             try:
                 action = "undo" if op == "update.undo" else "apply"
-                return {"update_run": updater.start_detached(action, app, expect=expect), **running}
+                return answer(update_run=updater.start_detached(action, app, expect=expect))
             except updater.StepFailed as exc:
-                return {"update_run": {"state": "blocked", "message": str(exc)}, **running}
+                return answer(update_run={"state": "blocked", "message": str(exc)})
         raise ValueError("Unknown operation")
 
     def _clean_args(self, r: dict) -> tuple[dict[str, Any], str, str | None, dict | None, str]:

@@ -73,8 +73,10 @@ struct UpdateDisplay: Equatable {
     ///   - busy: what is in progress right now (dictation, a meeting, a quick note), or nil.
     ///   - finishing: the step the app is on while it finishes an update, or nil.
     ///   - pending: the checkout or the app bundle on disk is newer than what is running.
+    ///   - finishProblem: why the last attempt to finish failed, with how to recover.
     static func make(check: UpdateCheck?, run: UpdateRun?, checking: Bool, busy: String?,
-                     finishing: String? = nil, pending: Bool = false) -> UpdateDisplay {
+                     finishing: String? = nil, pending: Bool = false,
+                     finishProblem: String? = nil) -> UpdateDisplay {
         if let run, run.state == "running" {
             return UpdateDisplay(headline: run.action == "undo" ? "Going back…" : "Updating…",
                                  detail: run.message, action: .none, tone: .working)
@@ -84,6 +86,10 @@ struct UpdateDisplay: Equatable {
         }
         if checking {
             return UpdateDisplay(headline: "Checking GitHub…", detail: nil, action: .none, tone: .working)
+        }
+        if let finishProblem {
+            return UpdateDisplay(headline: "Update not finished", detail: finishProblem,
+                                 action: busy == nil && pending ? .finish : .check, tone: .problem)
         }
         let runTime = run?.finishedAt ?? run?.startedAt ?? 0
         if pending {
@@ -134,6 +140,8 @@ final class UpdateModel: ObservableObject {
     /// The commit the running engine started from, from its last answer.
     @Published private(set) var engineCommit: String?
     @Published private(set) var finishing: String?
+    /// Why the last attempt to finish failed, with the Terminal recovery command.
+    @Published private(set) var finishProblem: String?
     /// The checkout has engine or package changes the running engine has not loaded.
     @Published private(set) var engineStale = false
     /// The commit stamped into this app's bundle on disk, read fresh. It differs
@@ -171,7 +179,8 @@ final class UpdateModel: ObservableObject {
     var isFinishing: Bool { finishing != nil && !waitingForIdle }
 
     var display: UpdateDisplay {
-        .make(check: check, run: run, checking: checking, busy: busyReason?(), finishing: finishing, pending: pending)
+        .make(check: check, run: run, checking: checking, busy: busyReason?(), finishing: finishing,
+              pending: pending, finishProblem: finishProblem)
     }
 
     /// The commit this app was built from, stamped into Info.plist by build_app.sh.
@@ -224,6 +233,7 @@ final class UpdateModel: ObservableObject {
     func checkNow() async {
         guard !previewMode, !checking, finishing == nil, run?.state != "running" else { return }
         checking = true
+        finishProblem = nil
         defer { checking = false }
         do {
             let response = try await engine.request(op: "update.check", fields: appPathField)
@@ -313,6 +323,7 @@ final class UpdateModel: ObservableObject {
     /// "Finish update" button.
     func finish() async {
         guard !previewMode, finishing == nil, pending else { return }
+        finishProblem = nil
         await waitUntilIdle()
         if needsEngineRestart {
             finishing = "Restarting the engine."
@@ -331,7 +342,7 @@ final class UpdateModel: ObservableObject {
             if needsEngineRestart || !answered {
                 finishing = nil
                 let folder = checkoutPath ?? "the Undertone folder"
-                run = .failure("The engine did not come back on the new version. To go back, run `.venv/bin/undertone update --undo` in Terminal in \(folder), then use Restart in Settings → Privacy.")
+                finishProblem = "The engine did not come back on the new version. To go back, run `.venv/bin/undertone update --undo` in Terminal in \(folder), then use Restart in Settings → Privacy."
                 return
             }
         }

@@ -659,6 +659,11 @@ class ServerTests(unittest.TestCase):
             self.engine.dispatch({"op": "update.apply", "app_path": "/tmp/Undertone.app"})
         with self.assertRaises(ValueError):
             self.engine.dispatch({"op": "update.apply", "expect": "main"})
+        order: list[str] = []
+        with patch.object(updater, "read_status", side_effect=lambda: order.append("run") or {"state": "done"}), \
+             patch.object(updater, "engine_stale", side_effect=lambda started: order.append("stale") or True):
+            self.engine.dispatch({"op": "update.status"})
+        self.assertEqual(order, ["run", "stale"], "staleness is read after the run, never before it")
         self.engine._live = ("session", object())
         with patch.object(updater, "start_detached", side_effect=AssertionError("must not start")):
             refused = self.engine.dispatch({"op": "update.apply"})

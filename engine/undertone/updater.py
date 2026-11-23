@@ -166,13 +166,19 @@ def _collisions(repo: Path, old: str, new: str) -> list[str]:
     on disk untracked or ignored. Git would refuse some and silently overwrite
     the ignored ones, so any of them stops the update."""
     hits: list[str] = []
+    # A tracked file the move itself deletes (a file that becomes a folder) is
+    # replaced by git, not overwritten, and the clean-checkout check covers it.
+    removed = set(_changed_paths(repo, old, new, "--diff-filter=D"))
     for path in _changed_paths(repo, old, new, "--diff-filter=A"):
         parts = Path(path).parts
         for depth in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:depth])
             here = repo.joinpath(*parts[:depth])
             leaf = depth == len(parts)
+            if prefix in removed:
+                continue
             if here.is_symlink() or (here.exists() and (leaf or not here.is_dir())):
-                hits.append("/".join(parts[:depth]))
+                hits.append(prefix)
                 break
     return sorted(set(hits))
 

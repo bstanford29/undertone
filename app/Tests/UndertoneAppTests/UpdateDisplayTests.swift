@@ -93,6 +93,14 @@ final class UpdateDisplayTests: XCTestCase {
         XCTAssertEqual(afterUpToDate.action, .finish)
     }
 
+    func testAFailedFinishShowsItsRecoveryCommandAheadOfPending() {
+        let shown = UpdateDisplay.make(check: nil, run: run("done"), checking: false, busy: nil, pending: true,
+                                       finishProblem: "Run `.venv/bin/undertone update --undo` in Terminal.")
+        XCTAssertEqual(shown.tone, .problem)
+        XCTAssertEqual(shown.detail, "Run `.venv/bin/undertone update --undo` in Terminal.")
+        XCTAssertEqual(shown.action, .finish, "Finish update stays available to try again")
+    }
+
     func testBlockedAndCurrentStates() {
         let blocked = UpdateDisplay.make(check: check("blocked"), run: nil, checking: false, busy: nil)
         XCTAssertEqual(blocked.tone, .problem)
