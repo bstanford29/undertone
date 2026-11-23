@@ -669,6 +669,30 @@ class LiveDictationTests(unittest.TestCase):
                 self.assertEqual(frames, [], "the corrected sentence must not be typed first")
                 self.assertTrue(any("w4. w5" in call["raw"] and "no wait" in call["raw"] for call in calls))
 
+    def test_a_correction_in_a_retried_tail_joins_the_unit_before(self):
+        # Same false start as above, but the tail window fails, so the words
+        # after "w4." come back from one retried decode.
+        parts: list[np.ndarray] = []
+        for index in range(15):
+            parts.append(_word(index))
+            parts.append(_pause(0.5 if index == 8 else 0.1))
+        audio = np.concatenate(parts)
+        relabel = {index: f"w{index}" for index in range(15)}
+        relabel.update({4: "w4.", 9: "no", 10: "wait", 11: "w11.", 14: "w14."})
+        fake = AmplitudeFake(relabel=relabel, fail_windows=(2,))
+        calls: list[dict] = []
+        session = LiveDictation(fake, _fake_cleaner(calls), level="medium", dictionary={},
+                                config={"tidy_speech": True}, min_unit_words=3, max_unit_words=40)
+        _feed(session, audio)
+        self.assertTrue(_wait_until(lambda: session.progress()["units_cleaned"] >= 1))
+        frames: list[dict] = []
+        result = session.finish(audio, emit=frames.append)
+        self.assertEqual(len(fake.whole_calls), 1, "the failed tail is decoded again once")
+        self.assertEqual(result.regrouped, 1)
+        self.assertEqual(frames, [], "the corrected sentence must not be typed first")
+        self.assertTrue(any("w4. w5" in call["raw"] and "no wait" in call["raw"] for call in calls))
+        self.assertEqual(result.raw.split()[-1], "w14.")
+
     def test_an_ordinary_no_at_a_unit_boundary_is_not_a_correction(self):
         audio = _sentences(15)
         fake = AmplitudeFake(relabel={5: "No", 6: "one"})

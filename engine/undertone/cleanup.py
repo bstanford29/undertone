@@ -491,12 +491,16 @@ def _fallback_after_primary(
     num_ctx: int,
     primary_short: bool,
     heard: str | None = None,
+    model_word_count: int | None = None,
 ) -> dict[str, Any]:
     """Retry once on the fallback model, else return the raw text.
 
     ``raw`` is what the models saw. ``heard``, when given, is the transcript
     before any filler stripping; the last-resort raw text types exactly that.
+    ``raw_word_count`` (words heard) feeds the 60% guard; ``model_word_count``
+    (words the model saw) feeds the copied-context check.
     """
+    model_word_count = raw_word_count if model_word_count is None else model_word_count
     heard = raw if heard is None else heard
     if not fallback_model:
         # No fallback model configured: never cold-load a large model to
@@ -530,7 +534,7 @@ def _fallback_after_primary(
         logger.warning("cleanup call to %s failed (%s)", fallback_model, type(exc).__name__)
         fallback = ""
 
-    fallback_expanded = _context_expanded(fallback, context, raw_word_count)
+    fallback_expanded = _context_expanded(fallback, context, model_word_count)
     fallback = _postprocess(fallback, dictionary)
     fallback_ok = bool(fallback) and _ratio_ok(fallback, raw_word_count) and not fallback_expanded
     output = fallback if fallback_ok else _raw_fallback_text(heard)
@@ -744,11 +748,14 @@ def clean_result(
     keep_alive = config.get("ollama_keep_alive", DEFAULT_KEEP_ALIVE)
     num_ctx = config.get("ollama_num_ctx", DEFAULT_NUM_CTX)
     heard = raw
+    model_word_count = raw_word_count
     if tidy_enabled(config):
         # Filler sounds never carry content, so the model never sees them.
         # The 60% guard still counts every word heard, fillers included, and
-        # the raw fallback types exactly what was heard.
+        # the raw fallback types exactly what was heard. The copied-context
+        # check measures against the words the model actually saw.
         raw = strip_filler_sounds(raw) or raw
+        model_word_count = len(raw.split())
 
     try:
         if context is None:
@@ -759,7 +766,7 @@ def clean_result(
         logger.warning("cleanup call to %s failed (%s)", primary_model, type(exc).__name__)
         primary = ""
 
-    primary_expanded = _context_expanded(primary, context, raw_word_count)
+    primary_expanded = _context_expanded(primary, context, model_word_count)
     primary = _postprocess(primary, dictionary)
     primary_short = not _ratio_ok(primary, raw_word_count)
     if not primary_short and not primary_expanded:
@@ -768,7 +775,7 @@ def clean_result(
     return _fallback_after_primary(
         raw, raw_word_count, level, dictionary, system_prompt, context,
         primary, primary_model, fallback_model, ollama_url, keep_alive, num_ctx,
-        primary_short, heard=heard,
+        primary_short, heard=heard, model_word_count=model_word_count,
     )
 
 
@@ -813,9 +820,12 @@ def stream_clean_result(
     keep_alive = config.get("ollama_keep_alive", DEFAULT_KEEP_ALIVE)
     num_ctx = config.get("ollama_num_ctx", DEFAULT_NUM_CTX)
     heard = stripped
+    model_word_count = raw_word_count
     if tidy_enabled(config):
-        # The model sees no filler sounds; the guard counts every word heard.
+        # The model sees no filler sounds; the guard counts every word heard,
+        # and the copied-context check counts the words the model saw.
         stripped = strip_filler_sounds(stripped) or stripped
+        model_word_count = len(stripped.split())
     threshold = math.ceil(raw_word_count * MIN_LENGTH_RATIO)
     holdback = _holdback_words(dictionary)
     accumulated = ""
@@ -857,7 +867,7 @@ def stream_clean_result(
         result = _fallback_after_primary(
             stripped, raw_word_count, level, dictionary, system_prompt, validated,
             primary, primary_model, fallback_model, ollama_url, keep_alive, num_ctx,
-            primary_short, heard=heard,
+            primary_short, heard=heard, model_word_count=model_word_count,
         )
         result["chunks_sent"] = 0
         return result
@@ -869,7 +879,7 @@ def stream_clean_result(
         )
         for delta in stream:
             accumulated += delta
-            if _context_expanded(accumulated, validated, raw_word_count):
+            if _context_expanded(accumulated, validated, model_word_count):
                 if chunks_sent > 0:
                     return finalize_committed(truncated=True)
                 return fallback_from_primary(accumulated)
@@ -886,7 +896,7 @@ def stream_clean_result(
         whole = accumulated.strip()
         primary = _postprocess(whole, dictionary)
         primary_short = not _ratio_ok(primary, raw_word_count)
-        primary_expanded = _context_expanded(whole, validated, raw_word_count)
+        primary_expanded = _context_expanded(whole, validated, model_word_count)
         if not primary_short and not primary_expanded:
             result = _result_dict(primary, primary_model, level, False, False, False)
             result["chunks_sent"] = 0

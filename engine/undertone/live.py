@@ -42,6 +42,7 @@ from .cleanup import (
     CORRECTION_LEAD_WORDS,
     _raw_fallback_text,
     applies_self_corrections,
+    mentions_correction,
     opens_with_correction,
     starts_correction,
 )
@@ -878,6 +879,11 @@ class LiveDictation:
                 index = first_unit.get(chunk.sequence, len(unit_raws) if tail_raw else 0)
                 if index:
                     join_before.add(index)
+            if run.error and unit_raws and tail_raw and mentions_correction(tail_raw):
+                # A failed window's words came back as one retried tail, so
+                # where its chunks began is unknown. A correction anywhere in
+                # it may refer to the unit before.
+                join_before.add(len(unit_raws))
         groups = self._join_groups(
             pieces, corrects=corrects, cut_check=not interrupted, join_before=join_before,
         )

@@ -479,6 +479,32 @@ class TidySpeechTests(unittest.TestCase):
         self.assertTrue(streamed["guard_fired"])
         self.assertIn("Priya", streamed["clean_text"])
 
+    def test_copied_context_is_measured_against_the_words_the_model_saw(self):
+        # Twenty words heard, ten sent to the model. A 24-word answer copied
+        # from the context is far longer than the ten words it was given.
+        heard = "um we uh must um call uh Priya um about uh invoices um and uh send um budget uh today"
+        copied = " ".join(["Earlier", "notes", "about", "the", "quarter", "and", "the", "vendor", "list"] * 3)[:-1]
+        copied = " ".join(copied.split()[:24]) + "."
+        context = {"before": copied, "after": "", "selected": ""}
+
+        def fake_call(system, raw, model, url, keep_alive, context=None, num_ctx=None):
+            return copied
+
+        def fake_stream(system, raw, model, url, keep_alive, context=None, num_ctx=None):
+            yield copied
+
+        frames = []
+        config = cfg(tidy_speech=True, cleanup_fallback_model="")
+        with patch.object(cleanup, "_call_ollama", side_effect=fake_call):
+            result = cleanup.clean_result(heard, "medium", {}, config, context=context)
+        with patch.object(cleanup, "_stream_ollama", side_effect=fake_stream):
+            streamed = cleanup.stream_clean_result(heard, "medium", {}, config, context=context, emit=frames.append)
+        for outcome in (result, streamed):
+            self.assertTrue(outcome["guard_fired"])
+            self.assertNotIn("Earlier", outcome["clean_text"])
+            self.assertIn("Priya", outcome["clean_text"])
+        self.assertEqual(frames, [])
+
     def test_which_levels_apply_self_corrections(self):
         self.assertTrue(cleanup.applies_self_corrections("medium", {"tidy_speech": True}))
         self.assertFalse(cleanup.applies_self_corrections("medium", {"tidy_speech": False}))
