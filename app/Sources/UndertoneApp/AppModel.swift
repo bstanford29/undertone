@@ -99,6 +99,7 @@ final class AppModel: ObservableObject {
     let engine: EngineClient
     let recorder = AudioRecorder()
     let meetings: MeetingModel
+    let updates: UpdateModel
     let inserter = InsertionController()
     let hotkey = HotkeyMonitor()
     let editWatcher: EditWatcher
@@ -187,6 +188,11 @@ final class AppModel: ObservableObject {
     private var unresolvedLearningClientToken: String?
     private var unresolvedLearningFallback: PersistedLearningFallback?
     private var meetingsObservation: AnyCancellable?
+    private var updatesObservation: AnyCancellable?
+    /// Set by the app delegate: whether the quick note panel is open.
+    var quickNoteIsOpen: (() -> Bool)?
+    /// Settings opens on this tab next, then clears it.
+    @Published var requestedSettingsTab: SettingsTab?
     private var meetingStateObservation: AnyCancellable?
     private var detectionObservation: AnyCancellable?
     private var nudgeTask: Task<Void, Never>?
@@ -245,7 +251,12 @@ final class AppModel: ObservableObject {
         editWatcher = EditWatcher(inserter: inserter)
         meetings = MeetingModel(engine: EngineClient(path: configured ?? NSString(string: "~/.undertone/engine.sock").expandingTildeInPath),
                                 previewMode: previewMode)
+        updates = UpdateModel(engine: EngineClient(path: configured ?? NSString(string: "~/.undertone/engine.sock").expandingTildeInPath),
+                              previewMode: previewMode)
         meetingsObservation = meetings.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+        updatesObservation = updates.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
         if let data = UserDefaults.standard.data(forKey: Self.unresolvedLearningRequestKey),
@@ -257,8 +268,9 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.unresolvedLearningRequestKey)
             unresolvedLearningClientToken = UserDefaults.standard.string(forKey: Self.unresolvedLearningTokenKey)
         }
+        updates.busyReason = { [weak self] in self?.updateBusyReason() }
         meetings.canStartMeeting = { [weak self] in
-            guard let self else { return false }
+            guard let self, !self.updates.isFinishing else { return false }
             switch self.pillState {
             case .listening, .working: return false
             default: return true
@@ -607,6 +619,11 @@ final class AppModel: ObservableObject {
 
     func beginDictation() {
         guard !insertionInFlight else { return }
+        // The engine is restarting or the app is about to reopen: speech now would be lost.
+        guard !updates.isFinishing else {
+            showTransientError("Undertone is finishing an update")
+            return
+        }
         guard !meetings.state.isRecording else {
             showTransientError("Stop meeting capture before dictating")
             return
@@ -1719,6 +1736,10 @@ final class AppModel: ObservableObject {
 
     /// Quick note and Opt+S both land here.
     func toggleQuickNote() {
+        if updates.isFinishing, quickNoteIsOpen?() != true {
+            showTransientError("Undertone is finishing an update")
+            return
+        }
         onQuickNoteToggle?()
     }
 
@@ -2174,6 +2195,28 @@ final class AppModel: ObservableObject {
     }
 
     /// Opens the Settings scene, the same window ⌘, opens.
+    /// What an update must wait for, or nil. Finishing an update restarts the
+    /// engine and may reopen the app, so nothing in progress may be cut off.
+    func updateBusyReason() -> String? {
+        // The preview pins the pill to "working" for its own screenshots.
+        guard !previewMode else { return nil }
+        switch pillState {
+        case .listening, .working: return "A dictation is in progress."
+        default: break
+        }
+        if meetings.state.isRecording { return "Meeting notes are recording." }
+        if meetings.state == .summarizing { return "A meeting summary is being written." }
+        if quickNoteIsOpen?() == true { return "A quick note is open." }
+        return nil
+    }
+
+    /// "Check for Updates…" in the menu: open Settings on Updates and check.
+    func checkForUpdates() {
+        requestedSettingsTab = .updates
+        openSettings()
+        Task { await updates.checkNow() }
+    }
+
     func openSettings() {
         if !previewMode { externalTarget = captureExternalTarget() }
         NSApp.activate(ignoringOtherApps: true)

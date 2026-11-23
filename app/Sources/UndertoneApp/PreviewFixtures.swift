@@ -192,6 +192,61 @@ enum PreviewFixtures {
         high: "cold", highModel: "gemma4:31b", keepAlive: "60m"
     )
 
+    /// `--update-state ready|running|failed|installed|current` picks what the Updates tab shows.
+    static let updateState: String = {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--update-state"),
+              arguments.indices.contains(index + 1) else { return "ready" }
+        return arguments[index + 1].lowercased()
+    }()
+
+    static let updateAppCommit = "4d1c9e2a7b3f5e8d6c0a1b2c3d4e5f60718293a4"
+    private static let updateOldCommit = "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9"
+    private static let updateNewCommit = "8b7f0e3c2d1a4b5c6d7e8f9a0b1c2d3e4f5a6b7c"
+
+    /// The engine runs the new commit only once an update is finished.
+    static var updateEngineCommit: String {
+        updateState == "current" ? updateNewCommit : updateOldCommit
+    }
+
+    static var updateCheck: UpdateCheck {
+        if updateState == "current" {
+            return UpdateCheck(state: "current", message: "Undertone is up to date.", changes: [], behind: 0,
+                               head: updateNewCommit, remote: updateNewCommit, appChanged: false, checkedAt: now)
+        }
+        return UpdateCheck(
+            state: "ready", message: "3 new changes ready to install.",
+            changes: [
+                UpdateChange(commit: "8b7f0e3", time: now - 2 * 3_600, title: "Keep the cursor where it was after Undo"),
+                UpdateChange(commit: "51ac9d0", time: now - 26 * 3_600, title: "Show the meeting timer in whole seconds"),
+                UpdateChange(commit: "e04b6f2", time: now - 50 * 3_600, title: "Retry cleanup once when Ollama is still loading"),
+            ],
+            behind: 3, head: updateOldCommit, remote: updateNewCommit, appChanged: true, checkedAt: now
+        )
+    }
+
+    /// The last run as the Updates tab sees it in each preview state.
+    static var updateRun: UpdateRun? {
+        func run(_ state: String, _ message: String, finished: Double?, canUndo: Bool = false,
+                 log: String? = nil) -> UpdateRun {
+            UpdateRun(state: state, runID: "preview", action: "update", message: message, startedAt: now + 1,
+                      finishedAt: finished, canUndo: canUndo, logPath: log)
+        }
+        switch updateState {
+        case "running":
+            return run("running", "Building the app. This takes a few minutes.", finished: nil)
+        case "failed":
+            return run("failed", "build_app.sh failed (exit 1). The log has the details. Nothing changed: the checkout is back on a0b1c2d and the installed app was not touched.",
+                       finished: now + 2, log: "~/.undertone/update.log")
+        case "installed":
+            return run("done", "Updated to 8b7f0e3.", finished: now + 2, canUndo: true)
+        case "current":
+            return run("done", "Updated to 8b7f0e3.", finished: now - 590, canUndo: true)
+        default:
+            return nil
+        }
+    }
+
     /// 12 minutes and 4 seconds, the timer reading in the mockup.
     static let recordingElapsed: TimeInterval = 12 * 60 + 4
 }
