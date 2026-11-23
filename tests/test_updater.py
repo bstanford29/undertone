@@ -62,9 +62,22 @@ class UpdaterTests(unittest.TestCase):
         git(self.upstream, "push", "--quiet", "origin", "main")
         subprocess.run(["git", "clone", "--quiet", str(self.origin), str(self.checkout)], check=True, env=GIT_ENV,
                        capture_output=True)
+        # The checkout's origin says GitHub, as a real clone's does; git's own
+        # insteadOf sends the fetches to the local stand-in.
+        git(self.checkout, "remote", "set-url", "origin", "https://github.com/example/undertone.git")
+        git(self.checkout, "config", f"url.{self.origin}.insteadOf", "https://github.com/example/undertone.git")
         self.app = make_app(self.apps / "Undertone.app", "old app")
         self.installs: list[str] = []
+        self.restores: list[tuple[str, str]] = []
+        def freeze(folder, commit, out):
+            path = folder / f"update-packages-{commit[:12]}.txt"
+            path.write_text(f"packages at {commit}\n")
+            return path
         for name, value in (("signing_identity", lambda app: "Apple Development: Test (TEAM)"),
+                            ("_engine_imports", lambda repo, out: None),
+                            ("_freeze_packages", freeze),
+                            ("_restore_packages", lambda snapshot, repo, out: self.restores.append(
+                                (snapshot.read_text().strip(), git(repo, "rev-parse", "HEAD")))),
                             ("designated_requirement", lambda app: 'identifier "com.undertone.app"'),
                             ("_identity_in_keychain", lambda identity: True),
                             ("_xcode_ready", lambda: True),
@@ -141,6 +154,33 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(draft.read_text(), "my own notes\n")
         self.assertEqual(self.head(), self.first)
 
+    def test_an_ignored_file_where_the_update_needs_a_folder_blocks_it(self):
+        self.push("docs/readme.md", "Add docs")
+        (self.checkout / "docs").write_text("my notes, saved as a file called docs\n")
+        (self.checkout / ".git/info/exclude").write_text("docs\n")
+        result = self.apply()
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("docs", result["message"])
+        self.assertEqual((self.checkout / "docs").read_text(), "my notes, saved as a file called docs\n")
+
+    def test_only_a_github_origin_is_updated_from(self):
+        self.push("engine/undertone/a.py", "Fix the engine")
+        git(self.checkout, "remote", "set-url", "origin", str(self.origin))
+        info = updater.check(self.checkout, self.app)
+        self.assertEqual(info["state"], "blocked")
+        self.assertIn("not on GitHub", info["message"])
+
+    def test_the_engine_is_stale_until_it_restarts_whoever_moved_the_checkout(self):
+        self.push("docs/notes.md", "Docs only")
+        self.assertEqual(self.apply()["state"], "done")
+        self.assertFalse(updater.engine_stale(self.first, self.checkout), "a docs change needs no restart")
+        self.push("engine/undertone/a.py", "Fix the engine", text="three\n")
+        self.assertEqual(self.apply()["state"], "done")
+        self.assertTrue(updater.engine_stale(self.first, self.checkout))
+        self.assertEqual(self.apply()["state"], "done", "a later 'up to date' run")
+        self.assertTrue(updater.engine_stale(self.first, self.checkout), "still stale: it does not hang on the last run")
+        self.assertFalse(updater.engine_stale(self.head(), self.checkout), "a restarted engine is current")
+
     def test_app_change_without_xcode_is_blocked(self):
         self.push("app/Sources/UndertoneApp/View.swift", "Change the app")
         with patch.object(updater, "_xcode_ready", lambda: False):
@@ -179,18 +219,29 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(marker(self.app), "old app")
         self.assertFalse(updater.read_status(self.state)["can_undo"])
 
-    def test_failed_package_install_puts_the_old_packages_back(self):
-        new = self.push("pyproject.toml", "Add a dependency", text="[project]\n")
-        calls: list[str] = []
-        def install(repo, out):
-            calls.append(git(repo, "rev-parse", "HEAD"))
-            if len(calls) == 1:
-                raise updater.StepFailed("uv failed (exit 2).")
-        with patch.object(updater, "_install_packages", install):
+    def test_failed_package_install_restores_the_exact_old_packages(self):
+        self.push("pyproject.toml", "Add a dependency", text="[project]\n")
+        with patch.object(updater, "_install_packages", side_effect=updater.StepFailed("uv failed (exit 2).")):
             result = self.apply()
         self.assertEqual(result["state"], "failed")
-        self.assertEqual(calls, [new, self.first], "installs at the new commit, then again at the old one")
+        self.assertEqual(self.restores, [(f"packages at {self.first}", self.first)],
+                         "the package list saved before the install comes back, at the old commit")
         self.assertEqual(self.head(), self.first)
+
+    def test_a_new_engine_that_does_not_load_is_rolled_back(self):
+        self.push("engine/undertone/a.py", "Break the engine")
+        with patch.object(updater, "_engine_imports", side_effect=updater.StepFailed("The new engine does not load.")):
+            result = self.apply()
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("does not load", result["message"])
+        self.assertEqual(self.head(), self.first)
+
+    def test_go_back_restores_the_packages_from_before_the_update(self):
+        new = self.push("pyproject.toml", "Add a dependency", text="[project]\n")
+        self.assertEqual(self.apply()["state"], "done")
+        self.assertEqual(self.undo()["state"], "done")
+        self.assertEqual(self.restores, [(f"packages at {self.first}", self.first)])
+        self.assertNotEqual(self.head(), new)
 
     def test_rollback_never_moves_a_branch_the_user_switched_to(self):
         self.push("app/Sources/UndertoneApp/View.swift", "Change the app")

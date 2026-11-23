@@ -44,28 +44,18 @@ struct UpdateRun: Codable, Equatable, Sendable {
     let message: String?
     let startedAt: Double?
     let finishedAt: Double?
-    /// The commit the checkout is on after the run.
-    let newCommit: String?
-    /// The engine must restart to run `newCommit`.
-    let restartEngine: Bool?
-    /// The app bundle at `appPath` was replaced by one built from `appCommit`.
-    let relaunch: Bool?
-    let appPath: String?
-    let appCommit: String?
     let canUndo: Bool?
     let logPath: String?
 
     enum CodingKeys: String, CodingKey {
-        case state, action, message, relaunch
-        case runID = "run_id", startedAt = "started_at", finishedAt = "finished_at", newCommit = "new"
-        case restartEngine = "restart_engine", appPath = "app_path", appCommit = "app_commit"
+        case state, action, message
+        case runID = "run_id", startedAt = "started_at", finishedAt = "finished_at"
         case canUndo = "can_undo", logPath = "log_path"
     }
 
     static func failure(_ message: String) -> UpdateRun {
         UpdateRun(state: "failed", runID: nil, action: nil, message: message, startedAt: nil,
-                  finishedAt: Date().timeIntervalSince1970, newCommit: nil, restartEngine: nil, relaunch: nil,
-                  appPath: nil, appCommit: nil, canUndo: nil, logPath: nil)
+                  finishedAt: Date().timeIntervalSince1970, canUndo: nil, logPath: nil)
     }
 }
 
@@ -82,7 +72,7 @@ struct UpdateDisplay: Equatable {
     /// - Parameters:
     ///   - busy: what is in progress right now (dictation, a meeting, a quick note), or nil.
     ///   - finishing: the step the app is on while it finishes an update, or nil.
-    ///   - pending: the last update is installed but the engine or app still runs the old code.
+    ///   - pending: the checkout or the app bundle on disk is newer than what is running.
     static func make(check: UpdateCheck?, run: UpdateRun?, checking: Bool, busy: String?,
                      finishing: String? = nil, pending: Bool = false) -> UpdateDisplay {
         if let run, run.state == "running" {
@@ -96,7 +86,7 @@ struct UpdateDisplay: Equatable {
             return UpdateDisplay(headline: "Checking GitHub…", detail: nil, action: .none, tone: .working)
         }
         let runTime = run?.finishedAt ?? run?.startedAt ?? 0
-        if let run, run.state == "done", pending {
+        if pending {
             return UpdateDisplay(headline: "Update installed",
                                  detail: busy.map { "It finishes when this ends: \($0)" }
                                     ?? "Restart the engine and reopen Undertone to use it.",
@@ -144,6 +134,13 @@ final class UpdateModel: ObservableObject {
     /// The commit the running engine started from, from its last answer.
     @Published private(set) var engineCommit: String?
     @Published private(set) var finishing: String?
+    /// The checkout has engine or package changes the running engine has not loaded.
+    @Published private(set) var engineStale = false
+    /// The commit stamped into this app's bundle on disk, read fresh. It differs
+    /// from `appCommit` once an update replaced the bundle this process runs from.
+    @Published private(set) var bundleCommitOnDisk: String?
+    /// The checkout the engine runs from, for the Terminal recovery command.
+    @Published private(set) var checkoutPath: String?
     /// What is in progress right now (dictation, a meeting, a quick note), or nil.
     var busyReason: (() -> String?)?
 
@@ -160,8 +157,18 @@ final class UpdateModel: ObservableObject {
             check = PreviewFixtures.updateCheck
             run = PreviewFixtures.updateRun
             engineCommit = PreviewFixtures.updateEngineCommit
+            engineStale = PreviewFixtures.updateState == "installed"
+            bundleCommitOnDisk = PreviewFixtures.updateAppCommit
         }
     }
+
+    /// Waiting for a dictation, meeting, or quick note to end before finishing.
+    private var waitingForIdle = false
+
+    /// True while the engine restarts or the app reopens. New dictation,
+    /// meetings, and quick notes wait for that, so nothing is cut off. While
+    /// the update only waits for something to end, everything still works.
+    var isFinishing: Bool { finishing != nil && !waitingForIdle }
 
     var display: UpdateDisplay {
         .make(check: check, run: run, checking: checking, busy: busyReason?(), finishing: finishing, pending: pending)
@@ -175,24 +182,40 @@ final class UpdateModel: ObservableObject {
 
     var canUndo: Bool { run?.canUndo == true && run?.state != "running" && finishing == nil }
 
-    private var needsEngineRestart: Bool {
-        guard let run, run.state == "done", run.restartEngine == true, let target = run.newCommit else { return false }
-        return engineCommit != target
-    }
+    private var needsEngineRestart: Bool { engineStale }
 
     private var needsReopen: Bool {
-        guard let run, run.state == "done", run.relaunch == true, let target = run.appCommit else { return false }
-        return appCommit != target
+        guard let disk = bundleCommitOnDisk, let running = appCommit else { return false }
+        return disk != running
     }
 
-    /// The last update is on disk, but the engine or this app still runs older code.
+    /// An update is on disk, but the engine or this app still runs older code.
+    /// Worked out from what is running, not from the last run, so a later
+    /// "up to date" run or a Terminal update cannot hide it.
     var pending: Bool { needsEngineRestart || needsReopen }
+
+    /// Takes the live state from any `update.*` answer.
+    private func adopt(_ response: EngineResponse) {
+        engineCommit = response.engineCommit
+        engineStale = response.engineStale ?? false
+        if let checkout = response.checkout { checkoutPath = checkout }
+        bundleCommitOnDisk = Self.readBundleCommit()
+    }
+
+    /// Reads Info.plist from disk, not the copy loaded at launch.
+    private static func readBundleCommit() -> String? {
+        let url = Bundle.main.bundleURL.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        else { return nil }
+        return plist["UndertoneBuildCommit"] as? String
+    }
 
     /// Reads the last run, so an update still running, or one that failed or
     /// still needs finishing, shows when Settings opens.
     func loadStatus() async {
         guard !previewMode, let response = try? await engine.request(op: "update.status") else { return }
-        engineCommit = response.engineCommit
+        adopt(response)
         guard let latest = response.updateRun else { return }
         run = latest
         if latest.state == "running" { poll() }
@@ -205,7 +228,7 @@ final class UpdateModel: ObservableObject {
         do {
             let response = try await engine.request(op: "update.check", fields: appPathField)
             check = response.update ?? .failure("The engine sent no update details.")
-            engineCommit = response.engineCommit
+            adopt(response)
             if let latest = response.updateRun { run = latest }
         } catch {
             check = .failure("The engine did not answer. Is it running?")
@@ -237,7 +260,7 @@ final class UpdateModel: ObservableObject {
     private func start(op: String, fields: [String: JSONValue]) async {
         do {
             let response = try await engine.request(op: op, fields: fields)
-            engineCommit = response.engineCommit
+            adopt(response)
             guard let latest = response.updateRun else { return }
             run = latest
             if latest.state == "running" {
@@ -273,7 +296,7 @@ final class UpdateModel: ObservableObject {
                     continue
                 }
                 misses = 0
-                self.engineCommit = response.engineCommit
+                self.adopt(response)
                 self.run = latest
                 guard latest.state != "running" else { continue }
                 if latest.state == "done", latest.runID != nil, latest.runID == self.acceptedRunID {
@@ -289,35 +312,49 @@ final class UpdateModel: ObservableObject {
     /// Runs on its own after an update this app started; otherwise from the
     /// "Finish update" button.
     func finish() async {
-        guard !previewMode, finishing == nil, let run, run.state == "done", pending else { return }
-        while let reason = busyReason?() {
-            finishing = "It finishes when this ends: \(reason)"
-            try? await Task.sleep(for: .seconds(1))
-        }
+        guard !previewMode, finishing == nil, pending else { return }
+        await waitUntilIdle()
         if needsEngineRestart {
             finishing = "Restarting the engine."
-            if await EngineRestarter.restart() {
-                var waited = 0
-                while needsEngineRestart, waited < 60 {
-                    try? await Task.sleep(for: .seconds(1))
-                    waited += 1
-                    if let response = try? await engine.request(op: "update.status") {
-                        engineCommit = response.engineCommit
-                    }
+            let restarted = await EngineRestarter.restart()
+            var answered = false
+            var waited = 0
+            while restarted, waited < 60 {
+                try? await Task.sleep(for: .seconds(1))
+                waited += 1
+                if let response = try? await engine.request(op: "update.status") {
+                    adopt(response)
+                    answered = true
+                    if !needsEngineRestart { break }
                 }
             }
-            if needsEngineRestart {
+            if needsEngineRestart || !answered {
                 finishing = nil
-                self.run = .failure("The engine did not restart on the new version. Use Restart in Settings → Privacy, then reopen Undertone.")
+                let folder = checkoutPath ?? "the Undertone folder"
+                run = .failure("The engine did not come back on the new version. To go back, run `.venv/bin/undertone update --undo` in Terminal in \(folder), then use Restart in Settings → Privacy.")
                 return
             }
         }
-        if needsReopen, let path = run.appPath {
+        if needsReopen {
+            // Checked again here: something may have started during the restart.
+            await waitUntilIdle()
             finishing = "Reopening Undertone."
-            Self.reopen(at: path)
+            Self.reopen(at: Bundle.main.bundleURL.path)
             return
         }
         finishing = nil
+    }
+
+    /// Returns on the main actor with nothing in progress. The caller's next
+    /// step starts before any new capture can, because nothing awaits between.
+    private func waitUntilIdle() async {
+        while let reason = busyReason?() {
+            waitingForIdle = true
+            finishing = "It finishes when this ends: \(reason)"
+            try? await Task.sleep(for: .seconds(1))
+        }
+        waitingForIdle = false
+        finishing = finishing ?? "Finishing."
     }
 
     /// Waits for this process to exit, then opens the new app at the same path.

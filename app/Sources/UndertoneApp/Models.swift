@@ -287,8 +287,12 @@ struct EngineResponse: Codable, Equatable, Sendable {
     let update: UpdateCheck?
     /// `update.status`, `update.apply`, `update.undo`: the last run.
     let updateRun: UpdateRun?
-    /// `update.*`: the commit the running engine started from.
+    /// Every `update.*` answer: the commit the running engine started from,
+    /// whether the checkout has engine changes it has not loaded, and the
+    /// checkout's path.
     let engineCommit: String?
+    let engineStale: Bool?
+    let checkout: String?
 
     enum CodingKeys: String, CodingKey {
         case id, raw, clean, cleanText = "clean_text", rewrite, sttMS = "stt_ms", llmMS = "llm_ms", model, whisper, cleanup
@@ -303,7 +307,7 @@ struct EngineResponse: Codable, Equatable, Sendable {
         case chunk, seq, done, chunksSent = "chunks_sent"
         case streamTruncated = "stream_truncated", streamInterrupted = "stream_interrupted"
         case liveUnits = "live_units", liveFallback = "live_fallback", liveReleaseMS = "live_release_ms"
-        case update, updateRun = "update_run", engineCommit = "engine_commit"
+        case update, updateRun = "update_run", engineCommit = "engine_commit", engineStale = "engine_stale", checkout
     }
 }
 

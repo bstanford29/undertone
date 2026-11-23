@@ -225,12 +225,12 @@ enum PreviewFixtures {
         )
     }
 
+    /// The last run as the Updates tab sees it in each preview state.
     static var updateRun: UpdateRun? {
-        func run(_ state: String, _ message: String, finished: Double?, newCommit: String? = nil,
-                 appCommit: String? = nil, canUndo: Bool = false, log: String? = nil) -> UpdateRun {
+        func run(_ state: String, _ message: String, finished: Double?, canUndo: Bool = false,
+                 log: String? = nil) -> UpdateRun {
             UpdateRun(state: state, runID: "preview", action: "update", message: message, startedAt: now + 1,
-                      finishedAt: finished, newCommit: newCommit, restartEngine: newCommit != nil,
-                      relaunch: appCommit != nil, appPath: nil, appCommit: appCommit, canUndo: canUndo, logPath: log)
+                      finishedAt: finished, canUndo: canUndo, logPath: log)
         }
         switch updateState {
         case "running":
@@ -239,11 +239,9 @@ enum PreviewFixtures {
             return run("failed", "build_app.sh failed (exit 1). The log has the details. Nothing changed: the checkout is back on a0b1c2d and the installed app was not touched.",
                        finished: now + 2, log: "~/.undertone/update.log")
         case "installed":
-            return run("done", "Updated to 8b7f0e3.", finished: now + 2, newCommit: updateNewCommit,
-                       appCommit: updateNewCommit, canUndo: true)
+            return run("done", "Updated to 8b7f0e3.", finished: now + 2, canUndo: true)
         case "current":
-            return run("done", "Updated to 8b7f0e3.", finished: now - 590, newCommit: updateNewCommit,
-                       appCommit: updateAppCommit, canUndo: true)
+            return run("done", "Updated to 8b7f0e3.", finished: now - 590, canUndo: true)
         default:
             return nil
         }

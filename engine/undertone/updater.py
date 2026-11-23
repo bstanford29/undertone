@@ -10,6 +10,7 @@ checkout, the Python packages, and the app back the way they were.
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import os
 import plistlib
@@ -164,8 +165,16 @@ def _collisions(repo: Path, old: str, new: str) -> list[str]:
     """Files that moving from `old` to `new` would add, but that already exist
     on disk untracked or ignored. Git would refuse some and silently overwrite
     the ignored ones, so any of them stops the update."""
-    added = _changed_paths(repo, old, new, "--diff-filter=A")
-    return [p for p in added if (repo / p).exists() or (repo / p).is_symlink()]
+    hits: list[str] = []
+    for path in _changed_paths(repo, old, new, "--diff-filter=A"):
+        parts = Path(path).parts
+        for depth in range(1, len(parts) + 1):
+            here = repo.joinpath(*parts[:depth])
+            leaf = depth == len(parts)
+            if here.is_symlink() or (here.exists() and (leaf or not here.is_dir())):
+                hits.append("/".join(parts[:depth]))
+                break
+    return sorted(set(hits))
 
 
 def _expect_head(repo: Path, commit: str) -> None:
@@ -177,6 +186,29 @@ def _expect_head(repo: Path, commit: str) -> None:
         branch = "detached"
     if branch != f"refs/heads/{BRANCH}" or _git(repo, "rev-parse", "HEAD") != commit:
         raise StepFailed("The checkout changed while the update ran, so the updater left it alone.")
+
+
+def _origin_on_github(repo: Path) -> bool:
+    """The check promises a fetch from GitHub, so `origin` must point there."""
+    try:
+        url = _git(repo, "config", "--get", f"remote.{REMOTE}.url")
+    except StepFailed:
+        return False
+    return url.startswith(("https://github.com/", "git@github.com:", "ssh://git@github.com/"))
+
+
+def engine_stale(started: str | None, repo: Path = REPO_ROOT) -> bool:
+    """True when the checkout has engine or package changes the running engine,
+    which started from `started`, has not loaded. Worked out from the checkout
+    itself, so it holds whichever run, or person, moved it."""
+    head = head_commit(repo)
+    if not started or not head or head == started:
+        return False
+    try:
+        changed = _classify(_changed_paths(repo, started, head))
+    except StepFailed:
+        return True
+    return changed["engine_changed"] or changed["deps_changed"]
 
 
 def _clean(repo: Path) -> bool:
@@ -306,6 +338,8 @@ def check(repo: Path = REPO_ROOT, app: Path | None = None, *, fetch: bool = True
     info["repo"] = str(top)
     info["head"] = _git(top, "rev-parse", "HEAD")
     info["branch"] = _git(top, "rev-parse", "--abbrev-ref", "HEAD")
+    if not _origin_on_github(top):
+        return {**info, "state": "blocked", "message": f"This checkout's {REMOTE} is not on GitHub, so it is not updated from here."}
     if fetch:
         try:
             _git(top, "fetch", "--quiet", "--no-tags", REMOTE, REFSPEC, timeout=FETCH_TIMEOUT_SECONDS)
@@ -385,19 +419,24 @@ def apply(repo: Path = REPO_ROOT, app: Path | None = None, *, state_dir: Path | 
 
         run.step("pulling", f"Moving the checkout from {old[:7]} to {new[:7]}.")
         _expect_head(top, old)
-        _git(top, "merge", "--ff-only", "--quiet", new)
+        _git(top, "merge", "--ff-only", "--no-overwrite-ignore", "--quiet", new)
         staged: Path | None = None
-        installed = swapped = False
+        packages: Path | None = None
+        swapped = False
         try:
             if info["app_changed"] and app is not None:
                 run.step("building", "Building the app. This takes a few minutes.")
                 staged = _build_app(top, app, new, out)
             if info["deps_changed"]:
                 run.step("installing", "Installing Python packages.")
-                installed = True
+                packages = _freeze_packages(run.paths["dir"], old, out)
                 _install_packages(top, out)
+            if info["engine_changed"] or info["deps_changed"]:
+                run.step("testing", "Checking that the new engine loads.")
+                _engine_imports(top, out)
             record = {"repo": str(top), "commit": old, "installed_commit": new,
-                      "deps_changed": info["deps_changed"], "app": None, "installed_app": None,
+                      "deps_changed": info["deps_changed"], "packages": str(packages) if packages else None,
+                      "app": None, "installed_app": None,
                       "app_commit": app_build_commit(app), "updated_at": int(time.time())}
             if staged is not None and app is not None:
                 run.step("swapping", "Replacing the app. The old one is kept for Go back.")
@@ -409,7 +448,7 @@ def apply(repo: Path = REPO_ROOT, app: Path | None = None, *, state_dir: Path | 
                 _write_json(run.paths["previous"], record)
         except Exception as exc:
             reason = str(exc) if isinstance(exc, StepFailed) else "The update stopped on an unexpected error."
-            problem = _roll_back(top, old, new, installed, out)
+            problem = _roll_back(top, old, new, packages, out)
             return run.finish("failed", f"{reason} " + (problem or f"Nothing changed: the checkout is back on "
                                                         f"{old[:7]} and the installed app was not touched."))
         restart = info["engine_changed"] or info["deps_changed"]
@@ -417,20 +456,23 @@ def apply(repo: Path = REPO_ROOT, app: Path | None = None, *, state_dir: Path | 
                           app_path=str(app) if swapped else None, app_commit=record["app_commit"])
 
 
-def _roll_back(repo: Path, old: str, new: str, installed: bool, out: Any) -> str | None:
-    """Move the checkout from `new` back to `old` and reinstall its packages if
-    they were touched. Returns None when that worked, else what is left to do."""
+def _roll_back(repo: Path, old: str, new: str, packages: Path | None, out: Any) -> str | None:
+    """Move the checkout from `new` back to `old` and restore the exact package
+    set saved in `packages`, if any. Returns None when that worked, else what
+    is left to do."""
     try:
         _expect_head(repo, new)
+        if _collisions(repo, new, old):
+            raise StepFailed("files appeared where the old version has its own")
         _git(repo, "reset", "--keep", old)
     except StepFailed:
         return f"The checkout changed meanwhile, so the updater left it alone. It was on {old[:7]} before."
-    if installed:
+    if packages is not None:
         try:
-            _install_packages(repo, out)
+            _restore_packages(packages, repo, out)
         except StepFailed:
-            return (f"The checkout is back on {old[:7]}, but reinstalling its Python packages failed. "
-                    "Run `uv pip install -e .` in the checkout.")
+            return (f"The checkout is back on {old[:7]}, but restoring its Python packages failed. "
+                    f"Run `uv pip sync {packages}` with the engine's Python.")
     return None
 
 
@@ -459,13 +501,18 @@ def undo(repo: Path = REPO_ROOT, *, state_dir: Path | None = None, out: Any = No
         prior, installed = record.get("app"), record.get("installed_app")
         if isinstance(prior, str) and not Path(prior).is_dir():
             return run.finish("failed", "The earlier app is missing, so Go back cannot restore it. Nothing changed.")
+        snapshot = record.get("packages")
+        if record.get("deps_changed") and not (isinstance(snapshot, str) and Path(snapshot).is_file()):
+            return run.finish("failed", "The earlier package list is missing, so Go back cannot restore it. Nothing changed.")
         run.status.update(old=current, new=old)
         run.step("pulling", f"Moving the checkout back from {current[:7]} to {old[:7]}.")
+        current_packages = _freeze_packages(run.paths["dir"], current, out) if record.get("deps_changed") else None
+        _expect_head(top, current)
         _git(top, "reset", "--keep", old)
         try:
             if record.get("deps_changed"):
-                run.step("installing", "Reinstalling the earlier Python packages.")
-                _install_packages(top, out)
+                run.step("installing", "Restoring the earlier Python packages.")
+                _restore_packages(Path(snapshot), top, out)
             app_commit = record.get("app_commit")
             if isinstance(prior, str) and isinstance(installed, str):
                 run.step("swapping", "Putting the earlier app back.")
@@ -473,9 +520,14 @@ def undo(repo: Path = REPO_ROOT, *, state_dir: Path | None = None, out: Any = No
                 _swap_back(Path(prior), Path(installed))
         except Exception as exc:
             reason = str(exc) if isinstance(exc, StepFailed) else "Go back stopped on an unexpected error."
-            problem = _roll_back(top, current, old, bool(record.get("deps_changed")), out)
+            problem = _roll_back(top, current, old, current_packages, out)
             return run.finish("failed", f"{reason} " + (problem or f"Nothing changed: the checkout stays on {current[:7]}."))
-        run.paths["previous"].unlink(missing_ok=True)
+        try:
+            run.paths["previous"].unlink(missing_ok=True)
+        except OSError:
+            # Go back is done. A stale record cannot repeat it: the checkout is
+            # no longer on the commit the record names, so a second Go back refuses.
+            run.log("Could not remove the Go back record.")
         swapped = isinstance(prior, str)
         return run.finish("done", f"Back on {old[:7]}.", relaunch=swapped, restart_engine=True,
                           app_path=installed if swapped else None, app_commit=app_commit)
@@ -501,6 +553,33 @@ def _install_packages(repo: Path, out: Any) -> None:
         raise StepFailed("uv was not found to install Python packages.")
     _run_logged([uv, "pip", "install", "--python", sys.executable, "-e", str(repo)], repo, out,
                 INSTALL_TIMEOUT_SECONDS)
+
+
+def _freeze_packages(folder: Path, commit: str, out: Any) -> Path:
+    """Save the engine's exact installed packages, so a rollback restores them."""
+    uv = _which("uv")
+    if uv is None:
+        raise StepFailed("uv was not found to install Python packages.")
+    frozen = _run_logged([uv, "pip", "freeze", "--python", sys.executable], folder, io.StringIO(), 120)
+    path = folder / f"update-packages-{commit[:12]}.txt"
+    path.write_text(frozen)
+    return path
+
+
+def _restore_packages(snapshot: Path, repo: Path, out: Any) -> None:
+    uv = _which("uv")
+    if uv is None:
+        raise StepFailed("uv was not found to restore Python packages.")
+    _run_logged([uv, "pip", "sync", "--python", sys.executable, str(snapshot)], repo, out, INSTALL_TIMEOUT_SECONDS)
+
+
+def _engine_imports(repo: Path, out: Any) -> None:
+    """The new engine must at least load, or the restart would leave no engine."""
+    env = {"PYTHONPATH": str(repo / "engine"), "HF_HUB_OFFLINE": "1"}
+    try:
+        _run_logged([sys.executable, "-c", "import undertone.server, undertone.cli"], repo, out, 300, env=env)
+    except StepFailed as exc:
+        raise StepFailed("The new engine does not load.") from exc
 
 
 def _build_app(repo: Path, app: Path, commit: str, out: Any) -> Path:

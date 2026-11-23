@@ -66,7 +66,7 @@ Settings → Updates checks GitHub for newer commits on `main` and installs them
 .venv/bin/undertone update --undo     # go back to the version before the last update
 ```
 
-An update needs a clean checkout on `main` with no local commits. It pulls, rebuilds the app with the same signing identity if the app changed (this needs Xcode), installs Python packages if they changed, and keeps the old app as `Undertone (previous).app`. If any step fails, nothing changes. The app then restarts the engine and reopens itself once no dictation, meeting, or quick note is in progress. After a Terminal update, restart the engine (Settings → Privacy → Restart) and reopen the app yourself. The first rebuild asks for keychain access to your signing key; choose Always Allow.
+An update needs a clean checkout of the GitHub repo on `main` with no local commits. It pulls, rebuilds the app with the same signing identity if the app changed (this needs Xcode), installs Python packages if they changed, and keeps the old app as `Undertone (previous).app`. It checks that the new engine loads. If any step fails, the checkout, the Python packages, and the app go back to how they were. The app then restarts the engine and reopens itself once no dictation, meeting, or quick note is in progress. After a Terminal update, restart the engine (Settings → Privacy → Restart) and reopen the app yourself. The first rebuild asks for keychain access to your signing key; choose Always Allow.
 
 ## Use
 

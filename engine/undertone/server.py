@@ -244,7 +244,8 @@ class Engine:
             raise ValueError("expect must be a full commit id")
         # The commit this engine process started from, so the app can tell
         # whether a finished update still needs an engine restart.
-        running = {"engine_commit": self.started_commit}
+        running = {"engine_commit": self.started_commit, "checkout": str(updater.REPO_ROOT),
+                   "engine_stale": updater.engine_stale(self.started_commit)}
         if op == "update.check":
             return {"update": updater.check(app=app), "update_run": updater.read_status(), **running}
         if op == "update.status":

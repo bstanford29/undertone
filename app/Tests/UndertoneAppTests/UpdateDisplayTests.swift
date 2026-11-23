@@ -1,7 +1,7 @@
 import XCTest
 @testable import UndertoneApp
 
-/// What the Updates tab shows for each engine answer, and that the answers decode.
+/// What the Updates tab shows in each state, and that the engine's answers decode.
 final class UpdateDisplayTests: XCTestCase {
     private func check(_ state: String, appChanged: Bool = false, at time: Double = 100) -> UpdateCheck {
         UpdateCheck(state: state, message: state == "ready" ? "2 new changes ready to install." : "The checkout is on branch work.",
@@ -11,8 +11,7 @@ final class UpdateDisplayTests: XCTestCase {
 
     private func run(_ state: String, action: String = "update", finished: Double? = 200) -> UpdateRun {
         UpdateRun(state: state, runID: "r1", action: action, message: "Step or result.", startedAt: 150,
-                  finishedAt: finished, newCommit: "def5678", restartEngine: true, relaunch: nil, appPath: nil,
-                  appCommit: nil, canUndo: state == "done", logPath: "/tmp/update.log")
+                  finishedAt: finished, canUndo: state == "done", logPath: "/tmp/update.log")
     }
 
     func testEngineResponseDecodesBothUpdatePayloads() throws {
@@ -24,7 +23,7 @@ final class UpdateDisplayTests: XCTestCase {
          "update_run": {"state": "done", "action": "update", "run_id": "abc", "pid": 42, "new": "def5678",
           "restart_engine": true, "relaunch": true, "app_commit": "def5678",
           "message": "Updated to def5678.", "started_at": 1700000200, "can_undo": true, "log_path": "/x/update.log"},
-         "engine_commit": "abc1234"}
+         "engine_commit": "abc1234", "engine_stale": true, "checkout": "/Users/example/undertone"}
         """
         let response = try JSONDecoder().decode(EngineResponse.self, from: Data(json.utf8))
         XCTAssertEqual(response.update?.state, "ready")
@@ -32,10 +31,10 @@ final class UpdateDisplayTests: XCTestCase {
         XCTAssertEqual(response.update?.appChanged, true)
         XCTAssertEqual(response.update?.remote, "abc1234")
         XCTAssertEqual(response.updateRun?.runID, "abc")
-        XCTAssertEqual(response.updateRun?.newCommit, "def5678")
-        XCTAssertEqual(response.updateRun?.restartEngine, true)
-        XCTAssertEqual(response.updateRun?.appCommit, "def5678")
+        XCTAssertEqual(response.updateRun?.canUndo, true)
         XCTAssertEqual(response.engineCommit, "abc1234")
+        XCTAssertEqual(response.engineStale, true)
+        XCTAssertEqual(response.checkout, "/Users/example/undertone")
     }
 
     func testReadyOffersInstallUnlessSomethingIsInProgress() {
@@ -86,6 +85,12 @@ final class UpdateDisplayTests: XCTestCase {
                                            finishing: "Restarting the engine.", pending: true)
         XCTAssertEqual(finishing.tone, .working)
         XCTAssertEqual(finishing.action, .none)
+    }
+
+    func testAnUpdateStillToFinishShowsWhateverTheLastRunWas() {
+        let afterUpToDate = UpdateDisplay.make(check: check("current", at: 300), run: run("done", finished: 310),
+                                               checking: false, busy: nil, pending: true)
+        XCTAssertEqual(afterUpToDate.action, .finish)
     }
 
     func testBlockedAndCurrentStates() {

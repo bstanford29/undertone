@@ -270,7 +270,7 @@ final class AppModel: ObservableObject {
         }
         updates.busyReason = { [weak self] in self?.updateBusyReason() }
         meetings.canStartMeeting = { [weak self] in
-            guard let self else { return false }
+            guard let self, !self.updates.isFinishing else { return false }
             switch self.pillState {
             case .listening, .working: return false
             default: return true
@@ -619,6 +619,11 @@ final class AppModel: ObservableObject {
 
     func beginDictation() {
         guard !insertionInFlight else { return }
+        // The engine is restarting or the app is about to reopen: speech now would be lost.
+        guard !updates.isFinishing else {
+            showTransientError("Undertone is finishing an update")
+            return
+        }
         guard !meetings.state.isRecording else {
             showTransientError("Stop meeting capture before dictating")
             return
@@ -1731,6 +1736,10 @@ final class AppModel: ObservableObject {
 
     /// Quick note and Opt+S both land here.
     func toggleQuickNote() {
+        if updates.isFinishing, quickNoteIsOpen?() != true {
+            showTransientError("Undertone is finishing an update")
+            return
+        }
         onQuickNoteToggle?()
     }
 
