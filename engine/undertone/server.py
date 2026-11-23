@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 import yaml
 
-from . import config as settings, dictionary, history, learning, meeting
+from . import config as settings, dictionary, history, learning, meeting, updater
 from .cleanup import OllamaModelNotFoundError
 
 logger = logging.getLogger("undertone.server")
@@ -221,6 +221,10 @@ class Engine:
             # These operations use their own local lock and do not need either
             # model, so recovery remains available during model warm-up.
             return self._dispatch(r, emit=emit)
+        if isinstance(r.get("op"), str) and r["op"].startswith("update."):
+            # A GitHub check can take seconds. It must never wait for, or
+            # block, dictation, so it takes neither lock.
+            return self._dispatch_update(r)
         if isinstance(r.get("op"), str) and r["op"].startswith("meeting."):
             # MeetingService owns session serialization. Only in-process Whisper
             # takes the model lock; long Ollama summaries must not block dictation.
@@ -229,6 +233,22 @@ class Engine:
             return self._dispatch(r)
         with self.lock:
             return self._dispatch(r, emit=emit)
+
+    def _dispatch_update(self, r: dict) -> dict:
+        op = r["op"]
+        app = updater.valid_app_path(text_field(r, "app_path", 1000)) if r.get("app_path") is not None else None
+        if op == "update.check":
+            return {"update": updater.check(app=app), "update_run": updater.read_status()}
+        if op == "update.status":
+            return {"update_run": updater.read_status()}
+        if op in {"update.apply", "update.undo"}:
+            if self._live is not None:
+                return {"update_run": {"state": "blocked", "message": "Finish dictating, then update."}}
+            try:
+                return {"update_run": updater.start_detached("undo" if op == "update.undo" else "apply", app)}
+            except updater.StepFailed as exc:
+                return {"update_run": {"state": "blocked", "message": str(exc)}}
+        raise ValueError("Unknown operation")
 
     def _clean_args(self, r: dict) -> tuple[dict[str, Any], str, str | None, dict | None, str]:
         cfg = settings.load_config()

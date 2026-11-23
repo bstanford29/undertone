@@ -635,6 +635,33 @@ class ServerTests(unittest.TestCase):
                 if reader: reader.join(3)
         self.assertEqual(errors, [])
 
+    def test_update_requests_skip_the_model_lock_and_wait_for_dictation(self):
+        from undertone import updater
+        held, release, results = threading.Event(), threading.Event(), []
+        def hold_lock():  # stands in for a dictation or a long cleanup
+            with self.engine.lock:
+                held.set()
+                release.wait(3)
+        holder = threading.Thread(target=hold_lock)
+        holder.start()
+        try:
+            self.assertTrue(held.wait(1))
+            asker = threading.Thread(target=lambda: results.append(self.engine.dispatch({"op": "update.status"})))
+            asker.start()
+            asker.join(2)
+            self.assertEqual(len(results), 1, "update.status waited for the model lock")
+        finally:
+            release.set()
+            holder.join(3)
+        self.assertEqual(results[0]["update_run"]["state"], "idle")
+        with self.assertRaises(ValueError):
+            self.engine.dispatch({"op": "update.apply", "app_path": "/tmp/Undertone.app"})
+        self.engine._live = ("session", object())
+        with patch.object(updater, "start_detached", side_effect=AssertionError("must not start")):
+            refused = self.engine.dispatch({"op": "update.apply"})
+        self.assertEqual(refused["update_run"]["state"], "blocked")
+        self.engine._live = None
+
     def test_stream_insert_config_accepts_bool_and_rejects_other_types(self):
         saved = self.engine.dispatch({'op': 'config.update', 'config': {'stream_insert': False}})
         self.assertFalse(saved['config']['stream_insert'])

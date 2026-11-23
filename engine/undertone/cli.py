@@ -61,6 +61,43 @@ def cmd_dictionary_add(args: argparse.Namespace) -> None:
     print(f"added '{args.term}'. terms: {dictionary['terms']}")
 
 
+def cmd_update(args: argparse.Namespace) -> None:
+    from pathlib import Path
+    from . import updater
+    state_dir = Path(args.state_dir).expanduser() if args.state_dir else None
+    app = updater.valid_app_path(args.app) if args.app else None
+    repo = Path(args.repo).expanduser() if args.repo else updater.REPO_ROOT
+    if not (args.apply or args.undo):
+        info = updater.check(repo, app)
+        print(info["message"])
+        for change in info.get("changes", []):
+            print(f"  {change['commit']}  {change['title']}")
+        if info.get("state") == "ready":
+            print("Run `undertone update --apply` to install.")
+        sys.exit(0 if info.get("state") in {"current", "ready"} else 1)
+    if args.detached:
+        out = sys.stdout
+        log = None
+    else:
+        updater.log_path(state_dir).parent.mkdir(parents=True, exist_ok=True)
+        log = updater.log_path(state_dir).open("a")
+        out = updater.Tee(sys.stdout, log)
+    try:
+        if args.undo:
+            result = updater.undo(repo, state_dir=state_dir, out=out)
+        else:
+            result = updater.apply(repo, app, state_dir=state_dir, out=out, dry_run=args.dry_run)
+    except updater.StepFailed as exc:
+        print(exc, file=out)
+        sys.exit(1)
+    finally:
+        if log is not None:
+            log.close()
+    if result.get("relaunch") and not args.detached:
+        print("Quit Undertone and open it again to use the new app.")
+    sys.exit(0 if result.get("state") == "done" else 1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="undertone")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -93,6 +130,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--json", action="store_true", help="print machine-readable JSON")
     p_doctor.add_argument("--download", action="store_true", help="download the whisper model if not cached")
     p_doctor.set_defaults(func=cmd_doctor)
+
+    p_update = subparsers.add_parser("update", help="check GitHub for a newer Undertone, or install it")
+    action = p_update.add_mutually_exclusive_group()
+    action.add_argument("--apply", action="store_true", help="install the newest main")
+    action.add_argument("--undo", action="store_true", help="go back to the version before the last update")
+    p_update.add_argument("--dry-run", action="store_true", help="with --apply: say what would change, change nothing")
+    p_update.add_argument("--app", default=None, help="the installed Undertone.app to replace")
+    p_update.add_argument("--repo", default=None, help=argparse.SUPPRESS)
+    p_update.add_argument("--state-dir", default=None, help=argparse.SUPPRESS)
+    p_update.add_argument("--detached", action="store_true", help=argparse.SUPPRESS)
+    p_update.set_defaults(func=cmd_update)
 
     return parser
 
