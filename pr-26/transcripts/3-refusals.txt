@@ -1,0 +1,9 @@
+$ undertone update --repo .
+This update changes the app, and no installed Undertone.app was found to replace.
+  5e8a393  Keep long voice notes, tidy brain dumps, and speed up release (#23)
+  027cb72  Add one verify command and a pull-request check (#9)
+
+$ undertone update
+The checkout has uncommitted changes. Commit or discard them, then update.
+  46cdade  Demo: add a comment to the engine
+

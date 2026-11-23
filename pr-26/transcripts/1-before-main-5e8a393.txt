@@ -1,0 +1,4 @@
+$ undertone update
+usage: undertone [-h] {serve,listen,once,insert-test,dictionary,doctor} ...
+undertone: error: argument command: invalid choice: 'update' (choose from serve, listen, once, insert-test, dictionary, doctor)
+

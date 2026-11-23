@@ -1,0 +1,17 @@
+$ undertone update
+1 new change ready to install.
+  46cdade  Demo: add a comment to the engine
+Run `undertone update --apply` to install.
+
+$ undertone update --apply
+[2026-11-23 18:32:03] update: Checking GitHub for changes.
+[2026-11-23 18:32:03] update: Moving the checkout from b1190d2 to 46cdade.
+[2026-11-23 18:32:03] update: Checking that the new engine loads.
+[2026-11-23 18:32:03] update: Updated to 46cdade.
+Restart the engine to finish: Settings → Privacy → Restart, or launchctl kickstart.
+
+$ undertone update --undo
+[2026-11-23 18:32:03] undo: Moving the checkout back from 46cdade to b1190d2.
+[2026-11-23 18:32:03] undo: Back on b1190d2.
+Restart the engine to finish: Settings → Privacy → Restart, or launchctl kickstart.
+
