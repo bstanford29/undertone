@@ -192,6 +192,51 @@ enum PreviewFixtures {
         high: "cold", highModel: "gemma4:31b", keepAlive: "60m"
     )
 
+    /// `--update-state ready|running|failed|current` picks what the Updates tab shows.
+    static let updateState: String = {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let index = arguments.firstIndex(of: "--update-state"), arguments.indices.contains(index + 1) else { return "ready" }
+        return arguments[index + 1].lowercased()
+    }()
+
+    static let updateAppCommit = "4d1c9e2a7b3f5e8d6c0a1b2c3d4e5f60718293a4"
+
+    static var updateCheck: UpdateCheck {
+        if updateState == "current" {
+            return UpdateCheck(state: "current", message: "Undertone is up to date.", changes: [], behind: 0,
+                               head: "8b7f0e3c2d1a4b5c6d7e8f9a0b1c2d3e4f5a6b7c", appCommit: updateAppCommit,
+                               appChanged: false, checkedAt: now)
+        }
+        return UpdateCheck(
+            state: "ready", message: "3 new changes ready to install.",
+            changes: [
+                UpdateChange(commit: "8b7f0e3", time: now - 2 * 3_600, title: "Keep the cursor where it was after Undo"),
+                UpdateChange(commit: "51ac9d0", time: now - 26 * 3_600, title: "Show the meeting timer in whole seconds"),
+                UpdateChange(commit: "e04b6f2", time: now - 50 * 3_600, title: "Retry cleanup once when Ollama is still loading"),
+            ],
+            behind: 3, head: "a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9", appCommit: updateAppCommit,
+            appChanged: true, checkedAt: now
+        )
+    }
+
+    static var updateRun: UpdateRun? {
+        switch updateState {
+        case "running":
+            return UpdateRun(state: "running", action: "update", message: "Building the app. This takes a few minutes.",
+                             startedAt: now + 1, finishedAt: nil, relaunch: nil, appPath: nil, canUndo: false, logPath: nil)
+        case "failed":
+            return UpdateRun(state: "failed", action: "update",
+                             message: "build_app.sh failed (exit 1). The log has the details. The installed app was not changed, and the checkout is back on a0b1c2d.",
+                             startedAt: now + 1, finishedAt: now + 2, relaunch: nil, appPath: nil, canUndo: false,
+                             logPath: "~/.undertone/update.log")
+        case "current":
+            return UpdateRun(state: "done", action: "update", message: "Updated to 8b7f0e3.", startedAt: now - 600,
+                             finishedAt: now - 590, relaunch: true, appPath: nil, canUndo: true, logPath: nil)
+        default:
+            return nil
+        }
+    }
+
     /// 12 minutes and 4 seconds, the timer reading in the mockup.
     static let recordingElapsed: TimeInterval = 12 * 60 + 4
 }

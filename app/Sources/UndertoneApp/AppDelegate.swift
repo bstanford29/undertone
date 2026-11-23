@@ -122,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         pill = PillPanelController(model: model)
         quickNote = QuickNotePanelController(model: model)
         model.onQuickNoteToggle = { [weak self] in self?.quickNote.toggle() }
+        model.quickNoteIsOpen = { [weak self] in self?.quickNote.isOpen ?? false }
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem.button?.image = NSImage(systemSymbolName: "waveform", accessibilityDescription: "Undertone")
         statusItem.menu = makeMenu()
@@ -212,6 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         showPillMenuItem = showPill
         menu.addItem(showPill)
         menu.addItem(item: "Settings…", action: #selector(openSettings), key: ",", modifiers: [.command])
+        menu.addItem(item: "Check for Updates…", action: #selector(checkForUpdates))
         menu.addItem(.separator())
         menu.addItem(item: "Quit Undertone", action: #selector(NSApplication.terminate(_:)), key: "q", modifiers: [.command])
         return menu
@@ -221,6 +223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func insertRaw() { model.insertLast(raw: true) }
     @objc private func copyLast() { model.copyLast() }
     @objc func openSettings() { model.openSettings() }
+    @objc private func checkForUpdates() { model.checkForUpdates() }
     @objc private func showPill() { model.showPillNow() }
     @objc private func openHome() { model.showApp(.home) }
     @objc private func openHistory() { model.showApp(.history) }

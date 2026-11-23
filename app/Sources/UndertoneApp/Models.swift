@@ -283,6 +283,10 @@ struct EngineResponse: Codable, Equatable, Sendable {
     let liveUnits: Int?
     let liveFallback: String?
     let liveReleaseMS: Double?
+    /// `update.check`: how the checkout compares with GitHub's main.
+    let update: UpdateCheck?
+    /// `update.status`, `update.apply`, `update.undo`: the last run.
+    let updateRun: UpdateRun?
 
     enum CodingKeys: String, CodingKey {
         case id, raw, clean, cleanText = "clean_text", rewrite, sttMS = "stt_ms", llmMS = "llm_ms", model, whisper, cleanup
@@ -297,6 +301,7 @@ struct EngineResponse: Codable, Equatable, Sendable {
         case chunk, seq, done, chunksSent = "chunks_sent"
         case streamTruncated = "stream_truncated", streamInterrupted = "stream_interrupted"
         case liveUnits = "live_units", liveFallback = "live_fallback", liveReleaseMS = "live_release_ms"
+        case update, updateRun = "update_run"
     }
 }
 

@@ -1,12 +1,13 @@
 import AppKit
 import SwiftUI
 
-/// The four tabs of the Settings window.
+/// The five tabs of the Settings window.
 enum SettingsTab: String, CaseIterable, Identifiable {
     case dictation = "Dictation"
     case cleanup = "Cleanup"
     case pill = "Pill and Meetings"
     case privacy = "Privacy"
+    case updates = "Updates"
 
     var id: String { rawValue }
 
@@ -16,6 +17,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .cleanup: return "text.badge.plus"
         case .pill: return "capsule"
         case .privacy: return "lock.shield"
+        case .updates: return "arrow.down.circle"
         }
     }
 
@@ -61,6 +63,11 @@ struct SettingsWindowView: View {
             }
         }
         .frame(width: 680, height: 720)
+        .onReceive(model.$requestedSettingsTab) { requested in
+            guard let requested else { return }
+            tab = requested
+            model.requestedSettingsTab = nil
+        }
         .task {
             guard !loaded else { return }
             loaded = true
@@ -75,6 +82,7 @@ struct SettingsWindowView: View {
         case .cleanup: CleanupSettingsTab()
         case .pill: PillSettingsTab()
         case .privacy: PrivacySettingsTab()
+        case .updates: UpdatesSettingsTab()
         }
     }
 
