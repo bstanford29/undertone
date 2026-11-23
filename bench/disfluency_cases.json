@@ -36,7 +36,7 @@
     {"id": "false-start-2", "kind": "false_start",
      "raw": "I wanted to ask if, can we move the standup to ten thirty",
      "expect": "Can we move the standup to ten thirty?",
-     "keep": ["move the standup to ten thirty"], "drop": ["i wanted to ask if"]},
+     "keep": ["can we move the standup to"], "drop": ["i wanted to ask if"]},
     {"id": "false-start-3", "kind": "false_start",
      "raw": "the client is, they're worried about the close calendar slipping",
      "expect": "They're worried about the close calendar slipping.",

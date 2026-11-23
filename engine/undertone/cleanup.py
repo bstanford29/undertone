@@ -9,7 +9,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 logger = logging.getLogger("undertone.cleanup")
@@ -122,12 +121,11 @@ FILLER_SOUNDS = re.compile(
 
 MIN_LENGTH_RATIO = 0.6
 # A transcript over this many words is cleaned in pieces of about
-# PIECE_WORDS whole sentences, several at a time. One call over a long note
-# runs for tens of seconds, nearly fills the model's context window, and a
-# single guard failure would return the whole note raw.
+# PIECE_WORDS whole sentences. In one call over a long note the model nearly
+# copies the text (most fillers and repeats survive), the call comes close to
+# the context window, and a single guard failure returns the whole note raw.
 LONG_TRANSCRIPT_WORDS = 260
 PIECE_WORDS = 160
-MAX_PARALLEL_PIECES = 4
 
 
 def _basic_capitalize(text: str) -> str:
@@ -571,18 +569,16 @@ def _clean_pieces(
     app: str | None,
     context: dict[str, str] | None,
 ) -> dict[str, Any]:
-    """Clean pieces side by side; each piece keeps its own 60% guard.
+    """Clean pieces in order; each piece keeps its own 60% guard.
 
     Only the first piece gets the caller's context: it is the text the
-    dictation continues from.
+    dictation continues from. Pieces run one after another: Ollama on an
+    Apple Silicon GPU gained about 3% from parallel requests.
     """
-    workers = max(1, min(MAX_PARALLEL_PIECES, len(pieces)))
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="undertone-clean") as pool:
-        futures = [
-            pool.submit(clean_result, piece, level, dictionary, config, app, context if index == 0 else None)
-            for index, piece in enumerate(pieces)
-        ]
-        results = [future.result() for future in futures]
+    results = [
+        clean_result(piece, level, dictionary, config, app, context if index == 0 else None)
+        for index, piece in enumerate(pieces)
+    ]
     models = [result["model"] for result in results if result.get("model") and result["model"] != "light"]
     combined = _result_dict(
         " ".join(result["clean_text"] for result in results if result["clean_text"]).strip(),

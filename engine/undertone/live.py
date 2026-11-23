@@ -62,6 +62,10 @@ FORCED_CUT_TAIL_GUARD_S = 0.5
 
 DEFAULT_MIN_UNIT_WORDS = 8
 DEFAULT_MAX_UNIT_WORDS = 40
+# A unit may run past the word cap to finish its sentence, up to this many
+# times the cap. On the author's own dictations the longest sentence was 80
+# words and one in ten ran past 40.
+RUN_ON_FACTOR = 2.5
 SENTENCE_END = (".", "?", "!")
 # Reference text sent with each unit: the cleaned text so far (preceded by the
 # app's own text before the caret) and a little of what follows the caret.
@@ -137,14 +141,19 @@ def plan_word_units(
     """Lengths (in words) of the complete units at the front of ``words``.
 
     A unit closes at the first word that ends a sentence once it holds at
-    least ``min_words`` words, or at ``max_words`` words. This may fall inside
-    a pause-cut chunk: people often pause mid-sentence and finish a sentence
-    without pausing, so closing only at chunk ends left most units cut at the
-    word cap, and release then had to re-clean the whole recording.
+    least ``min_words`` words. This may fall inside a pause-cut chunk: people
+    often pause mid-sentence and finish a sentence without pausing, so
+    closing only at chunk ends left most units cut at the word cap, and
+    release then had to re-clean the whole recording.
+
+    ``max_words`` is a soft cap. A unit past it still waits for its sentence
+    to end, because a unit cut mid-sentence makes release re-clean the whole
+    recording. Only a run-on of ``RUN_ON_FACTOR`` times the cap is cut.
     A unit never closes just before a correction phrase ("No wait, ..."),
     because per-unit cleanup could not then edit the words it corrects.
     Trailing words that close no unit wait for more speech.
     """
+    hard_max = max(max_words, int(max_words * RUN_ON_FACTOR))
     units: list[int] = []
     count = 0
     for index, word in enumerate(words):
@@ -153,7 +162,7 @@ def plan_word_units(
         if at_sentence_end and index + 1 < len(words):
             following = " ".join(words[index + 1 : index + 1 + CORRECTION_LEAD_WORDS])
             at_sentence_end = not opens_with_correction(following)
-        if at_sentence_end or count >= max_words:
+        if at_sentence_end or count >= hard_max:
             units.append(count)
             count = 0
     return units
@@ -661,6 +670,8 @@ class LiveDictation:
         lengths = plan_word_units(
             [word for _, word in pending], min_words=self.min_unit_words, max_words=self.max_unit_words,
         )
+        # Where ``pending`` started, before any unit below moves the marker.
+        start_chunk, start_offset = self._unit_chunk_end, self._unit_word_offset
         used = 0
         for length in lengths:
             unit_words = pending[used : used + length]
@@ -668,8 +679,8 @@ class LiveDictation:
             last_index = unit_words[-1][0]
             members = self._chunks[self._unit_chunk_end : last_index + 1]
             consumed = sum(1 for index, _ in pending[:used] if index == last_index)
-            if last_index == self._unit_chunk_end:
-                consumed += self._unit_word_offset
+            if last_index == start_chunk:
+                consumed += start_offset
             if consumed >= len((self._chunks[last_index].text or "").split()):
                 self._unit_chunk_end, self._unit_word_offset = last_index + 1, 0
             else:

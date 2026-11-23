@@ -66,7 +66,7 @@ Undertone is two processes. The **engine** (`engine/`, Python) owns the models: 
 
 Text insertion types synthesized keystrokes into the focused app, which is the one path every app accepts. The Accessibility API is used only for command-mode replacement and undo, where the exact selection matters. Neither path touches the clipboard; copying a past transcript is the only action that does.
 
-Cleanup runs at one of four levels (none, light, medium, high). If a cleanup pass's output falls under 60% of the input's word count, Undertone retries once on a fallback model, then falls back to the raw transcript with basic punctuation rather than lose your words. This guard is why the app always keeps what you said, even when the model misbehaves.
+Cleanup runs at one of four levels (none, light, medium, high). Medium and High also tidy how you think out loud: they drop false starts and repeats and apply spoken corrections, so "no wait, I mean X" becomes X. Turn that off in Settings → Cleanup; History always keeps the raw transcript. If a cleanup pass's output falls under 60% of the input's word count, Undertone retries once on a fallback model, then falls back to the raw transcript with basic punctuation rather than lose your words. This guard is why the app always keeps what you said, even when the model misbehaves.
 
 Meeting capture records two channels: your microphone and the system's audio output, captured separately with Core Audio (or ScreenCaptureKit on older macOS). That split gives you and everyone else on the call as separate tracks without a bot joining anything or showing up in a participant list.
 
