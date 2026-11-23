@@ -1,0 +1,64 @@
+# TEMPORARY for PR #23: renders the app's synthetic preview screens at the base
+# and head commits so the PR can show before-and-after screenshots. This Mac
+# has no Xcode, so the preview cannot be built locally. Removed before merge.
+name: PR screenshots
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenshots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  capture:
+    name: Preview screenshots (temporary)
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.5.app/Contents/Developer
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Build and capture base and head
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/shots"
+          for side in before after; do
+            if [ "$side" = before ]; then rev="$BASE_SHA"; else rev="$HEAD_SHA"; fi
+            dir="$RUNNER_TEMP/src-$side"
+            git worktree add --detach "$dir" "$rev"
+            swift build --package-path "$dir/app" --jobs 3
+            bin="$(swift build --package-path "$dir/app" --show-bin-path)/Undertone"
+            echo "$side $rev" >> "$RUNNER_TEMP/shots/revisions.txt"
+            for look in light dark; do
+              for case in "settings-cleanup:--screen settings --settings-tab cleanup" \
+                          "pill-inserted:--screen pill --pill-state inserted" \
+                          "history:--screen history"; do
+                name="${case%%:*}"; flags="${case#*:}"
+                out="$RUNNER_TEMP/shots/$side-$name-$look.png"
+                # The preview writes the PNG and quits on its own after 2.5 s.
+                "$bin" --preview $flags --appearance "$look" --capture "$out" &
+                pid=$!
+                for _ in $(seq 1 40); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+                kill "$pid" 2>/dev/null || true
+                ls -la "$out"
+              done
+            done
+          done
+          shasum -a 256 "$RUNNER_TEMP"/shots/*.png
+      - name: Upload screenshots
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pr-screenshots
+          path: ${{ runner.temp }}/shots
+          retention-days: 3
