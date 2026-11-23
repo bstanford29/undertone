@@ -7,9 +7,9 @@ How well Undertone transcribes Brandon's own voice notes, where it goes wrong, w
 | Question | Answer |
 |---|---|
 | How accurate is it today? | Short dictations: about 96 to 97% of words agree with a consensus of other speech models. Long recordings: **every note over about 7.5 minutes came back empty.** A guard meant to catch looping output treated any long transcript as a loop and threw it away. |
-| Is "Qwen" the right model? | Qwen is the *cleanup* model (`qwen3.5`, 9.7B, via Ollama). Speech-to-text is NVIDIA **Parakeet TDT 0.6B v3**. Keep both. Parakeet tied the best open model (Qwen3-ASR 1.7B) on accuracy and runs 4 times faster. For cleanup, qwen3.5 passed 27 of 34 brain-dump cases with the new prompt, up from 17. The larger qwen3.8 passed 30 and is a setting worth trying on this Mac. |
+| Is "Qwen" the right model? | Qwen is the *cleanup* model (`qwen3.5`, 9.7B, via Ollama). Speech-to-text is NVIDIA **Parakeet TDT 0.6B v3**. Keep both. Parakeet tied the best open model (Qwen3-ASR 1.7B) on accuracy and runs 4 times faster. For cleanup, qwen3.5 passed 26 of 34 brain-dump cases with the new prompt, up from 17. The larger qwen3.8 passed 30 and is a setting worth trying on this Mac. |
 | Brain-dump cleanup | New `tidy_speech` setting, on by default, with a switch in Settings → Cleanup. It removes ums, stutters, false starts, and applies spoken corrections ("no wait, I mean X" becomes X). History still keeps the raw transcript. |
-| Speed | Key up to text on his dictations: median 1.28 → **0.72 s**, worst 4.27 → **1.78 s**. On his hands-free brain dumps: median 22.4 → **1.8 s**, worst 30.6 → **5.6 s**. One-shot speech-to-text on long notes is twice as fast. One-shot cleanup of a long note takes as long as before but now actually cleans it. |
+| Speed | Key up to text on his dictations: median 1.28 → **0.72 s**, worst 4.27 → **1.77 s**. On his hands-free brain dumps: median 22.4 → **1.8 s**, worst 30.6 → **5.5 s**. One-shot speech-to-text on long notes is twice as fast. One-shot cleanup of a long note takes as long as before but now actually cleans it. |
 | Timestamps | No milliseconds anywhere a person reads them. Meeting notes show `[00:12]`, not `[12.345]`. The app shows `<1 s` or `2 s`, not `742 ms`. |
 
 ## How a dictation flows today
@@ -124,13 +124,13 @@ Cleanup runs after speech-to-text. It is the model behind the "Qwen" name. `benc
 
 | Cleanup model and prompt | Passed | Corrections | False starts | Traps kept | Median time | Memory |
 |---|---:|---:|---:|---:|---:|---:|
-| qwen3.5 9.7B, today's Medium prompt | 17/34 | 0/10 | 1/4 | 9/10 | 0.32 s | 6.6 GB |
-| **qwen3.5 9.7B, tidy prompt (new default)** | **27/34** | 7/10 | 2/4 | 9/10 | 0.37 s | 6.6 GB |
-| qwen3.8 27.8B, tidy prompt | **30/34** | 8/10 | 4/4 | 9/10 | 0.29 s | 18 GB |
-| gemma4 31B, tidy prompt | 30/34 | 8/10 | 3/4 | 9/10 | 1.20 s | 19 GB |
-| nemotron-3.5-lightning 33B, tidy prompt | 25/34 | 7/10 | 4/4 | 8/10 | 0.25 s | 25 GB |
-| High level (gemma4), today's prompt | 26/34 | 7/10 | 3/4 | 8/10 | 1.19 s | 19 GB |
-| High level (gemma4), tidy prompt | 27/34 | 8/10 | 3/4 | 8/10 | 1.21 s | 19 GB |
+| qwen3.5 9.7B, today's Medium prompt | 17/34 | 0/10 | 1/4 | 9/10 | 0.31 s | 6.6 GB |
+| **qwen3.5 9.7B, tidy prompt (new default)** | **26/34** | 7/10 | 2/4 | 9/10 | 0.37 s | 6.6 GB |
+| qwen3.8 27.8B, tidy prompt | **30/34** | 8/10 | 4/4 | 9/10 | 0.31 s | 18 GB |
+| gemma4 31B, tidy prompt | 28/34 | 8/10 | 3/4 | 9/10 | 1.19 s | 19 GB |
+| nemotron-3.5-lightning 33B, tidy prompt | 24/34 | 7/10 | 4/4 | 8/10 | 0.25 s | 25 GB |
+| High level (gemma4), today's prompt | 26/34 | 7/10 | 3/4 | 8/10 | 1.18 s | 19 GB |
+| High level (gemma4), tidy prompt | 27/34 | 8/10 | 3/4 | 8/10 | 1.20 s | 19 GB |
 
 What the failures are:
 
@@ -203,8 +203,8 @@ Undertone has two paths. Hold-to-talk and hands-free dictation use the **live pa
 | | Today | This PR |
 |---|---:|---:|
 | Median | 1.28 s | **0.72 s** |
-| Slowest 10% | 2.78 s | **1.25 s** |
-| Worst | 4.27 s | **1.78 s** |
+| Slowest 10% | 2.78 s | **1.27 s** |
+| Worst | 4.27 s | **1.77 s** |
 | Dictations under 30 s, median | 0.83 s | 0.61 s |
 | Dictations 30 s and over, median | 1.88 s | 0.90 s |
 | Releases that re-cleaned the whole recording | 21 of 50 | **0 of 50** |
@@ -225,7 +225,7 @@ After the change, release is the speech-to-text of the last words (about 0.1 s) 
 | | Today | This PR |
 |---|---:|---:|
 | Median | 22.4 s | **1.8 s** |
-| Worst | 30.6 s | **5.6 s** |
+| Worst | 30.6 s | **5.5 s** |
 | Releases that re-cleaned the whole recording | 7 of 7 | **0 of 7** |
 | Words transcribed | 8,874 | 8,874 |
 
@@ -237,8 +237,8 @@ On a 10-minute note, some boundary almost always carries a correction ("Sorry,",
 |---|---:|---:|
 | Speech-to-text, all 133 minutes | 106 s, and 8 long notes came back empty | **52 s**, every note transcribed |
 | Speech-to-text, median note over 5 min | 9.5 s | **4.0 s** |
-| Cleanup, median voice memo (about 1,200 words) | 18.8 s | 18.1 s |
-| Cleanup, longest (about 2,100 words) | 37.4 s | 36.7 s |
+| Cleanup, median voice memo (about 1,200 words) | 18.8 s | 17.4 s |
+| Cleanup, longest (about 2,100 words) | 37.4 s | 35.9 s |
 | Cleanup, median dictation | 1.30 s | 1.35 s |
 | Repo check clip, 15.5 s, `undertone once` warm | 0.99 s | 0.96 s |
 
