@@ -275,26 +275,30 @@ term owned by the action; edited destination text is unaffected.
 
 ## Updates
 
-The engine updates its own git checkout to GitHub's `main`. The work runs in a separate process (`undertone update --apply`), so it outlives the engine restart at its end. See `engine/undertone/updater.py`.
+The engine updates its own git checkout to GitHub's `main`. A run changes files only, in a separate process (`undertone update --apply`); it never restarts the engine or quits the app. The app finishes an update afterwards, when no dictation, meeting, or quick note is in progress. See `engine/undertone/updater.py`.
 
 ```json
-{"id":30,"op":"update.check"}
-{"id":31,"op":"update.apply","app_path":"/Users/example/Applications/Undertone.app"}
+{"id":30,"op":"update.check","app_path":"/Users/example/Applications/Undertone.app"}
+{"id":31,"op":"update.apply","app_path":"/Users/example/Applications/Undertone.app","expect":"<40-hex commit from update.check>"}
 {"id":32,"op":"update.status"}
 {"id":33,"op":"update.undo"}
 ```
 
-`update.check` runs one `git fetch` of `main` and changes nothing else. It returns `update` and the last run as `update_run`:
+Every `update.*` answer carries `engine_commit`, the commit this engine process started from.
+
+`update.check` fetches `refs/heads/main` from `origin` into `origin/main` with an explicit refspec and changes nothing else. It returns `update` and the last run as `update_run`:
 
 ```json
-{"id":30,"update":{"state":"ready","message":"2 new changes ready to install.","behind":2,"ahead":0,"head":"<sha>","remote":"<sha>","changes":[{"commit":"abc1234","time":1763900000,"title":"Synthetic change"}],"app_changed":true,"engine_changed":false,"deps_changed":false,"app_commit":"<sha>","checked_at":1763900100},"update_run":{"state":"idle","can_undo":false,"log_path":"/Users/example/.undertone/update.log"}}
+{"id":30,"update":{"state":"ready","message":"2 new changes ready to install.","behind":2,"ahead":0,"head":"<sha>","remote":"<sha>","changes":[{"commit":"abc1234","time":1763900000,"title":"Synthetic change"}],"app_changed":true,"engine_changed":false,"deps_changed":false,"app_commit":"<sha>","checked_at":1763900100},"update_run":{"state":"idle","can_undo":false,"log_path":"/Users/example/.undertone/update.log"},"engine_commit":"<sha>"}
 ```
 
-`state` is `current`, `ready`, `blocked` (with a reason in `message`: a branch other than `main`, uncommitted changes, local commits, or an app change on a Mac without Xcode or the signing identity), or `error` (GitHub could not be reached).
+`state` is `current`, `ready`, `blocked`, or `error` (GitHub could not be reached). `message` gives the reason for `blocked`: a branch other than `main`; uncommitted changes; local commits; files the update would add that already exist untracked or ignored; or, for an app change, no installed app, no developer signature, a signing identity missing from the keychain, or no Xcode. Changes are classified with rename detection off, so a file moved out of `engine/` still counts as an engine change. When `pyproject.toml` changed, the message says the update downloads Python packages.
 
-`update.apply` and `update.undo` start a run and return at once with `update_run`. `app_path` is optional and must be `~/Applications/Undertone.app` or `/Applications/Undertone.app`. Both refuse with `state: blocked` while a live dictation runs or another run holds the lock. `update.status` returns `update_run`: `state` is `idle`, `running` (with a step `message`), `done`, or `failed`. When `done` has `relaunch: true`, the app was replaced and the caller reopens `app_path`. A run whose process is gone reads as `failed`.
+`update.apply` and `update.undo` start a run and return at once with `update_run` (`state: running` and a `run_id`). `app_path` is optional and must be `~/Applications/Undertone.app` or `/Applications/Undertone.app`. `expect` makes the run install only that commit; if `main` moved since the check, the run fails without changes. Both refuse with `state: blocked` while a live dictation runs or another run holds the lock. The engine takes `~/.undertone/update.lock` before it starts the run's process and hands the open lock to it, so the lock marks a live run: `update.status` reports a `running` run that no longer holds it as `failed`.
 
-An apply fast-forwards the checkout, installs Python packages only when `pyproject.toml` changed, builds and signs the app only when `app/` changed, keeps the replaced app as `Undertone (previous).app`, and restarts the `com.undertone.engine` agent when engine code changed. If a step fails, the checkout moves back and the installed app is not touched. Every run is logged to `~/.undertone/update.log`.
+`update.status` returns `update_run`: `state` is `idle`, `running` (with a step `message`), `done`, or `failed`. A `done` run carries `new` (the checkout's commit), `restart_engine` (the engine must restart to run `new`), and, when the app bundle was replaced, `relaunch: true`, `app_path`, and `app_commit` (the commit the new bundle was built from).
+
+An apply fast-forwards only if the checkout is still `main` at the checked commit; builds and signs the app only when `app/` changed, and accepts the build only if it satisfies the installed app's designated requirement, so macOS keeps its permissions; then installs Python packages only when `pyproject.toml` changed; then swaps the app, keeping the old one as `Undertone (previous).app`, and writes the Go back record. If a step fails, the checkout moves back (only if it is still where the run left it), the old packages are reinstalled, and the installed app and the previous app are left as they were. Go back runs once, and only while the checkout is still on the commit that update installed. Every run is logged to `~/.undertone/update.log`.
 
 ## Error responses
 

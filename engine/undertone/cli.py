@@ -76,25 +76,30 @@ def cmd_update(args: argparse.Namespace) -> None:
             print("Run `undertone update --apply` to install.")
         sys.exit(0 if info.get("state") in {"current", "ready"} else 1)
     if args.detached:
-        out = sys.stdout
-        log = None
+        out, log = sys.stdout, None
     else:
         updater.log_path(state_dir).parent.mkdir(parents=True, exist_ok=True)
         log = updater.log_path(state_dir).open("a")
         out = updater.Tee(sys.stdout, log)
+    run = {"state_dir": state_dir, "out": out, "lock_fd": args.lock_fd, "run_id": args.run_id}
     try:
         if args.undo:
-            result = updater.undo(repo, state_dir=state_dir, out=out)
+            result = updater.undo(repo, **run)
         else:
-            result = updater.apply(repo, app, state_dir=state_dir, out=out, dry_run=args.dry_run)
+            result = updater.apply(repo, app, expect=args.expect, **run)
     except updater.StepFailed as exc:
         print(exc, file=out)
         sys.exit(1)
     finally:
         if log is not None:
             log.close()
-    if result.get("relaunch") and not args.detached:
-        print("Quit Undertone and open it again to use the new app.")
+    if not args.detached and result.get("state") == "done":
+        # The updater never restarts the engine or quits the app itself, so a
+        # dictation or meeting in progress is never cut off.
+        if result.get("restart_engine"):
+            print("Restart the engine to finish: Settings → Privacy → Restart, or launchctl kickstart.")
+        if result.get("relaunch"):
+            print("Then quit Undertone and open it again.")
     sys.exit(0 if result.get("state") == "done" else 1)
 
 
@@ -135,11 +140,13 @@ def build_parser() -> argparse.ArgumentParser:
     action = p_update.add_mutually_exclusive_group()
     action.add_argument("--apply", action="store_true", help="install the newest main")
     action.add_argument("--undo", action="store_true", help="go back to the version before the last update")
-    p_update.add_argument("--dry-run", action="store_true", help="with --apply: say what would change, change nothing")
     p_update.add_argument("--app", default=None, help="the installed Undertone.app to replace")
     p_update.add_argument("--repo", default=None, help=argparse.SUPPRESS)
     p_update.add_argument("--state-dir", default=None, help=argparse.SUPPRESS)
+    p_update.add_argument("--expect", default=None, help="with --apply: install only this commit of main")
     p_update.add_argument("--detached", action="store_true", help=argparse.SUPPRESS)
+    p_update.add_argument("--lock-fd", type=int, default=None, help=argparse.SUPPRESS)
+    p_update.add_argument("--run-id", default=None, help=argparse.SUPPRESS)
     p_update.set_defaults(func=cmd_update)
 
     return parser

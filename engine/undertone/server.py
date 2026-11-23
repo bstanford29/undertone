@@ -6,6 +6,7 @@ import fcntl
 import logging
 import math
 import os
+import re
 import socket
 import socketserver
 import sqlite3
@@ -124,6 +125,7 @@ class Engine:
         self.lock = threading.RLock()
         self.transcriber = None
         self._live: tuple[str, Any] | None = None
+        self.started_commit = updater.head_commit()
         self._meetings: meeting.MeetingService | None = None
         self.whisper_status = "loading"
         self.cleanup_status = "loading"
@@ -237,17 +239,24 @@ class Engine:
     def _dispatch_update(self, r: dict) -> dict:
         op = r["op"]
         app = updater.valid_app_path(text_field(r, "app_path", 1000)) if r.get("app_path") is not None else None
+        expect = optional_text(r, "expect", 64)
+        if expect is not None and not re.fullmatch(r"[0-9a-f]{40}", expect):
+            raise ValueError("expect must be a full commit id")
+        # The commit this engine process started from, so the app can tell
+        # whether a finished update still needs an engine restart.
+        running = {"engine_commit": self.started_commit}
         if op == "update.check":
-            return {"update": updater.check(app=app), "update_run": updater.read_status()}
+            return {"update": updater.check(app=app), "update_run": updater.read_status(), **running}
         if op == "update.status":
-            return {"update_run": updater.read_status()}
+            return {"update_run": updater.read_status(), **running}
         if op in {"update.apply", "update.undo"}:
             if self._live is not None:
-                return {"update_run": {"state": "blocked", "message": "Finish dictating, then update."}}
+                return {"update_run": {"state": "blocked", "message": "Finish dictating, then update."}, **running}
             try:
-                return {"update_run": updater.start_detached("undo" if op == "update.undo" else "apply", app)}
+                action = "undo" if op == "update.undo" else "apply"
+                return {"update_run": updater.start_detached(action, app, expect=expect), **running}
             except updater.StepFailed as exc:
-                return {"update_run": {"state": "blocked", "message": str(exc)}}
+                return {"update_run": {"state": "blocked", "message": str(exc)}, **running}
         raise ValueError("Unknown operation")
 
     def _clean_args(self, r: dict) -> tuple[dict[str, Any], str, str | None, dict | None, str]:

@@ -654,8 +654,11 @@ class ServerTests(unittest.TestCase):
             release.set()
             holder.join(3)
         self.assertEqual(results[0]["update_run"]["state"], "idle")
+        self.assertIn("engine_commit", results[0])
         with self.assertRaises(ValueError):
             self.engine.dispatch({"op": "update.apply", "app_path": "/tmp/Undertone.app"})
+        with self.assertRaises(ValueError):
+            self.engine.dispatch({"op": "update.apply", "expect": "main"})
         self.engine._live = ("session", object())
         with patch.object(updater, "start_detached", side_effect=AssertionError("must not start")):
             refused = self.engine.dispatch({"op": "update.apply"})

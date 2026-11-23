@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -62,11 +63,13 @@ class UpdaterTests(unittest.TestCase):
         subprocess.run(["git", "clone", "--quiet", str(self.origin), str(self.checkout)], check=True, env=GIT_ENV,
                        capture_output=True)
         self.app = make_app(self.apps / "Undertone.app", "old app")
-        self.restarts: list[bool] = []
-        for name, value in (("restart_engine", lambda: self.restarts.append(True) or True),
-                            ("signing_identity", lambda app: "Apple Development: Test (TEAM)"),
+        self.installs: list[str] = []
+        for name, value in (("signing_identity", lambda app: "Apple Development: Test (TEAM)"),
+                            ("designated_requirement", lambda app: 'identifier "com.undertone.app"'),
                             ("_identity_in_keychain", lambda identity: True),
-                            ("_xcode_ready", lambda: True)):
+                            ("_xcode_ready", lambda: True),
+                            ("_which", lambda name: "/usr/bin/true"),
+                            ("_install_packages", lambda repo, out: self.installs.append(git(repo, "rev-parse", "HEAD")))):
             patcher = patch.object(updater, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -79,6 +82,12 @@ class UpdaterTests(unittest.TestCase):
     def apply(self, **kwargs):
         return updater.apply(self.checkout, self.app, state_dir=self.state, out=io.StringIO(), **kwargs)
 
+    def undo(self):
+        return updater.undo(self.checkout, state_dir=self.state, out=io.StringIO())
+
+    def head(self) -> str:
+        return git(self.checkout, "rev-parse", "HEAD")
+
     # Check
 
     def test_check_lists_new_changes_and_what_they_touch(self):
@@ -90,7 +99,20 @@ class UpdaterTests(unittest.TestCase):
         self.assertEqual(info["changes"][0]["title"], "Fix the engine")
         self.assertTrue(info["engine_changed"])
         self.assertFalse(info["app_changed"])
-        self.assertEqual(git(self.checkout, "rev-parse", "HEAD"), self.first, "a check never moves the checkout")
+        self.assertEqual(self.head(), self.first, "a check never moves the checkout")
+
+    def test_moving_a_file_out_of_the_engine_counts_as_an_engine_change(self):
+        (self.upstream / "docs").mkdir()
+        git(self.upstream, "mv", "engine/undertone/a.py", "docs/a.py")
+        git(self.upstream, "commit", "--quiet", "-m", "Move a module")
+        git(self.upstream, "push", "--quiet", "origin", "main")
+        self.assertTrue(updater.check(self.checkout, self.app)["engine_changed"])
+
+    def test_check_ignores_a_custom_fetch_refspec(self):
+        git(self.checkout, "config", "remote.origin.fetch", "+refs/heads/other:refs/remotes/origin/other")
+        new = self.push("engine/undertone/a.py", "Fix the engine")
+        info = updater.check(self.checkout, self.app)
+        self.assertEqual((info["state"], info["remote"]), ("ready", new))
 
     def test_check_blocks_local_work(self):
         self.push("engine/undertone/a.py", "Fix the engine")
@@ -103,6 +125,22 @@ class UpdaterTests(unittest.TestCase):
         commit(self.checkout, "notes.txt", "mine\n", "Local only")
         self.assertIn("not on GitHub", updater.check(self.checkout, self.app)["message"])
 
+    def test_ahead_only_is_blocked_not_up_to_date(self):
+        commit(self.checkout, "notes.txt", "mine\n", "Local only")
+        self.assertEqual(updater.check(self.checkout, self.app)["state"], "blocked")
+
+    def test_a_file_the_update_would_overwrite_blocks_it(self):
+        self.push("docs/draft.md", "Add a doc")
+        draft = self.checkout / "docs/draft.md"
+        draft.parent.mkdir()
+        draft.write_text("my own notes\n")
+        (self.checkout / ".git/info/exclude").write_text("docs/draft.md\n")  # ignored: git overwrites those silently
+        result = self.apply()
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("docs/draft.md", result["message"])
+        self.assertEqual(draft.read_text(), "my own notes\n")
+        self.assertEqual(self.head(), self.first)
+
     def test_app_change_without_xcode_is_blocked(self):
         self.push("app/Sources/UndertoneApp/View.swift", "Change the app")
         with patch.object(updater, "_xcode_ready", lambda: False):
@@ -112,18 +150,24 @@ class UpdaterTests(unittest.TestCase):
 
     # Apply
 
-    def test_engine_only_update_fast_forwards_and_restarts_the_engine(self):
+    def test_engine_only_update_fast_forwards_and_leaves_the_restart_to_the_app(self):
         new = self.push("engine/undertone/a.py", "Fix the engine")
         with patch.object(updater, "_build_app", side_effect=AssertionError("no app change, no build")):
             result = self.apply()
         self.assertEqual(result["state"], "done")
-        self.assertEqual(git(self.checkout, "rev-parse", "HEAD"), new)
-        self.assertEqual(self.restarts, [True])
+        self.assertEqual(self.head(), new)
+        self.assertTrue(result["restart_engine"])
         self.assertFalse(result["relaunch"])
         self.assertEqual(marker(self.app), "old app")
-        saved = updater.read_status(self.state)
-        self.assertEqual(saved["state"], "done")
-        self.assertTrue(saved["can_undo"])
+        self.assertTrue(updater.read_status(self.state)["can_undo"])
+
+    def test_apply_installs_only_the_commit_that_was_checked(self):
+        checked = updater.check(self.checkout, self.app)["remote"]
+        self.push("engine/undertone/a.py", "Pushed after the check")
+        result = self.apply(expect=checked)
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("changed since the last check", result["message"])
+        self.assertEqual(self.head(), self.first)
 
     def test_failed_build_moves_the_checkout_back_and_keeps_the_app(self):
         self.push("app/Sources/UndertoneApp/View.swift", "Break the build")
@@ -131,12 +175,36 @@ class UpdaterTests(unittest.TestCase):
             result = self.apply()
         self.assertEqual(result["state"], "failed")
         self.assertIn("back on", result["message"])
-        self.assertEqual(git(self.checkout, "rev-parse", "HEAD"), self.first)
+        self.assertEqual(self.head(), self.first)
         self.assertEqual(marker(self.app), "old app")
-        self.assertEqual(self.restarts, [])
         self.assertFalse(updater.read_status(self.state)["can_undo"])
 
-    def test_app_update_keeps_the_old_app_and_undo_restores_it(self):
+    def test_failed_package_install_puts_the_old_packages_back(self):
+        new = self.push("pyproject.toml", "Add a dependency", text="[project]\n")
+        calls: list[str] = []
+        def install(repo, out):
+            calls.append(git(repo, "rev-parse", "HEAD"))
+            if len(calls) == 1:
+                raise updater.StepFailed("uv failed (exit 2).")
+        with patch.object(updater, "_install_packages", install):
+            result = self.apply()
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(calls, [new, self.first], "installs at the new commit, then again at the old one")
+        self.assertEqual(self.head(), self.first)
+
+    def test_rollback_never_moves_a_branch_the_user_switched_to(self):
+        self.push("app/Sources/UndertoneApp/View.swift", "Change the app")
+        def switch_then_fail(*args):
+            git(self.checkout, "switch", "--quiet", "-c", "mine")
+            raise updater.StepFailed("build_app.sh failed (exit 1).")
+        with patch.object(updater, "_build_app", side_effect=switch_then_fail):
+            result = self.apply()
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("left it alone", result["message"])
+        self.assertEqual(git(self.checkout, "rev-parse", "mine"), git(self.checkout, "rev-parse", "main"),
+                         "the branch the user switched to was not reset")
+
+    def test_app_update_keeps_the_old_app_and_go_back_restores_it(self):
         new = self.push("app/Sources/UndertoneApp/View.swift", "Change the app")
         staged = make_app(self.apps.parent / "build" / "Undertone", "new app")
         with patch.object(updater, "_build_app", return_value=staged):
@@ -145,22 +213,36 @@ class UpdaterTests(unittest.TestCase):
         self.assertTrue(result["relaunch"])
         self.assertEqual(marker(self.app), "new app")
         self.assertEqual(marker(self.apps / updater.PREVIOUS_APP_NAME), "old app")
-        self.assertEqual(git(self.checkout, "rev-parse", "HEAD"), new)
+        self.assertEqual(self.head(), new)
 
-        undone = updater.undo(self.checkout, state_dir=self.state, out=io.StringIO())
+        undone = self.undo()
         self.assertEqual(undone["state"], "done")
         self.assertTrue(undone["relaunch"])
+        self.assertTrue(undone["restart_engine"])
         self.assertEqual(marker(self.app), "old app")
         self.assertFalse((self.apps / updater.PREVIOUS_APP_NAME).exists())
-        self.assertEqual(git(self.checkout, "rev-parse", "HEAD"), self.first)
-        self.assertFalse(updater.read_status(self.state)["can_undo"], "undo works once")
+        self.assertEqual(self.head(), self.first)
+        self.assertFalse(updater.read_status(self.state)["can_undo"], "Go back works once")
 
-    def test_dry_run_changes_nothing(self):
+    def test_go_back_refuses_once_the_checkout_has_moved_on(self):
         self.push("engine/undertone/a.py", "Fix the engine")
-        result = self.apply(dry_run=True)
-        self.assertIn("Dry run", result["message"])
-        self.assertEqual(git(self.checkout, "rev-parse", "HEAD"), self.first)
-        self.assertEqual(self.restarts, [])
+        self.assertEqual(self.apply()["state"], "done")
+        mine = commit(self.checkout, "notes.txt", "mine\n", "Local work after the update")
+        result = self.undo()
+        self.assertEqual(result["state"], "failed")
+        self.assertEqual(self.head(), mine)
+        self.assertTrue((self.checkout / "notes.txt").exists())
+
+    def test_go_back_refuses_when_the_earlier_app_is_missing(self):
+        self.push("app/Sources/UndertoneApp/View.swift", "Change the app")
+        staged = make_app(self.apps.parent / "build" / "Undertone", "new app")
+        with patch.object(updater, "_build_app", return_value=staged):
+            new = self.apply()["new"]
+        shutil.rmtree(self.apps / updater.PREVIOUS_APP_NAME)
+        result = self.undo()
+        self.assertEqual(result["state"], "failed")
+        self.assertIn("earlier app is missing", result["message"])
+        self.assertEqual(self.head(), new, "nothing moved")
 
     def test_only_one_run_at_a_time(self):
         self.push("engine/undertone/a.py", "Fix the engine")
@@ -168,17 +250,19 @@ class UpdaterTests(unittest.TestCase):
             self.assertTrue(updater.is_running(self.state))
             with self.assertRaises(updater.StepFailed):
                 self.apply()
+            with self.assertRaises(updater.StepFailed):
+                updater.start_detached("apply", repo=self.checkout, state_dir=self.state)
         self.assertFalse(updater.is_running(self.state))
 
-    def test_a_run_that_died_reads_as_failed(self):
+    def test_a_run_that_no_longer_holds_the_lock_reads_as_failed(self):
         self.state.mkdir()
-        (self.state / "update-status.json").write_text(json.dumps(
-            {"state": "running", "pid": 999_999, "started_at": 0}))
+        (self.state / "update-status.json").write_text(json.dumps({"state": "running", "started_at": 0}))
         self.assertEqual(updater.read_status(self.state)["state"], "failed")
 
     def test_detached_run_finishes_on_its_own(self):
-        """The engine's path: a separate process does the update and reports
-        through the status file. A docs-only change needs no restart or build."""
+        """The engine's path: it takes the lock, hands it to a separate process,
+        and that process reports through the status file. A docs-only change
+        needs no build."""
         new = self.push("docs/notes.md", "Update the docs")
         started = updater.start_detached("apply", repo=self.checkout, state_dir=self.state)
         self.assertEqual(started["state"], "running")
@@ -188,8 +272,9 @@ class UpdaterTests(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertEqual(status["state"], "done", (self.state / "update.log").read_text())
-        self.assertEqual(git(self.checkout, "rev-parse", "HEAD"), new)
-        self.assertIn("Moving the checkout", (self.state / "update.log").read_text())
+        self.assertEqual(status["run_id"], started["run_id"])
+        self.assertEqual(self.head(), new)
+        self.assertFalse(updater.is_running(self.state))
 
     def test_only_the_installed_app_may_be_replaced(self):
         self.assertEqual(updater.valid_app_path(str(Path.home() / "Applications/Undertone.app")),

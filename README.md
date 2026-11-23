@@ -66,7 +66,7 @@ Settings → Updates checks GitHub for newer commits on `main` and installs them
 .venv/bin/undertone update --undo     # go back to the version before the last update
 ```
 
-An update needs a clean checkout on `main`. It pulls, installs Python packages if they changed, rebuilds the app with the same signing identity if the app changed (this needs Xcode), keeps the old app as `Undertone (previous).app`, and restarts the engine. If any step fails, nothing changes. The first rebuild asks for keychain access to your signing key; choose Always Allow.
+An update needs a clean checkout on `main` with no local commits. It pulls, rebuilds the app with the same signing identity if the app changed (this needs Xcode), installs Python packages if they changed, and keeps the old app as `Undertone (previous).app`. If any step fails, nothing changes. The app then restarts the engine and reopens itself once no dictation, meeting, or quick note is in progress. After a Terminal update, restart the engine (Settings → Privacy → Restart) and reopen the app yourself. The first rebuild asks for keychain access to your signing key; choose Always Allow.
 
 ## Use
 
@@ -84,7 +84,7 @@ Meeting capture records two channels: your microphone and the system's audio out
 
 ## Privacy
 
-Everything runs on your Mac. The engine reaches the network twice, both one time and both to fetch models: Ollama pulls its models from ollama.com when you run `ollama pull`, and the first transcription downloads the Whisper model from Hugging Face. After that the only network call is to Ollama on localhost, plus a `git fetch` from GitHub when you check for updates. The check sends no audio, transcripts, or settings, and runs only when you ask. History (transcripts and, optionally, audio) lives in `~/.undertone`. Nothing is uploaded anywhere; exporting a note to Obsidian is an explicit, user-initiated action.
+Everything runs on your Mac. The engine reaches the network twice, both one time and both to fetch models: Ollama pulls its models from ollama.com when you run `ollama pull`, and the first transcription downloads the Whisper model from Hugging Face. After that the only network call is to Ollama on localhost, plus a `git fetch` from GitHub when you check for updates, and Python packages from PyPI when an update changes them. Neither sends audio, transcripts, or settings, and both run only when you ask. History (transcripts and, optionally, audio) lives in `~/.undertone`. Nothing is uploaded anywhere; exporting a note to Obsidian is an explicit, user-initiated action.
 
 ## Development
 

@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// One commit waiting on GitHub's main.
+/// One commit on GitHub's main that the checkout does not have yet.
 struct UpdateChange: Codable, Equatable, Sendable, Identifiable {
     let commit: String
     let time: Double?
@@ -19,49 +19,59 @@ struct UpdateCheck: Codable, Equatable, Sendable {
     let changes: [UpdateChange]?
     let behind: Int?
     let head: String?
-    let appCommit: String?
+    /// The commit of GitHub's main this check saw. Update installs exactly this.
+    let remote: String?
     let appChanged: Bool?
     let checkedAt: Double?
 
     enum CodingKeys: String, CodingKey {
-        case state, message, changes, behind, head
-        case appCommit = "app_commit", appChanged = "app_changed", checkedAt = "checked_at"
+        case state, message, changes, behind, head, remote
+        case appChanged = "app_changed", checkedAt = "checked_at"
     }
 
     static func failure(_ message: String) -> UpdateCheck {
-        UpdateCheck(state: "error", message: message, changes: nil, behind: nil, head: nil,
-                    appCommit: nil, appChanged: nil, checkedAt: Date().timeIntervalSince1970)
+        UpdateCheck(state: "error", message: message, changes: nil, behind: nil, head: nil, remote: nil,
+                    appChanged: nil, checkedAt: Date().timeIntervalSince1970)
     }
 }
 
-/// The last update or undo, from `update.status`, `update.apply`, or `update.undo`.
+/// The last update or Go back, from `update.status`, `update.apply`, or `update.undo`.
 struct UpdateRun: Codable, Equatable, Sendable {
     /// `idle`, `running`, `done`, `failed`, or `blocked`.
     let state: String
+    let runID: String?
     let action: String?
     let message: String?
     let startedAt: Double?
     let finishedAt: Double?
+    /// The commit the checkout is on after the run.
+    let newCommit: String?
+    /// The engine must restart to run `newCommit`.
+    let restartEngine: Bool?
+    /// The app bundle at `appPath` was replaced by one built from `appCommit`.
     let relaunch: Bool?
     let appPath: String?
+    let appCommit: String?
     let canUndo: Bool?
     let logPath: String?
 
     enum CodingKeys: String, CodingKey {
         case state, action, message, relaunch
-        case startedAt = "started_at", finishedAt = "finished_at", appPath = "app_path"
+        case runID = "run_id", startedAt = "started_at", finishedAt = "finished_at", newCommit = "new"
+        case restartEngine = "restart_engine", appPath = "app_path", appCommit = "app_commit"
         case canUndo = "can_undo", logPath = "log_path"
     }
 
     static func failure(_ message: String) -> UpdateRun {
-        UpdateRun(state: "failed", action: nil, message: message, startedAt: nil,
-                  finishedAt: Date().timeIntervalSince1970, relaunch: nil, appPath: nil, canUndo: nil, logPath: nil)
+        UpdateRun(state: "failed", runID: nil, action: nil, message: message, startedAt: nil,
+                  finishedAt: Date().timeIntervalSince1970, newCommit: nil, restartEngine: nil, relaunch: nil,
+                  appPath: nil, appCommit: nil, canUndo: nil, logPath: nil)
     }
 }
 
 /// What the Updates tab shows. A pure function of the model, so tests pin each state.
 struct UpdateDisplay: Equatable {
-    enum Action: Equatable { case check, install, none }
+    enum Action: Equatable { case check, install, finish, none }
     enum Tone: Equatable { case neutral, good, working, problem }
 
     let headline: String
@@ -69,15 +79,29 @@ struct UpdateDisplay: Equatable {
     let action: Action
     let tone: Tone
 
-    static func make(check: UpdateCheck?, run: UpdateRun?, checking: Bool, busy: String?) -> UpdateDisplay {
+    /// - Parameters:
+    ///   - busy: what is in progress right now (dictation, a meeting, a quick note), or nil.
+    ///   - finishing: the step the app is on while it finishes an update, or nil.
+    ///   - pending: the last update is installed but the engine or app still runs the old code.
+    static func make(check: UpdateCheck?, run: UpdateRun?, checking: Bool, busy: String?,
+                     finishing: String? = nil, pending: Bool = false) -> UpdateDisplay {
         if let run, run.state == "running" {
             return UpdateDisplay(headline: run.action == "undo" ? "Going back…" : "Updating…",
                                  detail: run.message, action: .none, tone: .working)
+        }
+        if let finishing {
+            return UpdateDisplay(headline: "Finishing the update", detail: finishing, action: .none, tone: .working)
         }
         if checking {
             return UpdateDisplay(headline: "Checking GitHub…", detail: nil, action: .none, tone: .working)
         }
         let runTime = run?.finishedAt ?? run?.startedAt ?? 0
+        if let run, run.state == "done", pending {
+            return UpdateDisplay(headline: "Update installed",
+                                 detail: busy.map { "It finishes when this ends: \($0)" }
+                                    ?? "Restart the engine and reopen Undertone to use it.",
+                                 action: busy == nil ? .finish : .none, tone: .neutral)
+        }
         if let run, runTime >= (check?.checkedAt ?? 0) {
             switch run.state {
             case "failed", "blocked":
@@ -95,8 +119,10 @@ struct UpdateDisplay: Equatable {
         }
         switch check.state {
         case "ready":
-            let note = check.appChanged == true ? "The app is rebuilt, which takes a few minutes." : "Only the engine changes. This takes seconds."
-            return UpdateDisplay(headline: check.message ?? "An update is ready.", detail: busy ?? note,
+            let note = check.appChanged == true ? "The app is rebuilt, which takes a few minutes."
+                : "Only the engine changes. This takes seconds."
+            return UpdateDisplay(headline: check.message ?? "An update is ready.",
+                                 detail: busy.map { "Update can start when this ends: \($0)" } ?? note,
                                  action: busy == nil ? .install : .none, tone: .neutral)
         case "current":
             return UpdateDisplay(headline: "Undertone is up to date.", detail: nil, action: .check, tone: .good)
@@ -106,23 +132,26 @@ struct UpdateDisplay: Equatable {
     }
 }
 
-/// Talks to the engine's `update.*` requests. The engine does the work in a
-/// separate process; this polls its status and reopens the app when the app
-/// itself was replaced.
+/// Talks to the engine's `update.*` requests. The engine changes files in a
+/// separate process and never restarts anything. This model finishes the
+/// update: once nothing is in progress, it restarts the engine, waits until
+/// the engine runs the new commit, and reopens the app if it was replaced.
 @MainActor
 final class UpdateModel: ObservableObject {
     @Published private(set) var check: UpdateCheck?
     @Published private(set) var run: UpdateRun?
     @Published private(set) var checking = false
-    /// Why an update must wait right now (dictation, a meeting, an open quick
-    /// note), or nil when it can start.
+    /// The commit the running engine started from, from its last answer.
+    @Published private(set) var engineCommit: String?
+    @Published private(set) var finishing: String?
+    /// What is in progress right now (dictation, a meeting, a quick note), or nil.
     var busyReason: (() -> String?)?
 
     private let engine: EngineClient
     private let previewMode: Bool
     private var poller: Task<Void, Never>?
-    /// Only a run this app started may close and reopen it.
-    private var startedHere = false
+    /// The run this app started. Only that run finishes on its own.
+    private var acceptedRunID: String?
 
     init(engine: EngineClient, previewMode: Bool) {
         self.engine = engine
@@ -130,11 +159,12 @@ final class UpdateModel: ObservableObject {
         if previewMode {
             check = PreviewFixtures.updateCheck
             run = PreviewFixtures.updateRun
+            engineCommit = PreviewFixtures.updateEngineCommit
         }
     }
 
     var display: UpdateDisplay {
-        .make(check: check, run: run, checking: checking, busy: busyReason?())
+        .make(check: check, run: run, checking: checking, busy: busyReason?(), finishing: finishing, pending: pending)
     }
 
     /// The commit this app was built from, stamped into Info.plist by build_app.sh.
@@ -143,24 +173,39 @@ final class UpdateModel: ObservableObject {
             : Bundle.main.object(forInfoDictionaryKey: "UndertoneBuildCommit") as? String
     }
 
-    var canUndo: Bool { run?.canUndo == true && run?.state != "running" }
+    var canUndo: Bool { run?.canUndo == true && run?.state != "running" && finishing == nil }
 
-    /// Reads the last run, so an update still running, or one that failed
-    /// earlier, shows when Settings opens.
+    private var needsEngineRestart: Bool {
+        guard let run, run.state == "done", run.restartEngine == true, let target = run.newCommit else { return false }
+        return engineCommit != target
+    }
+
+    private var needsReopen: Bool {
+        guard let run, run.state == "done", run.relaunch == true, let target = run.appCommit else { return false }
+        return appCommit != target
+    }
+
+    /// The last update is on disk, but the engine or this app still runs older code.
+    var pending: Bool { needsEngineRestart || needsReopen }
+
+    /// Reads the last run, so an update still running, or one that failed or
+    /// still needs finishing, shows when Settings opens.
     func loadStatus() async {
-        guard !previewMode, let response = try? await engine.request(op: "update.status"),
-              let latest = response.updateRun else { return }
+        guard !previewMode, let response = try? await engine.request(op: "update.status") else { return }
+        engineCommit = response.engineCommit
+        guard let latest = response.updateRun else { return }
         run = latest
         if latest.state == "running" { poll() }
     }
 
     func checkNow() async {
-        guard !previewMode, !checking, run?.state != "running" else { return }
+        guard !previewMode, !checking, finishing == nil, run?.state != "running" else { return }
         checking = true
         defer { checking = false }
         do {
-            let response = try await engine.request(op: "update.check")
+            let response = try await engine.request(op: "update.check", fields: appPathField)
             check = response.update ?? .failure("The engine sent no update details.")
+            engineCommit = response.engineCommit
             if let latest = response.updateRun { run = latest }
         } catch {
             check = .failure("The engine did not answer. Is it running?")
@@ -168,8 +213,10 @@ final class UpdateModel: ObservableObject {
     }
 
     func install() async {
-        guard !previewMode, busyReason?() == nil, display.action == .install else { return }
-        await start(op: "update.apply", fields: ["app_path": .string(Bundle.main.bundlePath)])
+        guard !previewMode, display.action == .install, let remote = check?.remote else { return }
+        var fields = appPathField
+        fields["expect"] = .string(remote)
+        await start(op: "update.apply", fields: fields)
     }
 
     func undo() async {
@@ -182,22 +229,33 @@ final class UpdateModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
     }
 
+    /// The running app's own bundle, so check and apply look at the same app.
+    private var appPathField: [String: JSONValue] {
+        ["app_path": .string(Bundle.main.bundleURL.standardizedFileURL.path)]
+    }
+
     private func start(op: String, fields: [String: JSONValue]) async {
         do {
             let response = try await engine.request(op: op, fields: fields)
+            engineCommit = response.engineCommit
             guard let latest = response.updateRun else { return }
             run = latest
             if latest.state == "running" {
-                startedHere = true
+                acceptedRunID = latest.runID
                 poll()
             }
         } catch {
-            run = .failure("The engine did not answer. Nothing changed.")
+            // The reply was lost, not necessarily the request: read what happened.
+            await loadStatus()
+            if run?.state == "running" {
+                acceptedRunID = run?.runID
+            } else {
+                run = .failure("The engine did not answer. Check again in a moment.")
+            }
         }
     }
 
-    /// Polls once a second. The engine restarts near the end of an update, so
-    /// missed answers are expected for a while.
+    /// Polls once a second while a run is going.
     private func poll() {
         poller?.cancel()
         poller = Task { [weak self] in
@@ -208,30 +266,58 @@ final class UpdateModel: ObservableObject {
                 guard let response = try? await self.engine.request(op: "update.status"),
                       let latest = response.updateRun else {
                     misses += 1
-                    if misses >= 120 {
+                    if misses >= 60 {
                         self.run = .failure("Lost contact with the engine during the update. The log has the details.")
                         return
                     }
                     continue
                 }
                 misses = 0
+                self.engineCommit = response.engineCommit
                 self.run = latest
-                if latest.state != "running" {
-                    self.finished(latest)
-                    return
+                guard latest.state != "running" else { continue }
+                if latest.state == "done", latest.runID != nil, latest.runID == self.acceptedRunID {
+                    self.acceptedRunID = nil
+                    await self.finish()
                 }
+                return
             }
         }
     }
 
-    private func finished(_ latest: UpdateRun) {
-        guard startedHere else { return }
-        startedHere = false
-        guard latest.state == "done" else { return }
-        check = nil
-        if latest.relaunch == true, let path = latest.appPath {
-            Self.reopen(at: path)
+    /// Restarts the engine and reopens the app once nothing is in progress.
+    /// Runs on its own after an update this app started; otherwise from the
+    /// "Finish update" button.
+    func finish() async {
+        guard !previewMode, finishing == nil, let run, run.state == "done", pending else { return }
+        while let reason = busyReason?() {
+            finishing = "It finishes when this ends: \(reason)"
+            try? await Task.sleep(for: .seconds(1))
         }
+        if needsEngineRestart {
+            finishing = "Restarting the engine."
+            if await EngineRestarter.restart() {
+                var waited = 0
+                while needsEngineRestart, waited < 60 {
+                    try? await Task.sleep(for: .seconds(1))
+                    waited += 1
+                    if let response = try? await engine.request(op: "update.status") {
+                        engineCommit = response.engineCommit
+                    }
+                }
+            }
+            if needsEngineRestart {
+                finishing = nil
+                self.run = .failure("The engine did not restart on the new version. Use Restart in Settings → Privacy, then reopen Undertone.")
+                return
+            }
+        }
+        if needsReopen, let path = run.appPath {
+            finishing = "Reopening Undertone."
+            Self.reopen(at: path)
+            return
+        }
+        finishing = nil
     }
 
     /// Waits for this process to exit, then opens the new app at the same path.
@@ -261,9 +347,9 @@ struct UpdatesSettingsTab: View {
                     SettingLabel(title: "This app", detail: "The commit it was built from.")
                 }
                 LabeledContent {
-                    Text(Self.short(updates.check?.head)).font(.system(.body, design: .monospaced))
+                    Text(Self.short(updates.engineCommit)).font(.system(.body, design: .monospaced))
                 } label: {
-                    SettingLabel(title: "Engine", detail: "The commit the engine runs, known after a check.")
+                    SettingLabel(title: "Engine", detail: "The commit the engine started from.")
                 }
             }
             Section {
@@ -288,9 +374,13 @@ struct UpdatesSettingsTab: View {
                 }
                 HStack(spacing: 10) {
                     Button("Check for updates") { Task { await updates.checkNow() } }
-                        .disabled(display.action == .none && display.tone == .working)
+                        .disabled(display.tone == .working)
                     if display.action == .install {
                         Button("Update now") { Task { await updates.install() } }
+                            .buttonStyle(.borderedProminent)
+                    }
+                    if display.action == .finish {
+                        Button("Finish update") { Task { await updates.finish() } }
                             .buttonStyle(.borderedProminent)
                     }
                     Spacer()
@@ -309,7 +399,7 @@ struct UpdatesSettingsTab: View {
             } header: {
                 Text("Updates")
             } footer: {
-                Text("Undertone updates from its git checkout on GitHub's main. A check fetches from GitHub and sends no audio, transcripts, or settings. It waits while you dictate or record a meeting.")
+                Text("Undertone updates from its git checkout on GitHub's main. A check fetches from GitHub and sends no audio, transcripts, or settings. The engine restarts and the app reopens only when no dictation, meeting, or quick note is in progress.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

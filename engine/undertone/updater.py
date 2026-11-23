@@ -2,8 +2,10 @@
 
 The engine runs from the checkout it updates. A check runs one `git fetch` of
 `main` from GitHub; it sends no audio, transcripts, or settings. An apply runs
-in its own process, so it outlives the engine restart at its end. A failed
-step moves the checkout back to where it was and leaves the app untouched.
+in its own process and changes files only: it never restarts the engine or
+quits the app, so it cannot cut off a dictation or a meeting. The app does
+that afterwards, when nothing is in progress. A failed step puts the
+checkout, the Python packages, and the app back the way they were.
 """
 from __future__ import annotations
 
@@ -16,6 +18,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +27,7 @@ from . import config as settings
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REMOTE = "origin"
 BRANCH = "main"
-ENGINE_LABEL = "com.undertone.engine"
+REFSPEC = f"+refs/heads/{BRANCH}:refs/remotes/{REMOTE}/{BRANCH}"
 APP_NAME = "Undertone.app"
 PREVIOUS_APP_NAME = "Undertone (previous).app"
 DEPENDENCY_FILES = {"pyproject.toml"}
@@ -32,7 +35,6 @@ MAX_CHANGES = 20
 FETCH_TIMEOUT_SECONDS = 60
 BUILD_TIMEOUT_SECONDS = 45 * 60
 INSTALL_TIMEOUT_SECONDS = 15 * 60
-START_GRACE_SECONDS = 30
 TOOL_DIRS = ("~/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "~/.cargo/bin")
 
 
@@ -71,6 +73,13 @@ def _git(repo: Path, *args: str, timeout: int = 30) -> str:
     return done.stdout.strip()
 
 
+def head_commit(repo: Path = REPO_ROOT) -> str | None:
+    try:
+        return _git(repo, "rev-parse", "HEAD")
+    except StepFailed:
+        return None
+
+
 def _which(name: str) -> str | None:
     extra = os.pathsep.join(str(Path(d).expanduser()) for d in TOOL_DIRS)
     return shutil.which(name, path=os.environ.get("PATH", "") + os.pathsep + extra)
@@ -84,6 +93,14 @@ def _xcode_ready() -> bool:
         return False
 
 
+def _codesign_details(app: Path, *flags: str) -> str:
+    try:
+        done = subprocess.run(["codesign", "-d", *flags, str(app)], capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return done.stdout + done.stderr
+
+
 def signing_identity(app: Path | None) -> str | None:
     """The identity that signed the installed app. Signing the new build with the
     same one keeps Microphone, Accessibility, and Input Monitoring granted."""
@@ -92,13 +109,20 @@ def signing_identity(app: Path | None) -> str | None:
         return override if override != "-" else None
     if app is None or not app.is_dir():
         return None
-    try:
-        done = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True, timeout=30)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    for line in done.stderr.splitlines():
+    for line in _codesign_details(app, "-vv").splitlines():
         if line.startswith("Authority="):
             return line.removeprefix("Authority=").strip() or None
+    return None
+
+
+def designated_requirement(app: Path | None) -> str | None:
+    """The rule macOS privacy settings match an app by. The new build must
+    satisfy the installed app's rule, or its permissions would reset."""
+    if app is None or not app.is_dir():
+        return None
+    for line in _codesign_details(app, "-r-").splitlines():
+        if line.startswith("designated => "):
+            return line.removeprefix("designated => ").strip() or None
     return None
 
 
@@ -122,12 +146,41 @@ def app_build_commit(app: Path | None) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _changed_paths(repo: Path, old: str, new: str, *filters: str) -> list[str]:
+    """Paths that differ. Rename detection is off, so a move lists both ends."""
+    out = _git(repo, "diff", "--name-only", "--no-renames", "-z", *filters, old, new)
+    return [path for path in out.split("\0") if path]
+
+
 def _classify(paths: list[str]) -> dict[str, bool]:
     return {
         "app_changed": any(p.startswith("app/") and not p.startswith("app/Tests/") for p in paths),
         "engine_changed": any(p.startswith("engine/") for p in paths),
         "deps_changed": any(p in DEPENDENCY_FILES for p in paths),
     }
+
+
+def _collisions(repo: Path, old: str, new: str) -> list[str]:
+    """Files that moving from `old` to `new` would add, but that already exist
+    on disk untracked or ignored. Git would refuse some and silently overwrite
+    the ignored ones, so any of them stops the update."""
+    added = _changed_paths(repo, old, new, "--diff-filter=A")
+    return [p for p in added if (repo / p).exists() or (repo / p).is_symlink()]
+
+
+def _expect_head(repo: Path, commit: str) -> None:
+    """Every git change first confirms the checkout is still main at `commit`,
+    so a branch switch or a new commit is never moved by the updater."""
+    try:
+        branch = _git(repo, "symbolic-ref", "--quiet", "HEAD")
+    except StepFailed:
+        branch = "detached"
+    if branch != f"refs/heads/{BRANCH}" or _git(repo, "rev-parse", "HEAD") != commit:
+        raise StepFailed("The checkout changed while the update ran, so the updater left it alone.")
+
+
+def _clean(repo: Path) -> bool:
+    return not _git(repo, "status", "--porcelain", "--untracked-files=no")
 
 
 # MARK: - Status file and lock
@@ -148,37 +201,13 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(".tmp")
+    temp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     temp.write_text(json.dumps(value, indent=2))
     temp.replace(path)
 
 
-def _alive(pid: Any) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
-        return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def read_status(state_dir: Path | None = None) -> dict[str, Any]:
-    """The last apply or undo. A run whose process is gone counts as failed."""
-    paths = _paths(state_dir)
-    status = _read_json(paths["status"]) or {"state": "idle"}
-    starting = status.get("pid") is None and time.time() - float(status.get("started_at") or 0) < START_GRACE_SECONDS
-    if status.get("state") == "running" and not starting and not _alive(status.get("pid")):
-        status = {**status, "state": "failed",
-                  "message": "The update stopped before it finished. The log has the details."}
-    status["log_path"] = str(paths["log"])
-    status["can_undo"] = _read_json(paths["previous"]) is not None
-    return status
-
-
 def is_running(state_dir: Path | None = None) -> bool:
+    """A run holds the lock for its whole life, so the lock is the truth."""
     lock = _paths(state_dir)["lock"]
     if not lock.exists():
         return False
@@ -191,25 +220,44 @@ def is_running(state_dir: Path | None = None) -> bool:
     return False
 
 
-class _Run:
-    """Holds the lock and writes each step to the status file and the log."""
+def read_status(state_dir: Path | None = None) -> dict[str, Any]:
+    """The last apply or undo. A run that no longer holds the lock but never
+    finished counts as failed."""
+    paths = _paths(state_dir)
+    status = _read_json(paths["status"]) or {"state": "idle"}
+    if status.get("state") == "running" and not is_running(state_dir):
+        status = {**status, "state": "failed",
+                  "message": "The update stopped before it finished. The log has the details."}
+    status["log_path"] = str(paths["log"])
+    status["can_undo"] = _read_json(paths["previous"]) is not None
+    return status
 
-    def __init__(self, action: str, state_dir: Path | None, out: Any):
+
+class _Run:
+    """Holds the lock and is the only writer of the status file for one run.
+
+    The engine takes the lock before it starts the run's process and hands it
+    over as an open descriptor (`lock_fd`), so no second run can slip in."""
+
+    def __init__(self, action: str, state_dir: Path | None, out: Any, *,
+                 lock_fd: int | None = None, run_id: str | None = None):
         self.paths = _paths(state_dir)
         self.action = action
         self.out = out
+        self.run_id = run_id or uuid.uuid4().hex
         self.status: dict[str, Any] = {}
-        self._lock_handle: Any = None
+        self._fd = lock_fd
 
     def __enter__(self) -> "_Run":
         self.paths["dir"].mkdir(parents=True, exist_ok=True)
-        self._lock_handle = self.paths["lock"].open("a")
+        if self._fd is None:
+            self._fd = os.open(self.paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         try:
-            fcntl.flock(self._lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            self._lock_handle.close()
+            os.close(self._fd)
             raise StepFailed("An update is already running.")
-        self.status = {"state": "running", "action": self.action, "step": "starting",
+        self.status = {"state": "running", "action": self.action, "step": "starting", "run_id": self.run_id,
                        "pid": os.getpid(), "started_at": int(time.time())}
         self._save()
         return self
@@ -220,8 +268,7 @@ class _Run:
                 reason = str(exc) if isinstance(exc, StepFailed) else "The update stopped on an unexpected error."
                 self.finish("failed", f"{reason} The log has the details.")
         finally:
-            fcntl.flock(self._lock_handle, fcntl.LOCK_UN)
-            self._lock_handle.close()
+            os.close(self._fd)
 
     def _save(self) -> None:
         _write_json(self.paths["status"], self.status)
@@ -249,7 +296,8 @@ def check(repo: Path = REPO_ROOT, app: Path | None = None, *, fetch: bool = True
     """Compare the checkout with GitHub's main. Changes nothing but the fetch."""
     app = app or default_app_path()
     info: dict[str, Any] = {"state": "current", "checked_at": int(time.time()), "changes": [],
-                            "app_commit": app_build_commit(app), "app_path": str(app) if app else None}
+                            "app_commit": app_build_commit(app), "app_path": str(app) if app else None,
+                            "app_changed": False, "engine_changed": False, "deps_changed": False}
     try:
         top = Path(_git(repo, "rev-parse", "--show-toplevel"))
     except StepFailed:
@@ -260,25 +308,22 @@ def check(repo: Path = REPO_ROOT, app: Path | None = None, *, fetch: bool = True
     info["branch"] = _git(top, "rev-parse", "--abbrev-ref", "HEAD")
     if fetch:
         try:
-            _git(top, "fetch", "--quiet", REMOTE, BRANCH, timeout=FETCH_TIMEOUT_SECONDS)
+            _git(top, "fetch", "--quiet", "--no-tags", REMOTE, REFSPEC, timeout=FETCH_TIMEOUT_SECONDS)
         except StepFailed:
             return {**info, "state": "error", "message": "Could not reach GitHub. Check the network and try again."}
     try:
-        info["remote"] = _git(top, "rev-parse", f"{REMOTE}/{BRANCH}")
+        info["remote"] = _git(top, "rev-parse", f"refs/remotes/{REMOTE}/{BRANCH}")
     except StepFailed:
         return {**info, "state": "error", "message": f"This checkout has no {REMOTE}/{BRANCH} to compare with."}
     ahead, behind = (int(n) for n in _git(top, "rev-list", "--left-right", "--count",
-                                          f"HEAD...{REMOTE}/{BRANCH}").split())
+                                          f"HEAD...{info['remote']}").split())
     info.update(ahead=ahead, behind=behind)
     if behind:
-        log = _git(top, "log", f"--max-count={MAX_CHANGES}", "--format=%h%x09%ct%x09%s", f"HEAD..{REMOTE}/{BRANCH}")
+        log = _git(top, "log", f"--max-count={MAX_CHANGES}", "--format=%h%x09%ct%x09%s", f"HEAD..{info['remote']}")
         for line in log.splitlines():
             commit, when, title = line.split("\t", 2)
             info["changes"].append({"commit": commit, "time": int(when), "title": title})
-        paths = _git(top, "diff", "--name-only", f"HEAD...{REMOTE}/{BRANCH}").splitlines()
-        info.update(_classify(paths))
-    else:
-        info.update(app_changed=False, engine_changed=False, deps_changed=False)
+        info.update(_classify(_changed_paths(top, info["head"], info["remote"])))
 
     blocked = _blocker(top, info, app)
     if blocked:
@@ -286,26 +331,31 @@ def check(repo: Path = REPO_ROOT, app: Path | None = None, *, fetch: bool = True
     if not behind:
         return {**info, "message": "Undertone is up to date."}
     count = f"{behind} new change" + ("" if behind == 1 else "s")
-    return {**info, "state": "ready", "message": f"{count} ready to install."}
+    extra = " It downloads Python packages." if info["deps_changed"] else ""
+    return {**info, "state": "ready", "message": f"{count} ready to install.{extra}"}
 
 
 def _blocker(repo: Path, info: dict[str, Any], app: Path | None) -> str | None:
     """Why an update must not run, as a sentence, or None."""
     if info["branch"] != BRANCH:
         return f"The checkout is on branch {info['branch']}. Switch it to {BRANCH} to update."
-    if _git(repo, "status", "--porcelain", "--untracked-files=no"):
+    if not _clean(repo):
         return "The checkout has uncommitted changes. Commit or discard them, then update."
-    if not info["behind"]:
-        return None
     if info["ahead"]:
         return f"The checkout has commits that are not on GitHub's {BRANCH}. Push or remove them, then update."
+    if not info["behind"]:
+        return None
+    collisions = _collisions(repo, info["head"], info["remote"])
+    if collisions:
+        shown = ", ".join(collisions[:3]) + (" and others" if len(collisions) > 3 else "")
+        return f"The update adds files that already exist here ({shown}). Move them, then update."
     if info["deps_changed"] and not _which("uv"):
         return "This update changes Python packages, and uv was not found to install them."
     if info["app_changed"]:
         if app is None:
             return "This update changes the app, and no installed Undertone.app was found to replace."
         identity = signing_identity(app)
-        if identity is None:
+        if identity is None or designated_requirement(app) is None:
             return "The installed app has no developer signature to reuse. A rebuilt app would lose its permissions."
         if not _identity_in_keychain(identity):
             return f"The signing identity {identity} is not in this Mac's keychain."
@@ -317,86 +367,118 @@ def _blocker(repo: Path, info: dict[str, Any], app: Path | None) -> str | None:
 # MARK: - Apply and undo
 
 def apply(repo: Path = REPO_ROOT, app: Path | None = None, *, state_dir: Path | None = None,
-          out: Any = None, dry_run: bool = False) -> dict[str, Any]:
-    """Fast-forward to GitHub's main, install, build, swap, and restart."""
+          out: Any = None, expect: str | None = None, lock_fd: int | None = None,
+          run_id: str | None = None) -> dict[str, Any]:
+    """Fast-forward to the checked commit of GitHub's main, build, install, and
+    swap the app. The engine restart and app reopen are left to the app."""
     out = out or sys.stdout
     app = app or default_app_path()
-    with _Run("update", state_dir, out) as run:
+    with _Run("update", state_dir, out, lock_fd=lock_fd, run_id=run_id) as run:
         run.step("checking", "Checking GitHub for changes.")
         info = check(repo, app)
         if info["state"] != "ready":
             return run.finish("done" if info["state"] == "current" else "failed", info["message"])
+        if expect and info["remote"] != expect:
+            return run.finish("failed", "GitHub's main changed since the last check. Check again, then update.")
         top, old, new = Path(info["repo"]), info["head"], info["remote"]
         run.status.update(old=old, new=new)
-        if dry_run:
-            plan = [k for k in ("deps_changed", "app_changed", "engine_changed") if info[k]]
-            return run.finish("done", f"Dry run: would move {old[:7]} to {new[:7]} ({', '.join(plan) or 'no code'}).")
 
         run.step("pulling", f"Moving the checkout from {old[:7]} to {new[:7]}.")
+        _expect_head(top, old)
         _git(top, "merge", "--ff-only", "--quiet", new)
-        previous_app: Path | None = None
+        staged: Path | None = None
+        installed = swapped = False
         try:
-            if info["deps_changed"]:
-                run.step("installing", "Installing Python packages.")
-                _install_packages(top, out)
             if info["app_changed"] and app is not None:
                 run.step("building", "Building the app. This takes a few minutes.")
-                staged = _build_app(top, signing_identity(app) or "", new, out)
-                run.step("swapping", "Replacing the app. The old one is kept for undo.")
-                previous_app = _swap_in(staged, app)
+                staged = _build_app(top, app, new, out)
+            if info["deps_changed"]:
+                run.step("installing", "Installing Python packages.")
+                installed = True
+                _install_packages(top, out)
+            record = {"repo": str(top), "commit": old, "installed_commit": new,
+                      "deps_changed": info["deps_changed"], "app": None, "installed_app": None,
+                      "app_commit": app_build_commit(app), "updated_at": int(time.time())}
+            if staged is not None and app is not None:
+                run.step("swapping", "Replacing the app. The old one is kept for Go back.")
+                record.update(app=str(app.parent / PREVIOUS_APP_NAME), installed_app=str(app),
+                              app_commit=app_build_commit(staged))
+                _commit_with_swap(staged, app, run.paths["previous"], record)
+                swapped = True
+            else:
+                _write_json(run.paths["previous"], record)
         except Exception as exc:
-            try:
-                _git(top, "reset", "--keep", old)
-                where = f"the checkout is back on {old[:7]}"
-            except StepFailed:
-                where = f"move the checkout back with `git reset --keep {old[:7]}`"
             reason = str(exc) if isinstance(exc, StepFailed) else "The update stopped on an unexpected error."
-            return run.finish("failed", f"{reason} The installed app was not changed, and {where}.")
-
-        _write_json(run.paths["previous"], {"commit": old, "app": str(previous_app) if previous_app else None,
-                                            "installed_app": str(app) if app else None,
-                                            "deps_changed": info["deps_changed"], "updated_at": int(time.time())})
+            problem = _roll_back(top, old, new, installed, out)
+            return run.finish("failed", f"{reason} " + (problem or f"Nothing changed: the checkout is back on "
+                                                        f"{old[:7]} and the installed app was not touched."))
         restart = info["engine_changed"] or info["deps_changed"]
-        result = run.finish("done", f"Updated to {new[:7]}.", relaunch=previous_app is not None,
-                            restart_engine=restart, app_path=str(app) if app else None)
-        if restart:
-            _restart_after(run)
-        return result
+        return run.finish("done", f"Updated to {new[:7]}.", relaunch=swapped, restart_engine=restart,
+                          app_path=str(app) if swapped else None, app_commit=record["app_commit"])
 
 
-def undo(repo: Path = REPO_ROOT, *, state_dir: Path | None = None, out: Any = None) -> dict[str, Any]:
-    """Go back to the version before the last update, once."""
+def _roll_back(repo: Path, old: str, new: str, installed: bool, out: Any) -> str | None:
+    """Move the checkout from `new` back to `old` and reinstall its packages if
+    they were touched. Returns None when that worked, else what is left to do."""
+    try:
+        _expect_head(repo, new)
+        _git(repo, "reset", "--keep", old)
+    except StepFailed:
+        return f"The checkout changed meanwhile, so the updater left it alone. It was on {old[:7]} before."
+    if installed:
+        try:
+            _install_packages(repo, out)
+        except StepFailed:
+            return (f"The checkout is back on {old[:7]}, but reinstalling its Python packages failed. "
+                    "Run `uv pip install -e .` in the checkout.")
+    return None
+
+
+def undo(repo: Path = REPO_ROOT, *, state_dir: Path | None = None, out: Any = None,
+         lock_fd: int | None = None, run_id: str | None = None) -> dict[str, Any]:
+    """Go back to the version before the last update, once, and only if the
+    checkout is still exactly where that update left it."""
     out = out or sys.stdout
-    with _Run("undo", state_dir, out) as run:
-        previous = _read_json(run.paths["previous"])
-        if previous is None or not isinstance(previous.get("commit"), str):
-            return run.finish("failed", "There is no earlier version to go back to.")
+    with _Run("undo", state_dir, out, lock_fd=lock_fd, run_id=run_id) as run:
+        record = _read_json(run.paths["previous"]) or {}
         top = Path(_git(repo, "rev-parse", "--show-toplevel"))
-        if _git(top, "rev-parse", "--abbrev-ref", "HEAD") != BRANCH:
-            return run.finish("failed", f"The checkout is not on {BRANCH}, so undo would move the wrong branch.")
-        if _git(top, "status", "--porcelain", "--untracked-files=no"):
-            return run.finish("failed", "The checkout has uncommitted changes. Commit or discard them, then undo.")
-        old, current = previous["commit"], _git(top, "rev-parse", "HEAD")
+        old, current = record.get("commit"), record.get("installed_commit")
+        if record.get("repo") != str(top) or not isinstance(old, str) or not isinstance(current, str):
+            return run.finish("failed", "There is no earlier version of this checkout to go back to.")
+        try:
+            _expect_head(top, current)
+        except StepFailed:
+            return run.finish("failed", f"The checkout is no longer on {current[:7]} on {BRANCH}, so Go back "
+                                        "could remove newer work. Nothing changed.")
+        if not _clean(top):
+            return run.finish("failed", "The checkout has uncommitted changes. Commit or discard them, then go back.")
+        collisions = _collisions(top, current, old)
+        if collisions:
+            return run.finish("failed", f"Going back adds files that already exist here ({', '.join(collisions[:3])}). "
+                                        "Move them, then go back.")
+        prior, installed = record.get("app"), record.get("installed_app")
+        if isinstance(prior, str) and not Path(prior).is_dir():
+            return run.finish("failed", "The earlier app is missing, so Go back cannot restore it. Nothing changed.")
         run.status.update(old=current, new=old)
         run.step("pulling", f"Moving the checkout back from {current[:7]} to {old[:7]}.")
         _git(top, "reset", "--keep", old)
-        if previous.get("deps_changed"):
-            run.step("installing", "Reinstalling the earlier Python packages.")
-            try:
+        try:
+            if record.get("deps_changed"):
+                run.step("installing", "Reinstalling the earlier Python packages.")
                 _install_packages(top, out)
-            except StepFailed as exc:
-                run.log(f"{exc} Run `uv pip install -e .` in the checkout if the engine does not start.")
-        swapped = False
-        prior, installed = previous.get("app"), previous.get("installed_app")
-        if isinstance(prior, str) and isinstance(installed, str) and Path(prior).is_dir():
-            run.step("swapping", "Putting the earlier app back.")
-            _swap_back(Path(prior), Path(installed))
-            swapped = True
+            app_commit = record.get("app_commit")
+            if isinstance(prior, str) and isinstance(installed, str):
+                run.step("swapping", "Putting the earlier app back.")
+                app_commit = app_build_commit(Path(prior))
+                _swap_back(Path(prior), Path(installed))
+        except Exception as exc:
+            reason = str(exc) if isinstance(exc, StepFailed) else "Go back stopped on an unexpected error."
+            problem = _roll_back(top, current, old, bool(record.get("deps_changed")), out)
+            return run.finish("failed", f"{reason} " + (problem or f"Nothing changed: the checkout stays on {current[:7]}."))
         run.paths["previous"].unlink(missing_ok=True)
-        result = run.finish("done", f"Back on {old[:7]}.", relaunch=swapped, restart_engine=True,
-                            app_path=installed if swapped else None)
-        _restart_after(run)
-        return result
+        swapped = isinstance(prior, str)
+        return run.finish("done", f"Back on {old[:7]}.", relaunch=swapped, restart_engine=True,
+                          app_path=installed if swapped else None, app_commit=app_commit)
 
 
 def _run_logged(cmd: list[str], cwd: Path, out: Any, timeout: int, env: dict[str, str] | None = None) -> str:
@@ -421,10 +503,12 @@ def _install_packages(repo: Path, out: Any) -> None:
                 INSTALL_TIMEOUT_SECONDS)
 
 
-def _build_app(repo: Path, identity: str, commit: str, out: Any) -> Path:
-    """Build and sign the app; return the bundle only if it verifies."""
-    if not identity:
-        raise StepFailed("No signing identity to build the app with.")
+def _build_app(repo: Path, app: Path, commit: str, out: Any) -> Path:
+    """Build and sign the app; return the bundle only if macOS would treat it as
+    the same app as the installed one, so its permissions carry over."""
+    identity, requirement = signing_identity(app), designated_requirement(app)
+    if not identity or not requirement:
+        raise StepFailed("The installed app has no developer signature to reuse.")
     script = repo / "app" / "scripts" / "build_app.sh"
     printed = _run_logged(["/bin/zsh", str(script), "--production"], repo, out, BUILD_TIMEOUT_SECONDS,
                           env={"UNDERTONE_SIGNING_IDENTITY": identity})
@@ -432,7 +516,10 @@ def _build_app(repo: Path, identity: str, commit: str, out: Any) -> Path:
     bundle = Path(lines[-1].strip()) if lines else None
     if bundle is None or not (bundle / "Contents" / "MacOS" / "Undertone").is_file():
         raise StepFailed("The build did not produce an app.")
-    _run_logged(["codesign", "--verify", "--strict", str(bundle)], repo, out, 120)
+    try:
+        _run_logged(["codesign", "--verify", "--strict", f"-R={requirement}", str(bundle)], repo, out, 120)
+    except StepFailed as exc:
+        raise StepFailed("The new app is not signed like the installed one, so it would lose its permissions.") from exc
     if app_build_commit(bundle) != commit:
         raise StepFailed("The built app is stamped with a different commit.")
     return bundle
@@ -445,88 +532,96 @@ def _copy_bundle(source: Path, target: Path) -> None:
     subprocess.run(["ditto", str(source), str(target)], check=True, capture_output=True, timeout=300)
 
 
-def _swap_in(staged: Path, installed: Path) -> Path:
-    """Put the new app in place and keep the old one beside it."""
+def _commit_with_swap(staged: Path, installed: Path, record_path: Path, record: dict[str, Any]) -> None:
+    """Put the new app in place, keep the old one as the previous app, and
+    write the Go back record. Either all of it happens or none of it does:
+    every bundle is only renamed until the end."""
     folder = installed.parent
-    incoming, previous = folder / ".Undertone (incoming).app", folder / PREVIOUS_APP_NAME
+    incoming = folder / ".Undertone (incoming).app"
+    previous = folder / PREVIOUS_APP_NAME
+    parked = folder / ".Undertone (previous, parked).app"
+    old_record = _read_json(record_path)
     try:
         _copy_bundle(staged, incoming)
+        if parked.exists():
+            shutil.rmtree(parked)
     except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(incoming, ignore_errors=True)
         raise StepFailed("Could not copy the new app into place.") from exc
-    if previous.exists():
-        shutil.rmtree(previous)
-    installed.rename(previous)
+    moves: list[tuple[Path, Path]] = []
     try:
-        incoming.rename(installed)
-    except OSError:
-        previous.rename(installed)
-        raise
-    return previous
+        for source, target in ((previous, parked), (installed, previous), (incoming, installed)):
+            if source.exists():
+                source.rename(target)
+                moves.append((source, target))
+        _write_json(record_path, record)
+    except OSError as exc:
+        for source, target in reversed(moves):
+            target.rename(source)
+        if old_record is not None:
+            _write_json(record_path, old_record)
+        shutil.rmtree(incoming, ignore_errors=True)
+        raise StepFailed("Could not move the new app into place.") from exc
+    shutil.rmtree(parked, ignore_errors=True)
 
 
 def _swap_back(previous: Path, installed: Path) -> None:
-    """Put the kept app back; the newer one is removed."""
+    """Put the kept app back. The newer one is removed only once that worked."""
     newer = installed.parent / ".Undertone (undone).app"
     if newer.exists():
         shutil.rmtree(newer)
-    if installed.exists():
-        installed.rename(newer)
-    previous.rename(installed)
-    shutil.rmtree(newer, ignore_errors=True)
-
-
-def _restart_after(run: _Run) -> None:
-    """The status already says done. Restart last, and say so if it fails."""
-    if restart_engine():
-        run.log("Engine restarted.")
-        return
-    run.status["message"] += " Restart the engine to use the new version."
-    run._save()
-    run.log("The engine is not run by launchd, so it was not restarted.")
-
-
-def restart_engine() -> bool:
-    """Restart the launchd agent. False when the engine is not run by launchd."""
-    target = f"gui/{os.getuid()}/{ENGINE_LABEL}"
+    installed.rename(newer)
     try:
-        return subprocess.run(["launchctl", "kickstart", "-k", target], capture_output=True,
-                              timeout=30).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
-        return False
+        previous.rename(installed)
+    except OSError as exc:
+        newer.rename(installed)
+        raise StepFailed("Could not put the earlier app back.") from exc
+    shutil.rmtree(newer, ignore_errors=True)
 
 
 # MARK: - Starting a run from the engine
 
 def start_detached(action: str, app: Path | None = None, *, repo: Path = REPO_ROOT,
-                   state_dir: Path | None = None) -> dict[str, Any]:
-    """Start `undertone update --apply` (or `--undo`) in its own session, so the
-    engine restart at the end does not stop it. Returns at once."""
+                   state_dir: Path | None = None, expect: str | None = None) -> dict[str, Any]:
+    """Start `undertone update --apply` (or `--undo`) in its own session and
+    return at once. The engine takes the lock first and passes it to the run,
+    so two requests can never start two runs."""
     paths = _paths(state_dir)
-    if is_running(state_dir):
-        raise StepFailed("An update is already running.")
     paths["dir"].mkdir(parents=True, exist_ok=True)
-    cmd = [sys.executable, "-m", "undertone.cli", "update", "--undo" if action == "undo" else "--apply", "--detached"]
-    if app is not None and action != "undo":
-        cmd += ["--app", str(app)]
-    if repo != REPO_ROOT:
-        cmd += ["--repo", str(repo)]
-    if state_dir is not None:
-        cmd += ["--state-dir", str(state_dir)]
-    # Import the updater from the code that is running now, the engine's own.
-    engine_dir = str(Path(__file__).resolve().parents[1])
-    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [engine_dir, os.environ.get("PYTHONPATH")]))}
-    started = {"state": "running", "action": action, "step": "starting", "pid": None,
-               "started_at": int(time.time()), "message": "Starting."}
-    _write_json(paths["status"], started)
-    with paths["log"].open("a") as log:
-        process = subprocess.Popen(cmd, cwd=repo, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                                   env=env, start_new_session=True)
+    fd = os.open(paths["lock"], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise StepFailed("An update is already running.")
+        run_id = uuid.uuid4().hex
+        _write_json(paths["status"], {"state": "running", "action": action, "step": "starting", "run_id": run_id,
+                                      "started_at": int(time.time()), "message": "Starting."})
+        cmd = [sys.executable, "-m", "undertone.cli", "update", "--undo" if action == "undo" else "--apply",
+               "--detached", "--lock-fd", str(fd), "--run-id", run_id]
+        if app is not None and action != "undo":
+            cmd += ["--app", str(app)]
+        if expect and action != "undo":
+            cmd += ["--expect", expect]
+        if repo != REPO_ROOT:
+            cmd += ["--repo", str(repo)]
+        if state_dir is not None:
+            cmd += ["--state-dir", str(state_dir)]
+        # Import the updater from the code that is running now, the engine's own.
+        engine_dir = str(Path(__file__).resolve().parents[1])
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [engine_dir, os.environ.get("PYTHONPATH")]))}
+        try:
+            with paths["log"].open("a") as log:
+                process = subprocess.Popen(cmd, cwd=repo, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                           env=env, start_new_session=True, pass_fds=(fd,))
+        except OSError as exc:
+            _write_json(paths["status"], {"state": "failed", "action": action, "run_id": run_id,
+                                          "finished_at": int(time.time()), "message": "The update could not start."})
+            raise StepFailed("The update could not start.") from exc
+    finally:
+        os.close(fd)  # the run keeps the lock through its own copy of the descriptor
     # Reap the process when it ends, so it never lingers as a zombie of the engine.
     threading.Thread(target=process.wait, daemon=True).start()
-    # Record the pid unless the run has already written its own status, so a
-    # process that dies at once reads as failed instead of starting.
-    if _read_json(paths["status"]) == started:
-        _write_json(paths["status"], {**started, "pid": process.pid})
     return read_status(state_dir)
 
 

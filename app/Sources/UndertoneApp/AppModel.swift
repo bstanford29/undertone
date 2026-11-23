@@ -2186,19 +2186,18 @@ final class AppModel: ObservableObject {
     }
 
     /// Opens the Settings scene, the same window ⌘, opens.
-    /// Why an update must wait, or nil. The app closes and reopens at the end
-    /// of an update, so nothing in progress may be cut off.
+    /// What an update must wait for, or nil. Finishing an update restarts the
+    /// engine and may reopen the app, so nothing in progress may be cut off.
     func updateBusyReason() -> String? {
         // The preview pins the pill to "working" for its own screenshots.
         guard !previewMode else { return nil }
         switch pillState {
-        case .listening, .working: return "Finish dictating, then update."
+        case .listening, .working: return "A dictation is in progress."
         default: break
         }
-        if meetings.state.isRecording || meetings.state == .summarizing {
-            return "Finish the meeting notes, then update."
-        }
-        if quickNoteIsOpen?() == true { return "Close the quick note, then update." }
+        if meetings.state.isRecording { return "Meeting notes are recording." }
+        if meetings.state == .summarizing { return "A meeting summary is being written." }
+        if quickNoteIsOpen?() == true { return "A quick note is open." }
         return nil
     }
 

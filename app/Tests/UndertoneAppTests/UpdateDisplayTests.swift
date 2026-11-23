@@ -1,16 +1,18 @@
 import XCTest
 @testable import UndertoneApp
 
+/// What the Updates tab shows for each engine answer, and that the answers decode.
 final class UpdateDisplayTests: XCTestCase {
     private func check(_ state: String, appChanged: Bool = false, at time: Double = 100) -> UpdateCheck {
         UpdateCheck(state: state, message: state == "ready" ? "2 new changes ready to install." : "The checkout is on branch work.",
-                    changes: [], behind: state == "ready" ? 2 : 0, head: "abc1234", appCommit: "abc1234",
+                    changes: [], behind: state == "ready" ? 2 : 0, head: "abc1234", remote: "def5678",
                     appChanged: appChanged, checkedAt: time)
     }
 
     private func run(_ state: String, action: String = "update", finished: Double? = 200) -> UpdateRun {
-        UpdateRun(state: state, action: action, message: "Step or result.", startedAt: 150, finishedAt: finished,
-                  relaunch: nil, appPath: nil, canUndo: state == "done", logPath: "/tmp/update.log")
+        UpdateRun(state: state, runID: "r1", action: action, message: "Step or result.", startedAt: 150,
+                  finishedAt: finished, newCommit: "def5678", restartEngine: true, relaunch: nil, appPath: nil,
+                  appCommit: nil, canUndo: state == "done", logPath: "/tmp/update.log")
     }
 
     func testEngineResponseDecodesBothUpdatePayloads() throws {
@@ -19,15 +21,21 @@ final class UpdateDisplayTests: XCTestCase {
           "changes": [{"commit": "abc1234", "time": 1700000000, "title": "Fix a thing"}],
           "head": "0123456789", "app_commit": null, "app_changed": true, "engine_changed": false,
           "checked_at": 1700000100, "ahead": 0, "remote": "abc1234"},
-         "update_run": {"state": "running", "action": "update", "step": "building", "pid": 42,
-          "message": "Building the app.", "started_at": 1700000200, "can_undo": false, "log_path": "/x/update.log"}}
+         "update_run": {"state": "done", "action": "update", "run_id": "abc", "pid": 42, "new": "def5678",
+          "restart_engine": true, "relaunch": true, "app_commit": "def5678",
+          "message": "Updated to def5678.", "started_at": 1700000200, "can_undo": true, "log_path": "/x/update.log"},
+         "engine_commit": "abc1234"}
         """
         let response = try JSONDecoder().decode(EngineResponse.self, from: Data(json.utf8))
         XCTAssertEqual(response.update?.state, "ready")
         XCTAssertEqual(response.update?.changes?.first?.title, "Fix a thing")
         XCTAssertEqual(response.update?.appChanged, true)
-        XCTAssertEqual(response.updateRun?.state, "running")
-        XCTAssertEqual(response.updateRun?.logPath, "/x/update.log")
+        XCTAssertEqual(response.update?.remote, "abc1234")
+        XCTAssertEqual(response.updateRun?.runID, "abc")
+        XCTAssertEqual(response.updateRun?.newCommit, "def5678")
+        XCTAssertEqual(response.updateRun?.restartEngine, true)
+        XCTAssertEqual(response.updateRun?.appCommit, "def5678")
+        XCTAssertEqual(response.engineCommit, "abc1234")
     }
 
     func testReadyOffersInstallUnlessSomethingIsInProgress() {
@@ -36,9 +44,9 @@ final class UpdateDisplayTests: XCTestCase {
         XCTAssertEqual(ready.headline, "2 new changes ready to install.")
         XCTAssertEqual(ready.detail, "The app is rebuilt, which takes a few minutes.")
 
-        let busy = UpdateDisplay.make(check: check("ready"), run: nil, checking: false, busy: "Finish dictating, then update.")
+        let busy = UpdateDisplay.make(check: check("ready"), run: nil, checking: false, busy: "A dictation is in progress.")
         XCTAssertEqual(busy.action, .none)
-        XCTAssertEqual(busy.detail, "Finish dictating, then update.")
+        XCTAssertEqual(busy.detail, "Update can start when this ends: A dictation is in progress.")
     }
 
     func testRunningAndCheckingOfferNothing() {
@@ -62,6 +70,22 @@ final class UpdateDisplayTests: XCTestCase {
         let done = UpdateDisplay.make(check: nil, run: run("done"), checking: false, busy: nil)
         XCTAssertEqual(done.tone, .good)
         XCTAssertEqual(done.headline, "Step or result.")
+    }
+
+    func testAnInstalledUpdateFinishesOnlyWhenNothingIsInProgress() {
+        let idle = UpdateDisplay.make(check: nil, run: run("done"), checking: false, busy: nil, pending: true)
+        XCTAssertEqual(idle.headline, "Update installed")
+        XCTAssertEqual(idle.action, .finish)
+
+        let busy = UpdateDisplay.make(check: nil, run: run("done"), checking: false,
+                                      busy: "Meeting notes are recording.", pending: true)
+        XCTAssertEqual(busy.action, .none)
+        XCTAssertEqual(busy.detail, "It finishes when this ends: Meeting notes are recording.")
+
+        let finishing = UpdateDisplay.make(check: nil, run: run("done"), checking: false, busy: nil,
+                                           finishing: "Restarting the engine.", pending: true)
+        XCTAssertEqual(finishing.tone, .working)
+        XCTAssertEqual(finishing.action, .none)
     }
 
     func testBlockedAndCurrentStates() {
