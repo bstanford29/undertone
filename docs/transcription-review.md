@@ -9,7 +9,7 @@ How well Undertone transcribes Brandon's own voice notes, where it goes wrong, w
 | How accurate is it today? | Short dictations: about 96 to 97% of words agree with a consensus of other speech models. Long recordings: **every note over about 7.5 minutes came back empty.** A guard meant to catch looping output treated any long transcript as a loop and threw it away. |
 | Is "Qwen" the right model? | Qwen is the *cleanup* model (`qwen3.5`, 9.7B, via Ollama). Speech-to-text is NVIDIA **Parakeet TDT 0.6B v3**. Keep both. Parakeet tied the best open model (Qwen3-ASR 1.7B) on accuracy and runs 4 times faster. For cleanup, qwen3.5 passed 27 of 34 brain-dump cases with the new prompt, up from 17. The larger qwen3.8 passed 30 and is a setting worth trying on this Mac. |
 | Brain-dump cleanup | New `tidy_speech` setting, on by default, with a switch in Settings → Cleanup. It removes ums, stutters, false starts, and applies spoken corrections ("no wait, I mean X" becomes X). History still keeps the raw transcript. |
-| Speed | Key up to text on his dictations: median 1.28 → **0.76 s**, worst 4.27 → **1.79 s**. Long notes: speech-to-text twice as fast. Long-note cleanup runs at the same speed but now actually cleans. |
+| Speed | Key up to text on his dictations: median 1.28 → **0.73 s**, worst 4.27 → **1.80 s**. On his hands-free brain dumps: median 22.4 → **1.0 s**, worst 30.6 → **2.4 s**. One-shot speech-to-text on long notes is twice as fast. One-shot cleanup of a long note takes as long as before but now actually cleans it. |
 | Timestamps | No milliseconds anywhere a person reads them. Meeting notes show `[00:12]`, not `[12.345]`. The app shows `<1 s` or `2 s`, not `742 ms`. |
 
 ## How a dictation flows today
@@ -50,6 +50,9 @@ Sample, copied (never moved or edited) into the gitignored `bench/private_eval/t
 | Voice memos under 5 min | 8 | 12 min | 2 under 15 dB signal-to-noise |
 | Voice memos 5 to 14 min | 9 | 97 min | long recordings; mostly calls |
 | **Total** | **67** | **133 min** | |
+| Solo brain dumps, a separate group | 7 | 57 min | 5 found among 24 more memos, plus the 2 solo notes above |
+
+Most memos were calls, so 24 more were sampled and labelled the same way. The 7 solo notes, 1 to 13 minutes each, form their own "brain dump" group. They are scored apart from the 133-minute tables.
 
 ## How accuracy was measured
 
@@ -74,6 +77,19 @@ Speed is wall time on the same Mac. Live dictation was simulated by streaming ea
 | Noisy (under 15 dB) | 39.6% | 40.1% | Every model struggles; consensus is weak |
 | **All 133 minutes** | **70.2%** | **11.7%** | |
 
+**Solo brain dumps** (7 notes, 57 minutes, scored the same way):
+
+| Model | Word error |
+|---|---:|
+| Parakeet today | 76.1% (long notes empty) |
+| **Parakeet, this PR** | **20.7%** |
+| Qwen3-ASR 1.7B | 22.1% |
+| Qwen3-ASR 0.6B | 22.1% |
+| Apple SpeechTranscriber | 22.9% |
+| Whisper large-v3-turbo | 30.5% |
+
+The models agree less on these recordings than on his dictations, so every number is higher; one note is at 14 dB signal-to-noise. The order is the same.
+
 1. **Long notes vanish (fixed).** A synthetic 6.2-minute note (macOS `say` reading an invented brain dump) shows it without private audio: today's engine returns 0 words with reason `repetition`; this PR returns all 1,311. `_looks_repetitive` in `stt.py` dropped any transcript in which fewer than 30% of the words were distinct. Ordinary speech reuses words, so it crosses that line at about 1,000 to 1,150 words, roughly 7.5 minutes. A 7.2-minute call kept 31% distinct words and survived. A 7.6-minute note had 29% and was discarded whole as a "loop", and so was every longer one. Loops are now caught only when one phrase of up to 8 words repeats over most of the text, at any length.
 2. **Quiet and crosstalk audio.** Parakeet deletes more than it invents. On the noisiest call (6 dB) it missed about 1 word in 4 that the others heard. Whisper invents instead: on one quiet 3-minute memo it produced 261 words where the others heard about 130.
 3. **Fillers stay in the raw text.** Parakeet keeps "um" and "uh" (about 1.3 per 100 words), repeated words, "you know", and "I mean". Cleanup must remove them.
@@ -87,7 +103,7 @@ Tested locally on the 133-minute sample. Speed is the multiple of real time, so 
 
 | Model | WER all | Dictations | Memos 5 min+ | Speed | Size | Fit |
 |---|---:|---:|---:|---:|---:|---|
-| **Parakeet TDT 0.6B v3**, fixed + chunked (this PR) | **11.7%** | 2.7 / 4.1% | **13.6%** | **141×** | 2.3 GB | Current default. Fastest, tied for most accurate, deletes rather than invents. No vocabulary prompt. |
+| **Parakeet TDT 0.6B v3**, fixed + chunked (this PR) | **11.7%** | 2.7 / 4.1% | **13.6%** | **152×** | 2.3 GB | Current default. Fastest, tied for most accurate, deletes rather than invents. No vocabulary prompt. |
 | Parakeet TDT 0.6B v3 as shipped | 70.2% | 2.7 / 4.1% | 95.2% | 75× | 2.3 GB | Drops long notes. |
 | Qwen3-ASR 1.7B (mlx-qwen3-asr) | 12.0% | **2.6 / 3.8%** | 13.9% | 33× | 4.4 GB | Tied on accuracy. 4 times slower. Once returned half of a 1-minute call. Accepts a context prompt, which could help names. New dependency. |
 | Apple SpeechTranscriber (macOS 26) | 12.8% | 3.0 / 4.1% | 15.0% | 104× | 0 (built in) | No download, Swift-native. Parakeet leads it on memos by 1.4 points (95% interval 0.8 to 1.9). |
@@ -135,7 +151,7 @@ On his 50 real dictations, both with the tidy prompt, the two Qwen models remove
 - deletes false starts, keeping only the restart,
 - applies spoken corrections: "send it Tuesday, no wait, Wednesday" becomes "send it Wednesday".
 
-Pure filler sounds (um, uh, hmm) are removed by a rule before the model sees the text. The 60% guard counts the words that remain. Everything else is the model's call, inside the same guard, the same "never answer the dictation" rule, and the same proper-noun list.
+Pure filler sounds (um, uh, hmm) are removed by a rule before the model sees the text. The rule ignores all-caps "UM" and "UH", which are acronyms, and "uh-oh". The 60% guard counts the words that remain; if it fires, Undertone types exactly what was heard. Everything else is the model's call, inside the same guard, the same "never answer the dictation" rule, and the same proper-noun list. A short dictation (6 words or fewer) normally skips the model; one that contains a correction ("Tuesday, sorry, Wednesday") goes to the model when tidy is on.
 
 **Turning it off.** Settings → Cleanup → Brain dumps → "Tidy how you think out loud", or `tidy_speech: false` in `config.yaml`. Off restores exactly the earlier Medium and High prompts. None and Light are unchanged either way.
 
@@ -152,7 +168,7 @@ Pure filler sounds (um, uh, hmm) are removed by a rule before the model sees the
 | Words typed, share of raw | 100% | 94.6% | 91.7% |
 | Guard fired | | 0 | 0 |
 
-Real before-and-after snippets from his dictations are in the pull request description, not in this file, because his transcripts stay out of the repository.
+Real before-and-after snippets from his dictations went to Brandon directly, not to GitHub: his transcripts stay out of the repository and off the network.
 
 His recordings contain no explicit "no wait" corrections, so these come from the synthetic set:
 
@@ -163,9 +179,20 @@ His recordings contain no explicit "no wait" corrections, so these come from the
 | "use the blue template, wait no, the green one for the board deck" | Use the blue template, wait, no, the green one for the board deck. | **Use the green template for the board deck.** |
 | "let's, okay so let's draft the email to the controller first" | Let's, okay, so let's draft the email to the controller first. | **Let's draft the email to the controller first.** |
 
+**Results on his 7 solo brain dumps** (live path, 57 minutes):
+
+| Left in the typed text | Raw transcript | Cleaned today | Cleaned with tidy |
+|---|---:|---:|---:|
+| um / uh | 170 | 115 | **4** |
+| a word said twice in a row | 134 | 64 | **13** |
+| "you know" | 33 | 30 | 18 |
+| Words typed, share of raw | 100% | 97.0% | 90.3% |
+
+Today's release re-cleaned each brain dump in one call, and in one call the model nearly copies a long transcript. With tidy, each sentence-sized unit is cleaned on its own. In 5 of the 7 notes, at least one small unit, mostly filler, would have kept under 60% of its words; the guard typed that unit as heard. That is where the 4 remaining ums come from.
+
 **Known limits.** "Clawed" for Claude is a speech-to-text error; cleanup does not fix names it has not been told about (see the plan). A legitimate "that that" can lose one "that". A correction that deletes more than 40% of a short dictation is blocked by the guard, so the raw words are typed.
 
-**Live dictation and corrections.** A correction phrase at the start of a pause-cut chunk ("…Tuesday. [pause] No wait, Wednesday") needs the whole recording cleaned at once, because the words it corrects were already cleaned in an earlier unit. That fallback now runs only when the active prompt applies corrections. With tidy off, Medium keeps every word anyway, so the fallback was pure delay. Units also never close right before a correction phrase.
+**Live dictation and corrections.** A unit never ends right before a correction ("No wait", "Sorry,", "Or rather", a bare "No,"). When one still lands at a unit boundary, for example after a pause ("…Tuesday. [pause] Sorry, Wednesday"), release cleans the unit before it and the unit it opens again, together, because the correction needs the words it corrects. Today that case re-cleaned the whole recording. It runs only when the active prompt applies corrections; with tidy off, Medium keeps every word anyway. Long one-shot transcripts are split the same way: a correction stays in the piece with the sentence it corrects.
 
 ## Speed: where the time goes
 
@@ -175,11 +202,11 @@ Undertone has two paths. Hold-to-talk and hands-free dictation use the **live pa
 
 | | Today | This PR |
 |---|---:|---:|
-| Median | 1.28 s | **0.76 s** |
-| Slowest 10% | 2.78 s | **1.25 s** |
-| Worst | 4.27 s | **1.79 s** |
+| Median | 1.28 s | **0.73 s** |
+| Slowest 10% | 2.78 s | **1.26 s** |
+| Worst | 4.27 s | **1.80 s** |
 | Dictations under 30 s, median | 0.83 s | 0.62 s |
-| Dictations 30 s and over, median | 1.88 s | 0.95 s |
+| Dictations 30 s and over, median | 1.88 s | 0.89 s |
 | Releases that re-cleaned the whole recording | 21 of 50 | **0 of 50** |
 | Word error of what was transcribed | 3.42% | 3.42% |
 
@@ -189,22 +216,33 @@ What changed:
 
 1. A unit now ends at the first sentence end once it has 8 words, even in the middle of a pause-cut chunk.
 2. The 40-word cap is soft. A unit runs on to finish its sentence and is cut only at 100 words.
-3. Units never close right before a correction phrase, and the "correction" re-clean runs only when the prompt applies corrections.
+3. Units never close right before a correction. When a correction or a 100-word cut still lands at a unit boundary, release cleans only the units on either side of it again, not the whole recording.
 
 After the change, release is the speech-to-text of the last words (about 0.1 s) plus one cleanup call for the last unit (0.4 to 0.9 s). That cleanup call is now the floor.
+
+**Live path, his 7 solo brain dumps (1 to 13 minutes, hands-free), key up until the text is ready:**
+
+| | Today | This PR |
+|---|---:|---:|
+| Median | 22.4 s | **1.0 s** |
+| Worst | 30.6 s | **2.4 s** |
+| Releases that re-cleaned the whole recording | 7 of 7 | **0 of 7** |
+| Words transcribed | 8,874 | 8,874 |
+
+On a 10-minute note, some boundary almost always carries a correction ("Sorry,", "No,") or a sentence longer than the cap. Today any one of them made release clean the whole note again in one call: 13 to 31 seconds for the six notes of 5 minutes or more (880 to 1,900 words). Now only the units on either side are cleaned again.
 
 **One-shot path, same audio:**
 
 | Step | Today | This PR |
 |---|---:|---:|
-| Speech-to-text, all 133 minutes | 106 s, and 8 long notes came back empty | **57 s**, every note transcribed |
-| Speech-to-text, median note over 5 min | 9.5 s | **4.3 s** |
+| Speech-to-text, all 133 minutes | 106 s, and 8 long notes came back empty | **52 s**, every note transcribed |
+| Speech-to-text, median note over 5 min | 9.5 s | **4.0 s** |
 | Cleanup, median voice memo (about 1,200 words) | 18.8 s | 18.1 s |
-| Cleanup, longest (about 2,100 words) | 37.4 s | 37.1 s |
-| Cleanup, median dictation | 1.30 s | 1.36 s |
+| Cleanup, longest (about 2,100 words) | 37.4 s | 36.7 s |
+| Cleanup, median dictation | 1.30 s | 1.35 s |
 | Repo check clip, 15.5 s, `undertone once` warm | 0.99 s | 0.96 s |
 
-Long-note cleanup is bound by how fast the model writes: about 60 words a second on this Mac, so a 2,100-word note takes about 36 s. Cleaning in pieces does not change that. Ollama here runs one request at a time (`OLLAMA_NUM_PARALLEL` is unset). A temporary second Ollama on another port, with four parallel slots, was only 3% faster (24.4 s against 25.1 s median for memos over 800 words), so the pieces run one after another. The pieces exist for quality and safety. In one call, qwen3.5 nearly copies a long transcript: ums went from 1.47 to 1.35 per 100 words, repeats from 183 to 127. In pieces it cleans it like a short one: ums 0 per 100 words, repeats 62. Each piece also gets its own 60% guard, and no call comes near the 8,192-token context window, which a single 2,900-word call would fill.
+Long-note cleanup is bound by how fast the model writes: about 60 words a second on this Mac, so a 2,100-word note takes about 36 s. Cleaning in pieces does not change that. Ollama here runs one request at a time (`OLLAMA_NUM_PARALLEL` is unset). A temporary second Ollama on another port, with four parallel slots, was only 3% faster (24.4 s against 25.1 s median for memos over 800 words), so the pieces run one after another. The pieces exist for quality and safety. In one call, qwen3.5 nearly copies a long transcript: ums went from 1.47 to 1.35 per 100 words, repeats from 183 to 127. In pieces it cleans it like a short one: ums 0 per 100 words, repeats 61. Each piece also gets its own 60% guard, and no call comes near the 8,192-token context window, which a single 2,900-word call would fill.
 
 ## Timestamps
 
@@ -253,7 +291,6 @@ Recommended next, not done here:
 | `test_warm_uses_generic_message_for_other_failures` patches only the Whisper class | Fails whenever `parakeet-mlx` is installed, as in the engine's own `.venv`; it then loads the real model and calls real Ollama. CI is green because CI installs no MLX. | `tests/test_server.py` |
 | The first run writes every default into `~/.undertone/config.yaml` | A changed default never reaches an existing install. This PR's unit-cap change works around it with a soft cap. | `config.py` `_write_defaults` |
 | `load_wav` resamples with straight-line interpolation and no low-pass filter | 44.1 or 48 kHz files alias. Dictation records at 16 kHz, so only imported files are affected. | `audio.py` |
-| The Light level's filler pattern | "uh-oh" becomes "-oh". | `cleanup.py` `LIGHT_FILLERS` |
 | "Type text as it is cleaned" mode | Still cleans a long transcript in one call. Off by default. | `cleanup.py` `stream_clean_result` |
 | Voice Memos library | Readable only with Full Disk Access for the reading process. Reported, not changed. | macOS privacy |
 | `bench/dictation.wav` | Ignored by git, so a fresh checkout cannot run the AGENTS.md engine check. This review used the copy in `Projects D/nemotron-bench`. | `.gitignore` |

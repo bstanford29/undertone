@@ -333,6 +333,13 @@ class ServerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.engine.dispatch({'op':'config.update','config':{'ollama_url':'https://example.com'}})
 
+    def test_tidy_speech_setting_is_on_by_default_and_saved_as_a_boolean(self):
+        self.assertIs(self.engine.dispatch({'op': 'config.get'})['config']['tidy_speech'], True)
+        self.engine.dispatch({'op': 'config.update', 'config': {'tidy_speech': False}})
+        self.assertIs(self.engine.dispatch({'op': 'config.get'})['config']['tidy_speech'], False)
+        with self.assertRaises(ValueError):
+            self.engine.dispatch({'op': 'config.update', 'config': {'tidy_speech': 'off'}})
+
     def test_dictionary_add_supersedes_auto_learning_action(self):
         row_id = self.engine.dispatch({
             'op': 'history.record', 'raw_text': 'Valora', 'clean_text': 'Valora',

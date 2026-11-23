@@ -108,9 +108,10 @@ Output: We're going to split the import in two.
 
 Correct these proper nouns when misheard: {vocab}"""
 
+# Lower case or a capital first letter only: "UM" or "UH" is an acronym, and
+# "uh-oh" is a word.
 LIGHT_FILLERS = re.compile(
-    r"\b(um+|uh+|erm)\b[,]?\s*",
-    re.IGNORECASE,
+    r"(?<![\w'-])(?:[Uu]m+|[Uu]h+|[Ee]rm)(?![\w'-])[,]?\s*",
 )
 # Pure filler sounds, removed before a tidy model call. Words such as "like"
 # or "I mean" can carry meaning, so only the model decides about them. Only
@@ -329,11 +330,17 @@ _CORRECTION_RE = re.compile(
 )
 # Words that start a correction when they open the next sentence or chunk:
 # "Book it Tuesday. Sorry, Wednesday." A split never goes before one.
-CORRECTION_LEADS = ("no", "sorry", "or rather", "wait", "oops")
+CORRECTION_LEADS = ("sorry", "or rather", "oops")
+# "No" and "Wait" start a correction only as a bare interjection ("No,",
+# "Wait."), never in "No one replied" or "Wait until Friday".
+CORRECTION_INTERJECTIONS = ("no", "wait")
 # Words that mark a correction anywhere in a short dictation.
 _SHORT_CORRECTION_RE = re.compile(
-    r"\b(?:" + "|".join(re.escape(phrase) for phrase in CORRECTION_PHRASES + ("sorry", "or rather", "wait")) + r")\b"
+    r"\b(?:" + "|".join(
+        re.escape(phrase) for phrase in CORRECTION_PHRASES + ("sorry", "or rather", "wait", "oops")
+    ) + r")\b"
 )
+_LEADING_SOUNDS = {"um", "umm", "uh", "uhh", "uhm", "erm", "hmm"}
 
 
 def _correction_words(text: str, limit: int | None = None) -> list[str]:
@@ -348,16 +355,27 @@ def opens_with_correction(text: str, *, lead_words: int = CORRECTION_LEAD_WORDS)
 
 
 def starts_correction(text: str) -> bool:
-    """True when ``text`` opens a correction: a correction phrase in its first
-    words, or a lead word ("No", "Sorry", "Or rather") as its first words."""
-    if opens_with_correction(text):
+    """True when ``text`` opens a correction, after any leading "um" or "uh":
+    a correction phrase in its first words, a lead word ("Sorry", "Or
+    rather"), or a bare "No," or "Wait.". A lone "No" with nothing decoded
+    after it yet counts, so a unit waits to see what follows."""
+    words = text.split()
+    while words and "".join(char for char in words[0].lower() if char.isalnum()) in _LEADING_SOUNDS:
+        words = words[1:]
+    if not words:
+        return False
+    rest = " ".join(words)
+    if opens_with_correction(rest):
         return True
-    lead = " ".join(_correction_words(text, CORRECTION_LEAD_WORDS))
+    first = "".join(char for char in words[0].lower() if char.isalnum())
+    if first in CORRECTION_INTERJECTIONS:
+        return len(words) == 1 or words[0][-1:] in ",.!?;"
+    lead = " ".join(_correction_words(rest, CORRECTION_LEAD_WORDS))
     return any(lead == phrase or lead.startswith(phrase + " ") for phrase in CORRECTION_LEADS)
 
 
 def mentions_correction(text: str) -> bool:
-    """True when a correction phrase or "sorry", "or rather", "wait" appears anywhere."""
+    """True when a correction phrase or "sorry", "or rather", "wait", "oops" appears anywhere."""
     return bool(_SHORT_CORRECTION_RE.search(" ".join(_correction_words(text))))
 
 
@@ -584,6 +602,29 @@ def _committable_end(text: str, holdback: int, finalized: bool) -> int:
     return words[complete[committable_count - 1]][1]
 
 
+def _near_correction(words: list[str], cut: int) -> bool:
+    """True when a correction sits within a few words of a cut before ``words[cut]``."""
+    window = " ".join(words[max(0, cut - CORRECTION_LEAD_WORDS) : cut + CORRECTION_LEAD_WORDS])
+    return mentions_correction(window) or starts_correction(" ".join(words[cut : cut + CORRECTION_LEAD_WORDS]))
+
+
+def _split_run_on(words: list[str], piece_words: int) -> list[str]:
+    """Cut a run-on into near-even parts, never next to a correction."""
+    parts = -(-len(words) // piece_words)
+    size = -(-len(words) // parts)
+    out: list[str] = []
+    start = 0
+    while len(words) - start > size:
+        cut = start + size
+        limit = min(len(words) - 1, cut + 40)
+        while cut < limit and _near_correction(words, cut):
+            cut += 1
+        out.append(" ".join(words[start:cut]))
+        start = cut
+    out.append(" ".join(words[start:]))
+    return out
+
+
 def split_for_cleanup(raw: str, piece_words: int = PIECE_WORDS) -> list[str]:
     """Split a long transcript into pieces of whole sentences, in order.
 
@@ -596,9 +637,7 @@ def split_for_cleanup(raw: str, piece_words: int = PIECE_WORDS) -> list[str]:
     for sentence in re.split(r"(?<=[.!?])\s+", raw.strip()):
         words = sentence.split()
         if len(words) > piece_words:
-            parts = -(-len(words) // piece_words)
-            size = -(-len(words) // parts)
-            sentences.extend(" ".join(words[i : i + size]) for i in range(0, len(words), size))
+            sentences.extend(_split_run_on(words, piece_words))
         elif words:
             sentences.append(" ".join(words))
     pieces: list[str] = []

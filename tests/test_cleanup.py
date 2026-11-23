@@ -491,13 +491,25 @@ class TidySpeechTests(unittest.TestCase):
 
     def test_correction_detection(self):
         self.assertTrue(cleanup.starts_correction("Sorry, Wednesday at two."))
+        self.assertTrue(cleanup.starts_correction("Um, sorry, Wednesday."))
         self.assertTrue(cleanup.starts_correction("No"))
+        self.assertTrue(cleanup.starts_correction("No, fourteen open items."))
+        self.assertTrue(cleanup.starts_correction("Wait, the green one."))
         self.assertTrue(cleanup.starts_correction("or rather Tuesday"))
         self.assertTrue(cleanup.starts_correction("um no wait"))
+        self.assertFalse(cleanup.starts_correction("No one has replied yet."))
+        self.assertFalse(cleanup.starts_correction("Wait until Friday to file it."))
         self.assertFalse(cleanup.starts_correction("Nothing else today."))
         self.assertFalse(cleanup.starts_correction("I have no idea."))
         self.assertTrue(cleanup.mentions_correction("I need Tuesday, sorry, Wednesday please"))
+        self.assertTrue(cleanup.mentions_correction("Tuesday, oops, Wednesday for me"))
         self.assertFalse(cleanup.mentions_correction("Send the deck to Priya"))
+
+    def test_light_cleanup_keeps_acronyms_and_uh_oh(self):
+        self.assertEqual(cleanup._light_clean("Send the deck to UM"), "Send the deck to UM.")
+        self.assertEqual(cleanup._light_clean("uh-oh um the build broke"), "Uh-oh the build broke.")
+        result = cleanup.clean_result("Send the deck to UM", "medium", {}, cfg())
+        self.assertEqual(result["clean_text"], "Send the deck to UM.")
 
     def test_acronyms_are_not_filler_sounds(self):
         self.assertEqual(cleanup.strip_filler_sounds("The UM engineering team met UH staff"),
@@ -576,6 +588,14 @@ class LongTranscriptTests(unittest.TestCase):
         self.assertEqual(" ".join(pieces), " ".join(text.split()))
         holder = next(piece for piece in pieces if "Tuesday." in piece)
         self.assertIn("Send it Tuesday. No wait, Wednesday.", holder)
+
+    def test_a_run_on_is_never_cut_next_to_a_correction(self):
+        # The even cut would fall at word 140, between "sorry" and "Wednesday".
+        words = ["word"] * 136 + ["send", "it", "Tuesday", "sorry", "Wednesday", "at", "two"] + ["word"] * 137
+        pieces = cleanup.split_for_cleanup(" ".join(words))
+        self.assertEqual(" ".join(pieces), " ".join(words))
+        holder = next(piece for piece in pieces if "Tuesday" in piece)
+        self.assertIn("Tuesday sorry Wednesday at two", holder)
 
     def test_a_long_run_on_is_split_into_even_parts(self):
         text = " ".join(["word"] * 280)
