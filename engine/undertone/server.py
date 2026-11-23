@@ -453,7 +453,7 @@ class Engine:
         if op == "config.update":
             changes = r.get("config")
             booleans = {"sounds", "whisper_mode", "toggle_mode", "streaming", "pill_persistent", "stream_insert",
-                        "double_tap_lock", "learn_from_corrections", "live_dictation"}
+                        "double_tap_lock", "learn_from_corrections", "live_dictation", "tidy_speech"}
             allowed = booleans | {"cleanup_level", "hold_key", "obsidian_vault_path", "pill_edge", "pill_offset",
                                   "app_prompt_variants"}
             if not isinstance(changes, dict) or set(changes) - allowed:

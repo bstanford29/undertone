@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import re
@@ -72,6 +73,14 @@ MAX_SPLIT_DEPTH = 2
 # Whisper keeps the tail of a long initial_prompt, so the context passed with
 # the vocabulary is capped here and placed before the vocabulary terms.
 CONTEXT_TAIL_CHARS = 300
+# Parakeet decodes recordings longer than this in overlapping windows, the
+# way parakeet-mlx's own long-file transcription does.
+PARAKEET_CHUNK_SECONDS = 120.0
+PARAKEET_OVERLAP_SECONDS = 15.0
+# The distinct-word loop test only holds for texts up to this many words.
+UNIQUE_RATIO_MAX_WORDS = 120
+# A loop is a phrase of up to this many words repeated over most of the text.
+LOOP_MAX_PHRASE_WORDS = 8
 
 _PUNCT_RE = re.compile(r"[^\w\s]")
 
@@ -102,18 +111,23 @@ def _looks_like_vocab_echo(text: str, vocab: str) -> bool:
 
 
 def _looks_repetitive(text: str) -> bool:
-    """Catch the classic whisper loop: a few words repeated over and over."""
+    """Catch the classic whisper loop: a few words repeated over and over.
+
+    Ordinary speech reuses its words, so the share of distinct words falls as
+    a transcript grows: a real 1,100-word voice note scores about 0.3. The
+    distinct-word test therefore applies to short texts only. A long loop is
+    still caught because one repeated phrase covers most of its words.
+    """
     tokens = _tokenize(text)
     if len(tokens) < 8:
         return False
-    unique_ratio = len(set(tokens)) / len(tokens)
-    if unique_ratio < 0.3:
+    if len(tokens) <= UNIQUE_RATIO_MAX_WORDS and len(set(tokens)) / len(tokens) < 0.3:
         return True
-    for width in (1, 2, 3):
-        grams = [tuple(tokens[i : i + width]) for i in range(len(tokens) - width + 1)]
-        if not grams:
-            continue
-        most_common = max(grams.count(gram) for gram in set(grams))
+    for width in range(1, LOOP_MAX_PHRASE_WORDS + 1):
+        if len(tokens) < width:
+            break
+        counts = Counter(tuple(tokens[i : i + width]) for i in range(len(tokens) - width + 1))
+        most_common = max(counts.values())
         if most_common * width >= 0.6 * len(tokens) and most_common >= 4:
             return True
     return False
@@ -557,13 +571,61 @@ class ParakeetTranscriber:
         from parakeet_mlx.audio import get_logmel
 
         self._load_on_worker()
-        mel = get_logmel(mx.array(audio), self._model.preprocessor_config)
-        results = self._model.generate(mel)
-        if not results:
-            return "", None
-        result = results[0]
+        if len(audio) > int(PARAKEET_CHUNK_SECONDS * DEFAULT_SAMPLE_RATE):
+            result = self._decode_long_on_worker(audio)
+        else:
+            mel = get_logmel(mx.array(audio), self._model.preprocessor_config)
+            results = self._model.generate(mel)
+            if not results:
+                return "", None
+            result = results[0]
         tokens = getattr(result, "tokens", None)
         return (result.text or "").strip(), (list(tokens) if tokens else None)
+
+    def _decode_long_on_worker(self, audio: np.ndarray) -> Any:
+        """Decode a long recording in overlapping windows and merge by token time.
+
+        This mirrors parakeet-mlx's own chunked ``transcribe`` for a file, for
+        audio already in memory. On a 13-minute note it is about twice as fast
+        as one pass, keeps the same accuracy, and bounds the memory one decode
+        needs.
+        """
+        import mlx.core as mx
+        from parakeet_mlx.alignment import (
+            merge_longest_common_subsequence,
+            merge_longest_contiguous,
+            sentences_to_result,
+            tokens_to_sentences,
+        )
+        from parakeet_mlx.audio import get_logmel
+
+        config = self._model.preprocessor_config
+        rate = int(getattr(config, "sample_rate", DEFAULT_SAMPLE_RATE))
+        hop = int(getattr(config, "hop_length", 160))
+        chunk = int(PARAKEET_CHUNK_SECONDS * rate)
+        step = chunk - int(PARAKEET_OVERLAP_SECONDS * rate)
+        merged: list[Any] = []
+        for start in range(0, len(audio), step):
+            end = min(start + chunk, len(audio))
+            if end - start < hop:
+                break
+            results = self._model.generate(get_logmel(mx.array(audio[start:end]), config))
+            if not results:
+                continue
+            piece = results[0]
+            offset = start / rate
+            for sentence in piece.sentences:
+                for token in sentence.tokens:
+                    token.start += offset
+                    token.end = token.start + token.duration
+            if not merged:
+                merged = list(piece.tokens)
+                continue
+            try:
+                merged = merge_longest_contiguous(merged, piece.tokens, overlap_duration=PARAKEET_OVERLAP_SECONDS)
+            except RuntimeError:
+                merged = merge_longest_common_subsequence(merged, piece.tokens, overlap_duration=PARAKEET_OVERLAP_SECONDS)
+        return sentences_to_result(tokens_to_sentences(merged))
 
 
 def _resolve_model(model: str, *, local_files_only: bool) -> str:

@@ -515,7 +515,7 @@ struct HistoryRowCell: View {
                 .background(.secondary.opacity(0.15), in: RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 4) {
                 Text(row.preferredText ?? "(empty)").lineLimit(2)
-                Text("\(Int(row.audioSeconds ?? 0)) s · \(Int(row.totalMS ?? 0)) ms · \(row.appBundleID ?? "Unknown")\(row.guardFired == true && (row.model == nil || row.model?.isEmpty == true) ? " · raw kept" : "")")
+                Text("\(Int(row.audioSeconds ?? 0)) s audio · done in \(TimeText.duration(milliseconds: row.totalMS ?? 0)) · \(row.appBundleID ?? "Unknown")\(row.guardFired == true && (row.model == nil || row.model?.isEmpty == true) ? " · raw kept" : "")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -573,7 +573,7 @@ struct HistoryDetail: View {
                     Text("\(Int(row.audioSeconds ?? 0)) s").foregroundStyle(.secondary)
                 }
             }
-            Text("STT \(Int(row.sttMS ?? 0)) ms · LLM \(Int(row.llmMS ?? 0)) ms · Insert \(Int(row.insertMS ?? 0)) ms · \(row.model ?? "unknown") · \(row.insertMode ?? "unknown")")
+            Text("Speech to text \(TimeText.duration(milliseconds: row.sttMS ?? 0)) · Cleanup \(TimeText.duration(milliseconds: row.llmMS ?? 0)) · Typing \(TimeText.duration(milliseconds: row.insertMS ?? 0)) · \(row.model ?? "unknown") · \(row.insertMode ?? "unknown")")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             ViewThatFits(in: .horizontal) {

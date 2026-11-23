@@ -14,6 +14,7 @@ from undertone.meeting import (
     MAX_SUMMARY_SECTION_CHARS,
     MAX_TITLE_CHARS,
     MeetingService,
+    clock_time,
 )
 
 # The original meeting_sessions shape, before notes, title_source,
@@ -150,15 +151,45 @@ class MeetingTests(MeetingFixture):
         self.add_chunk(service, session_id, seq=1, offset_s=10.0)
         transcript_path = service.get(session_id)["session"]["transcript_path"]
         transcript = [json.loads(line) for line in Path(transcript_path).read_text().splitlines()]
-        self.assertEqual([line["timestamp"] for line in transcript], [10.0, 20.0])
+        self.assertEqual([line["timestamp"] for line in transcript], [10, 20])
+        self.assertTrue(all(isinstance(line["timestamp"], int) for line in transcript))
         self.assertEqual([line["text"] for line in transcript], ["Early", "Late"])
 
         vault = Path(self.temporary.name) / "vault"
         vault.mkdir()
         result = service.end(session_id, vault_path=vault)
         note = Path(result["note_path"]).read_text()
-        self.assertLess(note.index("[10.000]"), note.index("[20.000]"))
-        self.assertLess(sections[0].index("[10.000]"), sections[0].index("[20.000]"))
+        self.assertLess(note.index("[00:10]"), note.index("[00:20]"))
+        self.assertLess(sections[0].index("[00:10]"), sections[0].index("[00:20]"))
+        self.assertNotIn(".000]", note)
+        self.assertNotIn(".000]", sections[0])
+
+    def test_offsets_with_fractions_are_shown_to_the_whole_second(self):
+        sections = []
+        service = self.service(transcribe=lambda path: "Words", summarize=lambda section: sections.append(section) or "Summary")
+        session_id = service.start("Seconds")["session_id"]
+        self.add_chunk(service, session_id, seq=0, offset_s=12.345)
+        self.add_chunk(service, session_id, seq=1, offset_s=3725.6)
+        transcript_path = service.get(session_id)["session"]["transcript_path"]
+        transcript = [json.loads(line) for line in Path(transcript_path).read_text().splitlines()]
+        self.assertEqual([line["timestamp"] for line in transcript], [12, 3726])
+        vault = Path(self.temporary.name) / "vault"
+        vault.mkdir()
+        note = Path(service.end(session_id, vault_path=vault)["note_path"]).read_text()
+        self.assertIn("[00:12] **me**", note)
+        self.assertIn("[1:02:06] **me**", note)
+        self.assertIn("[00:12] me: Words", sections[0])
+        self.assertNotRegex(note, r"\[\d+\.\d+\]")
+        self.assertNotRegex(sections[0], r"\[\d+\.\d+\]")
+
+    def test_clock_time_rounds_to_whole_seconds(self):
+        self.assertEqual(clock_time(0), "00:00")
+        self.assertEqual(clock_time(9.4), "00:09")
+        self.assertEqual(clock_time(59.6), "01:00")
+        self.assertEqual(clock_time(605.2), "10:05")
+        self.assertEqual(clock_time(3599.4), "59:59")
+        self.assertEqual(clock_time(3600), "1:00:00")
+        self.assertEqual(clock_time(-3), "00:00")
 
     def test_quiet_chunk_is_retained_without_transcription_and_flag_is_idempotent(self):
         calls = []

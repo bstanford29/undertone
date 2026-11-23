@@ -252,9 +252,11 @@ final class RibbonContentTests: XCTestCase {
 
     func testInsertedShowsTheReadingAndUndoOnlyWhenThereIsSomethingToUndo() {
         XCTAssertEqual(ribbon(.inserted(totalMS: 742.4)) { $0.canUndo = true }?.pieces,
-                       [.glyph(.check), .mono("742 ms", reserve: "742 ms"), .button(.undo)])
+                       [.glyph(.check), .mono("<1 s", reserve: "<1 s"), .button(.undo)])
         XCTAssertEqual(ribbon(.inserted(totalMS: 742.4))?.pieces,
-                       [.glyph(.check), .mono("742 ms", reserve: "742 ms")])
+                       [.glyph(.check), .mono("<1 s", reserve: "<1 s")])
+        XCTAssertEqual(ribbon(.inserted(totalMS: 2400))?.pieces,
+                       [.glyph(.check), .mono("2 s", reserve: "2 s")])
     }
 
     func testKeptRawOffersWhy() {

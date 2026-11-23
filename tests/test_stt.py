@@ -350,6 +350,54 @@ class FakeParakeetModules:
         }
 
 
+def _long_note(words: int) -> str:
+    """Ordinary talk: a small working vocabulary, reused across many sentences."""
+    sentences = [
+        "so the plan is that we move the close calendar up by a week",
+        "and then the team can look at the accruals before the review",
+        "I think the main thing is to keep the mapping table in one place",
+        "we should ask the controller if the vendor list is final",
+        "the agent can read the file first and then write the summary",
+        "and if the numbers do not tie out we go back to the trial balance",
+        "it was a good call today and I want to write down what we said",
+    ]
+    out: list[str] = []
+    index = 0
+    while len(out) < words:
+        out.extend((sentences[index % len(sentences)] + ".").split())
+        index += 3
+    return " ".join(out[:words])
+
+
+class RepetitionGuardTests(unittest.TestCase):
+    def test_long_ordinary_speech_is_not_a_loop(self):
+        from undertone.stt import _looks_repetitive, _tokenize
+
+        for words in (150, 400, 1200, 2500):
+            text = _long_note(words)
+            tokens = _tokenize(text)
+            if words >= 1200:
+                # The old distinct-word test would have dropped this note.
+                self.assertLess(len(set(tokens)) / len(tokens), 0.3)
+            self.assertFalse(_looks_repetitive(text), words)
+
+    def test_loops_are_still_caught_at_any_length(self):
+        from undertone.stt import _looks_repetitive
+
+        self.assertTrue(_looks_repetitive("ha " * 12))
+        self.assertTrue(_looks_repetitive("thank you. " * 40))
+        self.assertTrue(_looks_repetitive("and then I said " * 30))
+        self.assertTrue(_looks_repetitive("we should move on to the next item " * 60))
+        self.assertTrue(_looks_repetitive("okay great " * 300))
+
+    def test_short_texts_keep_the_distinct_word_test(self):
+        from undertone.stt import _looks_repetitive
+
+        # Eight words in a loop of three: too few distinct words for real speech.
+        self.assertTrue(_looks_repetitive("go home now go home now go home now go home"))
+        self.assertFalse(_looks_repetitive("send the deck to Priya before the Friday review"))
+
+
 class BackendSwitchTests(unittest.TestCase):
     def test_default_backend_is_parakeet_when_installed(self):
         from undertone.stt import ParakeetTranscriber, make_transcriber
@@ -422,6 +470,73 @@ class BackendSwitchTests(unittest.TestCase):
             result = transcriber.transcribe_detailed(_loud(3.0, seed=21))
         self.assertTrue(result["no_speech"])
         self.assertEqual(result["reason"], "repetition")
+
+    def test_parakeet_keeps_a_long_voice_note(self):
+        # A long note reuses its words, so few of them are distinct. That is
+        # normal speech, not a loop, and the whole transcript must survive.
+        from undertone.stt import ParakeetTranscriber
+
+        text = _long_note(1200)
+        fake = FakeParakeetModules(text=text)
+        transcriber = ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        with patch.dict(sys.modules, fake.entries):
+            result = transcriber.transcribe_detailed(_loud(3.0, seed=22))
+        self.assertFalse(result["no_speech"])
+        self.assertEqual(result["text"], text)
+
+    def test_parakeet_decodes_long_audio_in_overlapping_windows(self):
+        from undertone import stt
+
+        windows: list[int] = []
+        merges: list[float] = []
+
+        def token(text, start):
+            return types.SimpleNamespace(text=text, start=start, duration=0.1, end=start + 0.1)
+
+        class Model:
+            preprocessor_config = types.SimpleNamespace(sample_rate=SAMPLE_RATE, hop_length=160)
+
+            def generate(self, mel):
+                windows.append(len(mel))
+                piece = [token(f"w{len(windows)}", 0.2)]
+                return [types.SimpleNamespace(text="", sentences=[types.SimpleNamespace(tokens=piece)], tokens=piece)]
+
+        def merge(left, right, overlap_duration):
+            merges.append(overlap_duration)
+            return list(left) + list(right)
+
+        alignment = types.SimpleNamespace(
+            merge_longest_contiguous=merge,
+            merge_longest_common_subsequence=merge,
+            tokens_to_sentences=lambda tokens: tokens,
+            sentences_to_result=lambda tokens: types.SimpleNamespace(
+                text=" ".join(t.text for t in tokens), tokens=tokens, starts=[round(t.start, 2) for t in tokens]),
+        )
+        fake = FakeParakeetModules()
+        fake.entries["parakeet_mlx.alignment"] = alignment
+        transcriber = stt.ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        transcriber._model = Model()
+        audio = _loud(5.0, seed=23)
+        with patch.dict(sys.modules, fake.entries), \
+                patch.object(stt, "PARAKEET_CHUNK_SECONDS", 2.0), \
+                patch.object(stt, "PARAKEET_OVERLAP_SECONDS", 0.5):
+            text, tokens = transcriber._worker.submit(transcriber._run_aligned_on_worker, audio).result()
+        # 2 s windows every 1.5 s cover the 5 s: 0-2, 1.5-3.5, 3-5, 4.5-5.
+        self.assertEqual(windows, [2 * SAMPLE_RATE, 2 * SAMPLE_RATE, 2 * SAMPLE_RATE, SAMPLE_RATE // 2])
+        self.assertEqual(merges, [0.5, 0.5, 0.5])
+        self.assertEqual(text, "w1 w2 w3 w4")
+        # Each window's token times move to the recording's own clock.
+        self.assertEqual([round(t.start, 2) for t in tokens], [0.2, 1.7, 3.2, 4.7])
+
+    def test_short_parakeet_audio_is_one_pass(self):
+        from undertone import stt
+
+        fake = FakeParakeetModules()
+        transcriber = stt.ParakeetTranscriber(str(Path(__file__).parent), local_files_only=True)
+        with patch.dict(sys.modules, fake.entries):
+            transcriber.transcribe_detailed(_loud(3.0, seed=24))
+        # Warm-up plus one pass over the whole clip.
+        self.assertEqual(fake.generated, [SAMPLE_RATE, 3 * SAMPLE_RATE])
 
     def test_unknown_backend_is_rejected(self):
         from undertone.stt import make_transcriber

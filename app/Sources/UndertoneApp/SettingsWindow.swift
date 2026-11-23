@@ -346,9 +346,9 @@ struct CleanupSettingsTab: View {
             CleanupLevelInfo(id: "light", name: "Light", what: "Drops fillers, fixes punctuation.",
                              speed: "instant", model: "rules only"),
             CleanupLevelInfo(id: "medium", name: "Medium", what: "Reads like you wrote it. Keeps every sentence.",
-                             speed: "0.6 to 1.1 s", model: medium),
+                             speed: "about 1 s", model: medium),
             CleanupLevelInfo(id: "high", name: "High", what: "Best polish for long messages.",
-                             speed: "1.5 to 3.4 s", model: high),
+                             speed: "2 to 4 s", model: high),
         ]
     }
 
@@ -359,6 +359,15 @@ struct CleanupSettingsTab: View {
                     ForEach(levels) { level in levelCard(level) }
                 }
                 lastDictationPreview
+            }
+            Section("Brain dumps") {
+                Toggle(isOn: $model.tidySpeech) {
+                    SettingLabel(title: "Tidy how you think out loud",
+                                 detail: "Medium and High drop ums, false starts, and repeats, and apply corrections like \u{201C}no wait, I mean\u{201D}. History keeps exactly what you said.")
+                }
+                .onChange(of: model.tidySpeech) { _, value in
+                    model.saveSetting(TidySpeechSetting.key, .bool(value))
+                }
             }
             Section("Dictionary") {
                 Toggle(isOn: $model.learnFromCorrections) {

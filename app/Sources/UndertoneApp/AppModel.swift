@@ -138,6 +138,9 @@ final class AppModel: ObservableObject {
     @Published var configError: String?
     @Published var learnedSuggestions: [LearnedSuggestion] = []
     @Published var learnFromCorrections = false
+    /// Medium and High tidy brain dumps: false starts, repeats, and spoken
+    /// corrections. The engine keeps the raw transcript in History.
+    @Published var tidySpeech = TidySpeechSetting.defaultValue
     @Published private(set) var pendingLearningActionID: Int?
     @Published private(set) var pendingLearningTerm: String?
     @Published private(set) var permissionSnapshot = PermissionSnapshot.current()
@@ -483,6 +486,7 @@ final class AppModel: ObservableObject {
             if case .bool(let value) = config["live_dictation"] { liveDictation = value }
             if case .bool(let value) = config["whisper_mode"] { whisperMode = value }
             learnFromCorrections = CorrectionLearningSetting.value(from: config)
+            tidySpeech = TidySpeechSetting.value(from: config)
             if case .bool(let value) = config["pill_persistent"] { pillPersistent = value }
             if case .string(let value) = config["pill_edge"], let edge = PillEdge(rawValue: value) { pillEdge = edge }
             if case .number(let value) = config["pill_offset"] { pillOffset = value }
@@ -2209,6 +2213,7 @@ final class AppModel: ObservableObject {
                 appPromptVariants = value.compactMapValues { if case .string(let text) = $0 { return text } else { return nil } }
             }
             learnFromCorrections = CorrectionLearningSetting.value(from: config)
+            tidySpeech = TidySpeechSetting.value(from: config)
         }
         await refreshStatus()
         if lastRow == nil, let latest = try? await engine.request(op: "history.last") { lastRow = latest.row }

@@ -39,7 +39,7 @@ from typing import Any, Callable
 import numpy as np
 
 from .audio import SAMPLE_RATE
-from .cleanup import _raw_fallback_text
+from .cleanup import _raw_fallback_text, applies_self_corrections
 from .streaming import DEFAULT_FRAME_MS, DEFAULT_VAD_RMS, context_tail, find_pauses, frame_rms
 from .stt import Word, restore_sound_alikes
 
@@ -128,27 +128,33 @@ def adaptive_rms_threshold(
     return float(min(VAD_MAX_RMS, max(base, floor * VAD_FLOOR_GAIN)))
 
 
-def plan_units(
-    texts: list[str],
+def plan_word_units(
+    words: list[str],
     *,
     min_words: int = DEFAULT_MIN_UNIT_WORDS,
     max_words: int = DEFAULT_MAX_UNIT_WORDS,
 ) -> list[int]:
-    """Lengths (in chunks) of the complete units at the front of ``texts``.
+    """Lengths (in words) of the complete units at the front of ``words``.
 
-    A unit closes at the first chunk where the accumulated text has at least
-    ``min_words`` words and ends a sentence, or reaches ``max_words``.
-    Trailing chunks that close no unit are left for later.
+    A unit closes at the first word that ends a sentence once it holds at
+    least ``min_words`` words, or at ``max_words`` words. This may fall inside
+    a pause-cut chunk: people often pause mid-sentence and finish a sentence
+    without pausing, so closing only at chunk ends left most units cut at the
+    word cap, and release then had to re-clean the whole recording.
+    A unit never closes just before a correction phrase ("No wait, ..."),
+    because per-unit cleanup could not then edit the words it corrects.
+    Trailing words that close no unit wait for more speech.
     """
     units: list[int] = []
-    words = 0
     count = 0
-    for text in texts:
+    for index, word in enumerate(words):
         count += 1
-        words += len(text.split())
-        if (words >= min_words and _ends_sentence(text)) or words >= max_words:
+        at_sentence_end = count >= min_words and _ends_sentence(word)
+        if at_sentence_end and index + 1 < len(words):
+            following = " ".join(words[index + 1 : index + 1 + CORRECTION_LEAD_WORDS])
+            at_sentence_end = not opens_with_correction(following)
+        if at_sentence_end or count >= max_words:
             units.append(count)
-            words = 0
             count = 0
     return units
 
@@ -571,6 +577,9 @@ class LiveDictation:
         self._degraded: str | None = None
         self._chunks: list[LiveChunk] = []
         self._unit_chunk_end = 0
+        # Words of the chunk at ``_unit_chunk_end`` already in a unit. A unit
+        # may end at a sentence end inside a chunk.
+        self._unit_word_offset = 0
         self._units: list[LiveUnit] = []
         self._queue: list[LiveUnit] = []
         self._unit_sequence = 0
@@ -638,16 +647,57 @@ class LiveDictation:
                 self._form_units_locked()
 
     def _form_units_locked(self) -> None:
-        texts: list[str] = []
-        for chunk in self._chunks[self._unit_chunk_end :]:
+        # Every decoded word not yet in a unit, with the index of its chunk.
+        pending: list[tuple[int, str]] = []
+        for index in range(self._unit_chunk_end, len(self._chunks)):
+            chunk = self._chunks[index]
             if chunk.error is not None or chunk.final:
                 # Never clean past a failed chunk; finish decides the fallback.
                 break
-            texts.append(chunk.text or "")
-        for length in plan_units(texts, min_words=self.min_unit_words, max_words=self.max_unit_words):
-            members = self._chunks[self._unit_chunk_end : self._unit_chunk_end + length]
-            self._unit_chunk_end += length
-            self._enqueue_unit_locked(members, final=False)
+            words = (chunk.text or "").split()
+            if index == self._unit_chunk_end:
+                words = words[self._unit_word_offset :]
+            pending.extend((index, word) for word in words)
+        lengths = plan_word_units(
+            [word for _, word in pending], min_words=self.min_unit_words, max_words=self.max_unit_words,
+        )
+        used = 0
+        for length in lengths:
+            unit_words = pending[used : used + length]
+            used += length
+            last_index = unit_words[-1][0]
+            members = self._chunks[self._unit_chunk_end : last_index + 1]
+            consumed = sum(1 for index, _ in pending[:used] if index == last_index)
+            if last_index == self._unit_chunk_end:
+                consumed += self._unit_word_offset
+            if consumed >= len((self._chunks[last_index].text or "").split()):
+                self._unit_chunk_end, self._unit_word_offset = last_index + 1, 0
+            else:
+                self._unit_chunk_end, self._unit_word_offset = last_index, consumed
+            self._enqueue_unit_locked(members, final=False, raw=" ".join(word for _, word in unit_words))
+
+    def _committed_audio_end_locked(self) -> int:
+        """The sample where audio not yet covered by a unit begins."""
+        end = max((chunk.end_sample for chunk in self._chunks[: self._unit_chunk_end]), default=0)
+        if not self._unit_word_offset or self._unit_chunk_end >= len(self._chunks):
+            return end
+        chunk = self._chunks[self._unit_chunk_end]
+        text_words = (chunk.text or "").split()
+        if len(chunk.words) == len(text_words):
+            last = chunk.words[self._unit_word_offset - 1]
+            split = chunk.window_start + int(round(last.end * self.sample_rate))
+        else:
+            # A sound-alike rewrite changed the word count: split by share.
+            share = self._unit_word_offset / max(1, len(text_words))
+            split = chunk.start_sample + int((chunk.end_sample - chunk.start_sample) * share)
+        return max(end, min(chunk.end_sample, split))
+
+    def _uncommitted_text(self, chunks: list[LiveChunk]) -> str:
+        """Text of ``chunks`` (starting at ``_unit_chunk_end``) not yet in a unit."""
+        texts = [chunk.text or "" for chunk in chunks]
+        if texts and self._unit_word_offset:
+            texts[0] = " ".join(texts[0].split()[self._unit_word_offset :])
+        return _join(texts)
 
     def _enqueue_unit_locked(
         self, members: list[LiveChunk], *, final: bool, raw: str | None = None
@@ -765,9 +815,7 @@ class LiveDictation:
 
         with self._condition:
             committed = self._committed_clean_locked()
-            committed_audio_end = max(
-                (chunk.end_sample for chunk in self._chunks[: self._unit_chunk_end]), default=0
-            )
+            committed_audio_end = self._committed_audio_end_locked()
 
         # The tail window is short, so decoding it before emitting costs little
         # and lets the correction check see the whole recording first.
@@ -794,9 +842,12 @@ class LiveDictation:
             stt_ms += (self._clock() - retry_started) * 1000.0
             later_openings = [tail_raw]
         else:
-            tail_raw = _join([chunk.text or "" for chunk in remaining])
+            tail_raw = self._uncommitted_text(remaining)
             later_openings = [chunk.text or "" for chunk in run.chunks[1:]]
-        if committed and any(opens_with_correction(text) for text in later_openings):
+        # Only a prompt that applies spoken corrections needs the whole
+        # recording at once; Medium with tidy off keeps every word anyway.
+        corrects = applies_self_corrections(self.level, self.config)
+        if corrects and committed and any(opens_with_correction(text) for text in later_openings):
             return self._finish_whole(
                 audio, "correction", release_started, timeout, stt_ms=stt_ms, raw=_join(unit_raws + [tail_raw]), retain_raw=retain_raw,
             )

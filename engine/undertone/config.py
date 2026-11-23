@@ -30,6 +30,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "insert_mode": "ax",
     "cleanup_level": "medium",
+    # Brain-dump tidying for Medium and High: drop false starts and repeats,
+    # apply spoken self-corrections ("no wait, I mean X" becomes X). History
+    # always keeps the raw transcript. Off keeps each level's earlier prompt.
+    "tidy_speech": True,
     "short_utterance_words": 6,
     "min_speech_seconds": 0.4,
     "min_speech_rms": 0.004,
@@ -109,5 +113,7 @@ def load_config() -> dict[str, Any]:
         config["app_prompt_variants"] = dict(DEFAULTS["app_prompt_variants"])
     if not isinstance(config.get("learn_from_corrections"), bool):
         config["learn_from_corrections"] = DEFAULTS["learn_from_corrections"]
+    if not isinstance(config.get("tidy_speech"), bool):
+        config["tidy_speech"] = DEFAULTS["tidy_speech"]
 
     return config

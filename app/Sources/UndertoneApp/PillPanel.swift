@@ -1036,7 +1036,7 @@ struct FlowBarDockView: View {
         switch model.pillState {
         case .listening: return model.dictationLocked ? "Dictating, locked" : "Dictating"
         case .working: return "Cleaning up"
-        case .inserted(let ms): return "Inserted, \(Int(ms.rounded())) milliseconds"
+        case .inserted(let ms): return "Inserted in \(TimeText.spokenDuration(milliseconds: ms))"
         case .guarded: return "Kept raw"
         case .error(let message): return message
         case .notice(let message): return message
