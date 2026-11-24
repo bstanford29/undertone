@@ -1,0 +1,446 @@
+w $ # Before this PR: GitHub's main today
+w $ cd main && git log --oneline -1
+5e8a393 (HEAD -> main, origin/main, origin/HEAD) Keep long voice notes, tidy brain dumps, and speed up release (#23)
+main $ undertone update
+usage: undertone [-h] {serve,listen,once,insert-test,dictionary,doctor} ...
+undertone: error: argument command: invalid choice: 'update' (choose from serve, listen, once, insert-test, dictionary, doctor)
+main $ clear
+main $ # After: this PR's head. A local copy plays GitHub,
+main $ # with one engine-only demo commit on its main.
+main $ cd ../undertone && git log --oneline -1
+b1190d2 (HEAD -> main) Answer review round 4: case-insensitive and symlink folders, newer runs win
+undertone $ undertone update
+1 new change ready to install.
+  841d507  Demo: add a comment to the engine
+Run `undertone update --apply` to install.
+undertone $ undertone update --apply
+[2026-11-23 19:59:51] update: Checking GitHub for changes.
+[2026-11-23 19:59:51] update: Moving the checkout from b1190d2 to 841d507.
+[2026-11-23 19:59:51] update: Checking that the new engine loads.
+[2026-11-23 19:59:51] update: Updated to 841d507.
+Restart the engine to finish: Settings → Privacy → Restart, or launchctl kickstart.
+undertone $ git log --oneline -1
+841d507 (HEAD -> main, origin/main, origin/HEAD) Demo: add a comment to the engine
+undertone $ # Go back
+undertone $ undertone update --undo
+[2026-11-23 20:00:00] undo: Moving the checkout back from 841d507 to b1190d2.
+[2026-11-23 20:00:00] undo: Back on b1190d2.
+Restart the engine to finish: Settings → Privacy → Restart, or launchctl kickstart.
+undertone $ git log --oneline -1
+b1190d2 (HEAD -> main) Answer review round 4: case-insensitive and symlink folders, newer runs win
+undertone $ clear
+undertone $ # It refuses instead of guessing. Uncommitted work:
+undertone $ echo note >> README.md && undertone update
+The checkout has uncommitted changes. Commit or discard them, then update.
+  841d507  Demo: add a comment to the engine
+undertone $ git checkout -q README.md
+undertone $ # A real check against GitHub, from a clone two commits behind main:
+undertone $ cd ../pr26 && undertone update --repo ../github-check
+This update changes the app, and no installed Undertone.app was found to replace.
+  5e8a393  Keep long voice notes, tidy brain dumps, and speed up release (#23)
+  027cb72  Add one verify command and a pull-request check (#9)
+pr26 $ clear
+pr26 $ # The checks on this PR's head. First the Python tests, as verify.sh runs them:
+pr26 $ git log --oneline -1
+b1190d2 (HEAD -> phase-10-update-button, origin/phase-10-update-button) Answer review round 4: case-insensitive and symlink folders, newer runs win
+pr26 $ HF_HUB_OFFLINE=1 PYTHONPATH=engine .venv/bin/python -m unittest discover -s tests -v 2>&1 | sed -l "s|/Users/[^/]*/|~/|g"
+test_preview_and_production_have_distinct_staged_identities (test_build_app.BuildAppTests.test_preview_and_production_have_distinct_staged_identities) ... ok
+test_production_rejects_adhoc_signing_identity (test_build_app.BuildAppTests.test_production_rejects_adhoc_signing_identity) ... ok
+test_production_requires_explicit_signing_identity (test_build_app.BuildAppTests.test_production_requires_explicit_signing_identity) ... ok
+test_unknown_arguments_fail_before_build (test_build_app.BuildAppTests.test_unknown_arguments_fail_before_build) ... ok
+test_apply_term_casing_does_not_touch_substrings (test_cleanup.CleanupTests.test_apply_term_casing_does_not_touch_substrings) ... ok
+test_apply_term_casing_handles_missing_terms_gracefully (test_cleanup.CleanupTests.test_apply_term_casing_handles_missing_terms_gracefully) ... ok
+test_apply_term_casing_rewrites_whole_word_case_insensitive_matches (test_cleanup.CleanupTests.test_apply_term_casing_rewrites_whole_word_case_insensitive_matches) ... ok
+test_config_declares_level_specific_models_and_keep_alive (test_cleanup.CleanupTests.test_config_declares_level_specific_models_and_keep_alive) ... ok
+test_context_does_not_change_raw_content_guard_or_accept_unbounded_text (test_cleanup.CleanupTests.test_context_does_not_change_raw_content_guard_or_accept_unbounded_text) ... cleanup output failed length guard from qwen3.5:latest (raw=7 words, output=3 words); retrying with gemma4:31b
+ok
+test_context_is_bounded_and_sent_as_reference_data_only (test_cleanup.CleanupTests.test_context_is_bounded_and_sent_as_reference_data_only) ... ok
+test_default_fallback_model_is_empty (test_cleanup.CleanupTests.test_default_fallback_model_is_empty) ... ok
+test_guard_with_no_fallback_model_never_calls_ollama_a_second_time (test_cleanup.CleanupTests.test_guard_with_no_fallback_model_never_calls_ollama_a_second_time) ... cleanup output failed length guard from qwen3.5:latest (raw=9 words, output=1 words); no fallback model configured
+ok
+test_high_uses_gemma_as_primary_and_qwen_as_fallback (test_cleanup.CleanupTests.test_high_uses_gemma_as_primary_and_qwen_as_fallback) ... cleanup output failed length guard from gemma4:31b (raw=7 words, output=1 words); retrying with qwen3.5:latest
+ok
+test_light_level_applies_guard_and_em_dash_filter (test_cleanup.CleanupTests.test_light_level_applies_guard_and_em_dash_filter) ... ok
+test_light_path_applies_term_casing (test_cleanup.CleanupTests.test_light_path_applies_term_casing) ... ok
+test_local_call_does_not_follow_redirects (test_cleanup.CleanupTests.test_local_call_does_not_follow_redirects) ... ok
+test_local_call_keeps_context_in_a_separate_escaped_data_boundary (test_cleanup.CleanupTests.test_local_call_keeps_context_in_a_separate_escaped_data_boundary) ... ok
+test_local_call_sends_keep_alive_and_transcript_boundary (test_cleanup.CleanupTests.test_local_call_sends_keep_alive_and_transcript_boundary) ... ok
+test_longer_utterance_still_calls_the_llm_for_medium (test_cleanup.CleanupTests.test_longer_utterance_still_calls_the_llm_for_medium) ... ok
+test_missing_model_raises_clear_pull_error (test_cleanup.CleanupTests.test_missing_model_raises_clear_pull_error) ... ok
+test_none_keeps_content_and_filters_em_dash_without_network_call (test_cleanup.CleanupTests.test_none_keeps_content_and_filters_em_dash_without_network_call) ... ok
+test_ollama_network_boundary_rejects_non_local_or_ambiguous_urls (test_cleanup.CleanupTests.test_ollama_network_boundary_rejects_non_local_or_ambiguous_urls) ... ok
+test_optional_app_prompt_variant_is_scoped_to_selected_app (test_cleanup.CleanupTests.test_optional_app_prompt_variant_is_scoped_to_selected_app) ... ok
+test_primary_short_retries_once_and_marks_guard_even_when_fallback_recovers (test_cleanup.CleanupTests.test_primary_short_retries_once_and_marks_guard_even_when_fallback_recovers) ... cleanup output failed length guard from qwen3.5:latest (raw=9 words, output=2 words); retrying with gemma4:31b
+ok
+test_prompt_treats_instructions_inside_transcript_as_data (test_cleanup.CleanupTests.test_prompt_treats_instructions_inside_transcript_as_data) ... ok
+test_replacements_are_filtered_before_guard_and_raw_fallback_preserves_words (test_cleanup.CleanupTests.test_replacements_are_filtered_before_guard_and_raw_fallback_preserves_words) ... ~/.local/share/uv/python/cpython-3.12.15-macos-aarch64-none/lib/python3.12/unittest/mock.py:2217: ResourceWarning: unclosed <socket.socket [closed] fd=4, family=2, type=1, proto=6>
+  def __init__(self, name, parent):
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+cleanup output failed length guard from qwen3.5:latest (raw=7 words, output=4 words); retrying with gemma4:31b
+ok
+test_short_utterance_bypass_applies_term_casing (test_cleanup.CleanupTests.test_short_utterance_bypass_applies_term_casing) ... ok
+test_short_utterance_bypasses_the_llm_for_medium_and_high (test_cleanup.CleanupTests.test_short_utterance_bypasses_the_llm_for_medium_and_high) ... ok
+test_short_utterance_threshold_is_configurable (test_cleanup.CleanupTests.test_short_utterance_threshold_is_configurable) ... ok
+test_multiline_context_and_expansion_guard (test_cleanup.ContextRegressionTests.test_multiline_context_and_expansion_guard) ... cleanup output failed length guard from qwen3.5:latest (raw=7 words, output=60 words); no fallback model configured
+ok
+test_a_correction_stays_in_the_piece_it_corrects (test_cleanup.LongTranscriptTests.test_a_correction_stays_in_the_piece_it_corrects) ... ok
+test_a_long_run_on_is_split_into_even_parts (test_cleanup.LongTranscriptTests.test_a_long_run_on_is_split_into_even_parts) ... ok
+test_a_run_on_is_never_cut_next_to_a_correction (test_cleanup.LongTranscriptTests.test_a_run_on_is_never_cut_next_to_a_correction) ... ok
+test_long_transcript_is_cleaned_in_pieces_with_a_guard_each (test_cleanup.LongTranscriptTests.test_long_transcript_is_cleaned_in_pieces_with_a_guard_each) ... cleanup output failed length guard from qwen3.5:latest (raw=153 words, output=2 words); no fallback model configured
+ok
+test_run_on_text_is_cut_at_word_boundaries (test_cleanup.LongTranscriptTests.test_run_on_text_is_cut_at_word_boundaries) ... ok
+test_short_transcript_is_one_call (test_cleanup.LongTranscriptTests.test_short_transcript_is_one_call) ... ok
+test_split_keeps_every_word_in_order_and_ends_pieces_at_sentences (test_cleanup.LongTranscriptTests.test_split_keeps_every_word_in_order_and_ends_pieces_at_sentences) ... ok
+test_chunks_carry_leading_not_trailing_whitespace (test_cleanup.StreamCleanupTests.test_chunks_carry_leading_not_trailing_whitespace) ... ok
+test_em_dash_inside_a_streamed_span_keeps_word_spacing (test_cleanup.StreamCleanupTests.test_em_dash_inside_a_streamed_span_keeps_word_spacing) ... ok
+test_empty_raw_emits_nothing (test_cleanup.StreamCleanupTests.test_empty_raw_emits_nothing) ... ok
+test_holdback_applies_two_word_replacement_across_commit_boundary (test_cleanup.StreamCleanupTests.test_holdback_applies_two_word_replacement_across_commit_boundary) ... ok
+test_interrupt_after_commits_keeps_committed_text (test_cleanup.StreamCleanupTests.test_interrupt_after_commits_keeps_committed_text) ... cleanup call to qwen3.5:latest failed (ConnectionError)
+ok
+test_interrupt_before_commits_matches_clean_result_exception_path (test_cleanup.StreamCleanupTests.test_interrupt_before_commits_matches_clean_result_exception_path) ... cleanup call to qwen3.5:latest failed (ConnectionError)
+cleanup output failed length guard from qwen3.5:latest (raw=10 words, output=0 words); retrying with gemma4:31b
+cleanup call to gemma4:31b failed (ConnectionError)
+cleanup call to qwen3.5:latest failed (ConnectionError)
+cleanup output failed length guard from qwen3.5:latest (raw=10 words, output=0 words); retrying with gemma4:31b
+cleanup call to gemma4:31b failed (ConnectionError)
+ok
+test_leading_and_trailing_newlines_are_never_typed (test_cleanup.StreamCleanupTests.test_leading_and_trailing_newlines_are_never_typed) ... ok
+test_light_none_and_short_utterance_emit_nothing (test_cleanup.StreamCleanupTests.test_light_none_and_short_utterance_emit_nothing) ... ok
+test_no_chunk_before_threshold_then_prefix_equals_clean (test_cleanup.StreamCleanupTests.test_no_chunk_before_threshold_then_prefix_equals_clean) ... ok
+test_short_output_emits_zero_chunks_and_matches_clean_result (test_cleanup.StreamCleanupTests.test_short_output_emits_zero_chunks_and_matches_clean_result) ... cleanup output failed length guard from qwen3.5:latest (raw=10 words, output=2 words); retrying with gemma4:31b
+cleanup output failed length guard from qwen3.5:latest (raw=10 words, output=2 words); retrying with gemma4:31b
+ok
+test_stream_ollama_parses_ndjson_deltas_and_stops_at_done (test_cleanup.StreamCleanupTests.test_stream_ollama_parses_ndjson_deltas_and_stops_at_done) ... ok
+test_stream_ollama_uses_localhost_boundary (test_cleanup.StreamCleanupTests.test_stream_ollama_uses_localhost_boundary) ... ok
+test_truncation_after_commits_keeps_committed_text (test_cleanup.StreamCleanupTests.test_truncation_after_commits_keeps_committed_text) ... ok
+test_truncation_before_commits_follows_expanded_fallback (test_cleanup.StreamCleanupTests.test_truncation_before_commits_follows_expanded_fallback) ... cleanup output failed length guard from qwen3.5:latest (raw=10 words, output=30 words); retrying with gemma4:31b
+cleanup output failed length guard from qwen3.5:latest (raw=10 words, output=30 words); retrying with gemma4:31b
+ok
+test_a_short_correction_goes_to_the_model (test_cleanup.TidySpeechTests.test_a_short_correction_goes_to_the_model) ... ok
+test_acronyms_are_not_filler_sounds (test_cleanup.TidySpeechTests.test_acronyms_are_not_filler_sounds) ... ok
+test_copied_context_is_measured_against_the_words_the_model_saw (test_cleanup.TidySpeechTests.test_copied_context_is_measured_against_the_words_the_model_saw) ... cleanup output failed length guard from qwen3.5:latest (raw=20 words, output=24 words); no fallback model configured
+cleanup output failed length guard from qwen3.5:latest (raw=20 words, output=24 words); no fallback model configured
+ok
+test_correction_detection (test_cleanup.TidySpeechTests.test_correction_detection) ... ok
+test_filler_heavy_dictation_cannot_hide_content_loss (test_cleanup.TidySpeechTests.test_filler_heavy_dictation_cannot_hide_content_loss) ... cleanup output failed length guard from qwen3.5:latest (raw=20 words, output=6 words); no fallback model configured
+cleanup output failed length guard from qwen3.5:latest (raw=20 words, output=6 words); no fallback model configured
+ok
+test_filler_sounds_are_removed_without_touching_words (test_cleanup.TidySpeechTests.test_filler_sounds_are_removed_without_touching_words) ... ok
+test_guard_counts_every_word_heard (test_cleanup.TidySpeechTests.test_guard_counts_every_word_heard) ... cleanup output failed length guard from qwen3.5:latest (raw=14 words, output=3 words); no fallback model configured
+ok
+test_high_with_tidy_adds_false_starts (test_cleanup.TidySpeechTests.test_high_with_tidy_adds_false_starts) ... ok
+test_light_cleanup_keeps_acronyms_and_uh_oh (test_cleanup.TidySpeechTests.test_light_cleanup_keeps_acronyms_and_uh_oh) ... ok
+test_medium_with_tidy_uses_the_brain_dump_prompt_and_strips_filler_sounds (test_cleanup.TidySpeechTests.test_medium_with_tidy_uses_the_brain_dump_prompt_and_strips_filler_sounds) ... ok
+test_raw_fallback_types_exactly_what_was_heard (test_cleanup.TidySpeechTests.test_raw_fallback_types_exactly_what_was_heard) ... cleanup call to qwen3.5:latest failed (ConnectionError)
+cleanup output failed length guard from qwen3.5:latest (raw=12 words, output=0 words); no fallback model configured
+cleanup call to qwen3.5:latest failed (ConnectionError)
+cleanup output failed length guard from qwen3.5:latest (raw=12 words, output=0 words); no fallback model configured
+ok
+test_stream_path_also_strips_filler_sounds (test_cleanup.TidySpeechTests.test_stream_path_also_strips_filler_sounds) ... cleanup output failed length guard from qwen3.5:latest (raw=14 words, output=8 words); retrying with gemma4:31b
+ok
+test_tidy_is_on_by_default (test_cleanup.TidySpeechTests.test_tidy_is_on_by_default) ... ok
+test_tidy_off_restores_the_earlier_prompts_and_input (test_cleanup.TidySpeechTests.test_tidy_off_restores_the_earlier_prompts_and_input) ... ok
+test_which_levels_apply_self_corrections (test_cleanup.TidySpeechTests.test_which_levels_apply_self_corrections) ... ok
+test_markup_is_not_html_transformed (test_command.CommandBoundaryTests.test_markup_is_not_html_transformed) ... ok
+test_remote_endpoint_rejected_before_network (test_command.CommandBoundaryTests.test_remote_endpoint_rejected_before_network) ... ok
+test_command_history_retains_selection_and_instruction (test_command.CommandHistoryTests.test_command_history_retains_selection_and_instruction) ... ok
+test_empty_model_output_is_an_explicit_failure (test_command.CommandTests.test_empty_model_output_is_an_explicit_failure) ... ok
+test_model_failures_are_not_replaced_with_original_text (test_command.CommandTests.test_model_failures_are_not_replaced_with_original_text) ... ok
+test_rejects_empty_and_oversized_inputs (test_command.CommandTests.test_rejects_empty_and_oversized_inputs) ... ok
+test_rewrite_uses_dedicated_high_model_and_filters_em_dash (test_command.CommandTests.test_rewrite_uses_dedicated_high_model_and_filters_em_dash) ... ok
+test_selected_text_is_passed_as_data_even_when_it_contains_directives (test_command.CommandTests.test_selected_text_is_passed_as_data_even_when_it_contains_directives) ... ok
+test_missing_kind_column_fails_closed (test_daily_acceptance.DailyAcceptanceTests.test_missing_kind_column_fails_closed) ... ok
+test_missing_schema_has_clear_error (test_daily_acceptance.DailyAcceptanceTests.test_missing_schema_has_clear_error) ... ok
+test_mode_buckets_are_disjoint (test_daily_acceptance.DailyAcceptanceTests.test_mode_buckets_are_disjoint) ... ok
+test_read_only_connection_is_explicitly_closed (test_daily_acceptance.DailyAcceptanceTests.test_read_only_connection_is_explicitly_closed) ... ok
+test_requires_fourteen_consecutive_days_and_no_failed_or_guarded_rows (test_daily_acceptance.DailyAcceptanceTests.test_requires_fourteen_consecutive_days_and_no_failed_or_guarded_rows) ... ok
+test_empty_explicit_dictionary_does_not_load_personal_data (test_dictionary.DictionaryTests.test_empty_explicit_dictionary_does_not_load_personal_data) ... ok
+test_failed_save_keeps_the_previous_dictionary_file (test_dictionary.DictionaryTests.test_failed_save_keeps_the_previous_dictionary_file) ... ok
+test_mutation_waits_for_interprocess_lock (test_dictionary.DictionaryTests.test_mutation_waits_for_interprocess_lock) ... ok
+test_remove_unique_term_classifies_and_changes_in_one_transaction (test_dictionary.DictionaryTests.test_remove_unique_term_classifies_and_changes_in_one_transaction) ... ok
+test_replacement_and_term_updates_preserve_each_other (test_dictionary.DictionaryTests.test_replacement_and_term_updates_preserve_each_other) ... ok
+test_replacement_is_literal_not_a_regex_template (test_dictionary.DictionaryTests.test_replacement_is_literal_not_a_regex_template) ... ok
+test_model_matches_without_explicit_latest_tag (test_doctor.ModelPresenceTests.test_model_matches_without_explicit_latest_tag) ... ok
+test_optional_model_missing_is_a_warning (test_doctor.ModelPresenceTests.test_optional_model_missing_is_a_warning) ... ok
+test_required_model_missing_is_a_failure (test_doctor.ModelPresenceTests.test_required_model_missing_is_a_failure) ... ok
+test_required_model_present (test_doctor.ModelPresenceTests.test_required_model_present) ... ok
+test_unreachable_ollama_cannot_check_model (test_doctor.ModelPresenceTests.test_unreachable_ollama_cannot_check_model) ... ok
+test_check_ollama_reachable_ok (test_doctor.OllamaReachabilityTests.test_check_ollama_reachable_ok) ... ok
+test_check_ollama_unreachable_is_a_required_failure (test_doctor.OllamaReachabilityTests.test_check_ollama_unreachable_is_a_required_failure) ... ok
+test_reachable_lists_model_names (test_doctor.OllamaReachabilityTests.test_reachable_lists_model_names) ... ok
+test_rejects_non_local_ollama_url (test_doctor.OllamaReachabilityTests.test_rejects_non_local_ollama_url) ... ok
+test_format_report_includes_tags_and_fixes (test_doctor.RunChecksAndReportTests.test_format_report_includes_tags_and_fixes) ... ok
+test_format_report_no_fixes_section_when_all_ok (test_doctor.RunChecksAndReportTests.test_format_report_no_fixes_section_when_all_ok) ... ok
+test_run_checks_all_pass (test_doctor.RunChecksAndReportTests.test_run_checks_all_pass) ... ok
+test_run_checks_missing_everything_fails_required_only (test_doctor.RunChecksAndReportTests.test_run_checks_missing_everything_fails_required_only) ... ok
+test_cached_model_is_ok (test_doctor.WhisperCacheTests.test_cached_model_is_ok) ... ok
+test_download_flag_invokes_load_model (test_doctor.WhisperCacheTests.test_download_flag_invokes_load_model) ... ok
+test_honors_hf_home_when_hub_cache_unset (test_doctor.WhisperCacheTests.test_honors_hf_home_when_hub_cache_unset) ... ok
+test_missing_model_is_a_warning_not_a_failure (test_doctor.WhisperCacheTests.test_missing_model_is_a_warning_not_a_failure) ... ok
+test_eval_variant_reaches_clean_result_without_loading_user_config (test_eval_config.EvalConfigTests.test_eval_variant_reaches_clean_result_without_loading_user_config) ... ok
+test_high_candidate_swaps_high_prompt_and_restores_it (test_eval_config.EvalConfigTests.test_high_candidate_swaps_high_prompt_and_restores_it) ... ok
+test_no_app_style_clears_explicit_variants (test_eval_config.EvalConfigTests.test_no_app_style_clears_explicit_variants) ... ok
+test_prompt_restores_after_candidate_exception (test_eval_config.EvalConfigTests.test_prompt_restores_after_candidate_exception) ... ok
+test_repeatable_app_variants_parse_and_reject_malformed_values (test_eval_config.EvalConfigTests.test_repeatable_app_variants_parse_and_reject_malformed_values) ... ok
+test_tune_variant_reaches_canonical_clean_result (test_eval_config.EvalConfigTests.test_tune_variant_reaches_canonical_clean_result) ... ok
+test_existing_database_retains_rows_and_records_guard (test_history.HistoryTests.test_existing_database_retains_rows_and_records_guard) ... ok
+test_accepted_suggestion_recovers_journaled_dictionary_write (test_learning.LearningTests.test_accepted_suggestion_recovers_journaled_dictionary_write) ... ok
+test_accepted_suggestion_transfers_same_term_ownership (test_learning.LearningTests.test_accepted_suggestion_transfers_same_term_ownership) ... ok
+test_add_is_the_only_action_that_writes_dictionary_and_is_idempotent (test_learning.LearningTests.test_add_is_the_only_action_that_writes_dictionary_and_is_idempotent) ... ok
+test_auto_learn_already_saved_term_has_no_undo_action_or_duplicate (test_learning.LearningTests.test_auto_learn_already_saved_term_has_no_undo_action_or_duplicate) ... ok
+test_auto_learn_cannot_claim_concurrent_explicit_add (test_learning.LearningTests.test_auto_learn_cannot_claim_concurrent_explicit_add)
+A concurrent explicit addition remains user-owned across auto handoff. ... ok
+test_auto_learn_client_token_is_idempotent_and_lookup_resolves (test_learning.LearningTests.test_auto_learn_client_token_is_idempotent_and_lookup_resolves) ... ok
+test_auto_learn_dictionary_failure_before_write_discards_preparing_action (test_learning.LearningTests.test_auto_learn_dictionary_failure_before_write_discards_preparing_action) ... ok
+test_auto_learn_dictionary_failure_leaves_recoverable_action (test_learning.LearningTests.test_auto_learn_dictionary_failure_leaves_recoverable_action) ... ok
+test_auto_learn_is_disabled_without_touching_dictionary (test_learning.LearningTests.test_auto_learn_is_disabled_without_touching_dictionary) ... ok
+test_auto_learn_rejects_multi_word_and_wrong_history_owner (test_learning.LearningTests.test_auto_learn_rejects_multi_word_and_wrong_history_owner) ... ok
+test_auto_learn_returns_one_action_and_undo_removes_only_that_term (test_learning.LearningTests.test_auto_learn_returns_one_action_and_undo_removes_only_that_term) ... ok
+test_explicit_add_recovers_after_dictionary_write_interruption (test_learning.LearningTests.test_explicit_add_recovers_after_dictionary_write_interruption) ... ok
+test_explicit_add_supersedes_an_interrupted_preparing_action (test_learning.LearningTests.test_explicit_add_supersedes_an_interrupted_preparing_action) ... ok
+test_explicit_add_supersedes_auto_action_created_during_journal_handoff (test_learning.LearningTests.test_explicit_add_supersedes_auto_action_created_during_journal_handoff) ... ok
+test_explicit_dictionary_add_transfers_recased_term_ownership (test_learning.LearningTests.test_explicit_dictionary_add_transfers_recased_term_ownership) ... ok
+test_explicit_remove_cancels_matching_pending_dictionary_write (test_learning.LearningTests.test_explicit_remove_cancels_matching_pending_dictionary_write) ... ok
+test_explicit_unrelated_add_preserves_other_action_and_is_idempotent (test_learning.LearningTests.test_explicit_unrelated_add_preserves_other_action_and_is_idempotent) ... ok
+test_ignore_and_never_ask_persist_without_writing_dictionary (test_learning.LearningTests.test_ignore_and_never_ask_persist_without_writing_dictionary) ... ok
+test_learning_lookup_rejects_unknown_or_invalid_tokens (test_learning.LearningTests.test_learning_lookup_rejects_unknown_or_invalid_tokens) ... ok
+test_learning_schema_migrates_actions_without_client_token (test_learning.LearningTests.test_learning_schema_migrates_actions_without_client_token) ... ok
+test_propose_is_bounded_and_duplicate_suppressed (test_learning.LearningTests.test_propose_is_bounded_and_duplicate_suppressed) ... ok
+test_propose_requires_history_row_to_belong_to_request_app (test_learning.LearningTests.test_propose_requires_history_row_to_belong_to_request_app) ... ok
+test_recovered_explicit_add_supersedes_newer_automatic_action (test_learning.LearningTests.test_recovered_explicit_add_supersedes_newer_automatic_action) ... ok
+test_removing_term_supersedes_stale_action_before_relearning (test_learning.LearningTests.test_removing_term_supersedes_stale_action_before_relearning) ... ok
+test_suggestion_add_supersedes_auto_action_created_during_journal_handoff (test_learning.LearningTests.test_suggestion_add_supersedes_auto_action_created_during_journal_handoff) ... ok
+test_undo_consumes_preserved_action_without_removing_other_owner_term (test_learning.LearningTests.test_undo_consumes_preserved_action_without_removing_other_owner_term) ... ok
+test_undo_recovers_pending_manual_owner_before_removing_term (test_learning.LearningTests.test_undo_recovers_pending_manual_owner_before_removing_term) ... ok
+test_undo_reports_absent_when_manual_removal_left_no_term (test_learning.LearningTests.test_undo_reports_absent_when_manual_removal_left_no_term) ... ok
+test_a_unit_never_closes_before_a_correction_lead (test_live.HelperTests.test_a_unit_never_closes_before_a_correction_lead) ... ok
+test_a_unit_never_closes_right_before_a_correction (test_live.HelperTests.test_a_unit_never_closes_right_before_a_correction) ... ok
+test_adaptive_threshold_tracks_the_room_floor_within_bounds (test_live.HelperTests.test_adaptive_threshold_tracks_the_room_floor_within_bounds) ... ok
+test_assign_words_uses_start_time_inside_the_recording (test_live.HelperTests.test_assign_words_uses_start_time_inside_the_recording) ... ok
+test_correction_phrases_only_count_when_they_open_the_text (test_live.HelperTests.test_correction_phrases_only_count_when_they_open_the_text) ... ok
+test_quietest_cut_finds_the_gap (test_live.HelperTests.test_quietest_cut_finds_the_gap) ... ok
+test_units_close_at_sentence_end_after_min_words_or_at_cap (test_live.HelperTests.test_units_close_at_sentence_end_after_min_words_or_at_cap) ... ok
+test_words_from_tokens_groups_on_leading_space (test_live.HelperTests.test_words_from_tokens_groups_on_leading_space) ... ok
+test_a_bare_no_inside_a_retried_tail_joins_the_unit_before (test_live.LiveDictationTests.test_a_bare_no_inside_a_retried_tail_joins_the_unit_before) ... live window failed (RuntimeError); audio retained
+ok
+test_a_chunk_with_a_sound_alike_rewrite_is_never_split (test_live.LiveDictationTests.test_a_chunk_with_a_sound_alike_rewrite_is_never_split) ... ok
+test_a_correction_after_a_false_start_joins_the_unit_it_corrects (test_live.LiveDictationTests.test_a_correction_after_a_false_start_joins_the_unit_it_corrects) ... ok
+test_a_correction_in_a_retried_tail_joins_the_unit_before (test_live.LiveDictationTests.test_a_correction_in_a_retried_tail_joins_the_unit_before) ... live window failed (RuntimeError); audio retained
+ok
+test_a_correction_is_caught_while_earlier_units_still_wait_for_cleanup (test_live.LiveDictationTests.test_a_correction_is_caught_while_earlier_units_still_wait_for_cleanup) ... ok
+test_a_correction_lead_counts_at_any_clause_start (test_live.LiveDictationTests.test_a_correction_lead_counts_at_any_clause_start) ... ok
+test_a_long_sentence_past_the_soft_cap_is_not_cut (test_live.LiveDictationTests.test_a_long_sentence_past_the_soft_cap_is_not_cut) ... ok
+test_a_unit_boundary_before_a_correction_lead_recleans_with_tidy (test_live.LiveDictationTests.test_a_unit_boundary_before_a_correction_lead_recleans_with_tidy) ... ok
+test_an_ordinary_no_at_a_unit_boundary_is_not_a_correction (test_live.LiveDictationTests.test_an_ordinary_no_at_a_unit_boundary_is_not_a_correction) ... ok
+test_cancel_closes_workers (test_live.LiveDictationTests.test_cancel_closes_workers) ... ok
+test_cleanup_exception_keeps_raw_text_and_marks_guard (test_live.LiveDictationTests.test_cleanup_exception_keeps_raw_text_and_marks_guard) ... live cleanup unit failed (RuntimeError); keeping raw text
+ok
+test_committed_audio_end_splits_a_chunk_at_the_last_unit_word (test_live.LiveDictationTests.test_committed_audio_end_splits_a_chunk_at_the_last_unit_word) ... ok
+test_correction_after_a_pause_recleans_only_the_units_around_it (test_live.LiveDictationTests.test_correction_after_a_pause_recleans_only_the_units_around_it) ... ok
+test_live_finish_retains_all_raw_before_emitting_a_prefix (test_live.LiveDictationTests.test_live_finish_retains_all_raw_before_emitting_a_prefix) ... ok
+test_medium_without_tidy_skips_the_correction_reclean (test_live.LiveDictationTests.test_medium_without_tidy_skips_the_correction_reclean) ... ok
+test_recording_longer_than_streamed_audio_uses_the_recording (test_live.LiveDictationTests.test_recording_longer_than_streamed_audio_uses_the_recording) ... ok
+test_seq_gap_falls_back_to_the_complete_recording (test_live.LiveDictationTests.test_seq_gap_falls_back_to_the_complete_recording) ... ok
+test_several_units_inside_one_chunk_keep_every_word (test_live.LiveDictationTests.test_several_units_inside_one_chunk_keep_every_word) ... ok
+test_silent_recording_is_no_speech (test_live.LiveDictationTests.test_silent_recording_is_no_speech) ... ok
+test_tail_failure_after_emission_redoes_only_the_uncovered_audio (test_live.LiveDictationTests.test_tail_failure_after_emission_redoes_only_the_uncovered_audio) ... live window failed (RuntimeError); audio retained
+ok
+test_units_are_cleaned_while_recording_and_release_emits_them_first (test_live.LiveDictationTests.test_units_are_cleaned_while_recording_and_release_emits_them_first) ... ok
+test_units_close_at_sentence_ends_inside_chunks (test_live.LiveDictationTests.test_units_close_at_sentence_ends_inside_chunks) ... ok
+test_whole_cleanup_retains_raw_before_waiting_for_queued_work (test_live.LiveDictationTests.test_whole_cleanup_retains_raw_before_waiting_for_queued_work) ... ok
+test_window_failure_before_release_falls_back_without_emitting (test_live.LiveDictationTests.test_window_failure_before_release_falls_back_without_emitting) ... live window failed (RuntimeError); audio retained
+ok
+test_word_cap_recleans_the_whole_sentence_before_emitting_a_prefix (test_live.LiveDictationTests.test_word_cap_recleans_the_whole_sentence_before_emitting_a_prefix) ... ok
+test_a_new_start_replaces_an_unfinished_session (test_live.LiveServerTests.test_a_new_start_replaces_an_unfinished_session) ... ok
+test_audio_frames_are_validated (test_live.LiveServerTests.test_audio_frames_are_validated) ... ok
+test_dispatch_round_trip_streams_committed_text_then_the_result (test_live.LiveServerTests.test_dispatch_round_trip_streams_committed_text_then_the_result) ... ok
+test_socket_handler_streams_finish_frames (test_live.LiveServerTests.test_socket_handler_streams_finish_frames) ... ok
+test_context_carries_earlier_text_not_vocab (test_live.WindowedTranscriberTests.test_context_carries_earlier_text_not_vocab) ... ok
+test_cuts_land_in_pauses_and_every_word_is_kept_exactly_once (test_live.WindowedTranscriberTests.test_cuts_land_in_pauses_and_every_word_is_kept_exactly_once) ... ok
+test_emission_lag_does_not_lose_or_duplicate_words (test_live.WindowedTranscriberTests.test_emission_lag_does_not_lose_or_duplicate_words) ... ok
+test_long_breathless_speech_is_cut_at_its_quietest_point (test_live.WindowedTranscriberTests.test_long_breathless_speech_is_cut_at_its_quietest_point) ... ok
+test_release_only_decodes_the_tail_window (test_live.WindowedTranscriberTests.test_release_only_decodes_the_tail_window) ... ok
+test_short_recordings_decode_the_tail_with_the_whole_clip_as_context (test_live.WindowedTranscriberTests.test_short_recordings_decode_the_tail_with_the_whole_clip_as_context) ... ok
+test_silence_only_makes_no_model_calls_and_one_empty_chunk (test_live.WindowedTranscriberTests.test_silence_only_makes_no_model_calls_and_one_empty_chunk) ... ok
+test_window_failure_marks_the_chunk (test_live.WindowedTranscriberTests.test_window_failure_marks_the_chunk) ... live window failed (RuntimeError); audio retained
+ok
+test_exported_note_keeps_notes_verbatim_and_follows_later_edits (test_meeting.MeetingEditingTests.test_exported_note_keeps_notes_verbatim_and_follows_later_edits) ... ok
+test_failed_title_generation_keeps_the_default_name (test_meeting.MeetingEditingTests.test_failed_title_generation_keeps_the_default_name) ... meeting auto title failed (RuntimeError)
+ok
+test_list_returns_previews_and_one_search_haystack (test_meeting.MeetingEditingTests.test_list_returns_previews_and_one_search_haystack) ... ok
+test_old_database_gains_the_new_session_columns (test_meeting.MeetingEditingTests.test_old_database_gains_the_new_session_columns) ... ok
+test_only_the_last_summary_round_asks_for_the_structured_form (test_meeting.MeetingEditingTests.test_only_the_last_summary_round_asks_for_the_structured_form) ... ok
+test_resummarize_replaces_an_edited_summary_only_after_the_meeting_ends (test_meeting.MeetingEditingTests.test_resummarize_replaces_an_edited_summary_only_after_the_meeting_ends) ... ok
+test_typed_title_survives_end (test_meeting.MeetingEditingTests.test_typed_title_survives_end) ... ok
+test_untitled_meeting_is_named_at_end (test_meeting.MeetingEditingTests.test_untitled_meeting_is_named_at_end) ... ok
+test_update_changes_only_the_named_fields (test_meeting.MeetingEditingTests.test_update_changes_only_the_named_fields) ... ok
+test_update_rejects_empty_and_oversized_input (test_meeting.MeetingEditingTests.test_update_rejects_empty_and_oversized_input) ... ok
+test_chunk_is_retained_and_row_is_saved_before_transcription (test_meeting.MeetingTests.test_chunk_is_retained_and_row_is_saved_before_transcription) ... ok
+test_clock_time_rounds_to_whole_seconds (test_meeting.MeetingTests.test_clock_time_rounds_to_whole_seconds) ... ok
+test_complete_chunk_retry_is_idempotent_and_mismatch_is_rejected (test_meeting.MeetingTests.test_complete_chunk_retry_is_idempotent_and_mismatch_is_rejected) ... ok
+test_database_context_commits_and_closes_connections (test_meeting.MeetingTests.test_database_context_commits_and_closes_connections) ... ok
+test_expanding_summary_fails_bounded_and_retains_transcript (test_meeting.MeetingTests.test_expanding_summary_fails_bounded_and_retains_transcript) ... ok
+test_failed_transcription_retains_audio_and_exact_retry_can_recover (test_meeting.MeetingTests.test_failed_transcription_retains_audio_and_exact_retry_can_recover) ... ok
+test_materialized_transcript_and_note_are_chronological (test_meeting.MeetingTests.test_materialized_transcript_and_note_are_chronological) ... ok
+test_missing_vault_saves_summary_locally_and_export_reuses_it (test_meeting.MeetingTests.test_missing_vault_saves_summary_locally_and_export_reuses_it) ... ok
+test_offsets_with_fractions_are_shown_to_the_whole_second (test_meeting.MeetingTests.test_offsets_with_fractions_are_shown_to_the_whole_second) ... ok
+test_quiet_chunk_is_retained_without_transcription_and_flag_is_idempotent (test_meeting.MeetingTests.test_quiet_chunk_is_retained_without_transcription_and_flag_is_idempotent) ... ok
+test_retained_audio_creation_rejects_symlink_destination (test_meeting.MeetingTests.test_retained_audio_creation_rejects_symlink_destination) ... ok
+test_sequence_speaker_and_path_bounds_are_enforced (test_meeting.MeetingTests.test_sequence_speaker_and_path_bounds_are_enforced) ... ok
+test_summary_and_note_retain_all_chunks_and_bound_summary_sections (test_meeting.MeetingTests.test_summary_and_note_retain_all_chunks_and_bound_summary_sections) ... ok
+test_summary_failure_retains_session_and_retry_exports_atomically (test_meeting.MeetingTests.test_summary_failure_retains_session_and_retry_exports_atomically) ... ok
+test_unknown_existing_note_is_never_overwritten (test_meeting.MeetingTests.test_unknown_existing_note_is_never_overwritten) ... ok
+test_vault_meetings_symlink_and_note_collision_are_rejected (test_meeting.MeetingTests.test_vault_meetings_symlink_and_note_collision_are_rejected) ... ok
+test_voice_activity_must_be_boolean (test_meeting.MeetingTests.test_voice_activity_must_be_boolean) ... ok
+test_completed_stream_does_not_invoke_stt_again (test_pipeline.PipelineTests.test_completed_stream_does_not_invoke_stt_again) ... ok
+test_focus_change_retains_transcript_and_guard_without_insertion (test_pipeline.PipelineTests.test_focus_change_retains_transcript_and_guard_without_insertion) ... Insertion skipped because the target application changed; dictation retained
+ok
+test_a_hand_broken_variant_map_falls_back_to_the_defaults (test_server.ServerTests.test_a_hand_broken_variant_map_falls_back_to_the_defaults) ... ok
+test_app_prompt_variants_are_editable_and_validated (test_server.ServerTests.test_app_prompt_variants_are_editable_and_validated) ... ok
+test_auto_learning_uses_persisted_setting_not_request_flag (test_server.ServerTests.test_auto_learning_uses_persisted_setting_not_request_flag) ... ok
+test_clean_and_transcribe_return_protocol_fields (test_server.ServerTests.test_clean_and_transcribe_return_protocol_fields) ... ok
+test_clean_passes_bounded_context_without_persisting_it (test_server.ServerTests.test_clean_passes_bounded_context_without_persisting_it) ... ok
+test_clean_stream_emits_id_on_every_frame_and_final_done (test_server.ServerTests.test_clean_stream_emits_id_on_every_frame_and_final_done) ... ok
+test_clean_stream_light_path_is_one_final_frame (test_server.ServerTests.test_clean_stream_light_path_is_one_final_frame) ... ok
+test_complete_preserves_raw_audio_and_rejects_inserted_rows (test_server.ServerTests.test_complete_preserves_raw_audio_and_rejects_inserted_rows) ... ok
+test_dictionary_add_supersedes_auto_learning_action (test_server.ServerTests.test_dictionary_add_supersedes_auto_learning_action) ... ok
+test_dictionary_and_settings_persist (test_server.ServerTests.test_dictionary_and_settings_persist) ... ok
+test_double_tap_lock_defaults_on_and_persists (test_server.ServerTests.test_double_tap_lock_defaults_on_and_persists) ... ok
+test_duplicate_start_cannot_enter_socket_cleanup (test_server.ServerTests.test_duplicate_start_cannot_enter_socket_cleanup) ... ok
+test_engine_startup_defers_failed_dictionary_recovery (test_server.ServerTests.test_engine_startup_defers_failed_dictionary_recovery) ... ok
+test_engine_startup_recovers_pending_manual_dictionary_write (test_server.ServerTests.test_engine_startup_recovers_pending_manual_dictionary_write) ... ok
+test_history_round_trip_and_app_date_search_filters (test_server.ServerTests.test_history_round_trip_and_app_date_search_filters) ... ok
+test_history_update_can_record_edit_without_changing_insert_receipt (test_server.ServerTests.test_history_update_can_record_edit_without_changing_insert_receipt) ... ok
+test_history_update_changes_only_insert_metadata (test_server.ServerTests.test_history_update_changes_only_insert_metadata) ... ok
+test_history_update_retains_edited_text (test_server.ServerTests.test_history_update_retains_edited_text) ... ok
+test_invalid_history_types_are_rejected (test_server.ServerTests.test_invalid_history_types_are_rejected) ... ok
+test_learned_protocol_is_explicit_and_does_not_write_on_propose (test_server.ServerTests.test_learned_protocol_is_explicit_and_does_not_write_on_propose) ... ok
+test_learning_dispatch_does_not_wait_for_model_lock (test_server.ServerTests.test_learning_dispatch_does_not_wait_for_model_lock) ... ok
+test_learning_lookup_dispatch_resolves_token_and_unknown_is_read_only (test_server.ServerTests.test_learning_lookup_dispatch_resolves_token_and_unknown_is_read_only) ... ok
+test_live_raw_sidecar_survives_cleanup_failure_without_a_history_row (test_server.ServerTests.test_live_raw_sidecar_survives_cleanup_failure_without_a_history_row) ... ok
+test_meeting_dispatch_retains_failed_stt_and_recovers_exact_retry (test_server.ServerTests.test_meeting_dispatch_retains_failed_stt_and_recovers_exact_retry) ... ok
+test_meeting_end_without_configured_vault_saves_local_summary (test_server.ServerTests.test_meeting_end_without_configured_vault_saves_local_summary) ... ok
+test_meeting_quiet_chunk_is_complete_and_skips_stt (test_server.ServerTests.test_meeting_quiet_chunk_is_complete_and_skips_stt) ... ok
+test_meeting_summary_does_not_hold_dictation_dispatch_lock (test_server.ServerTests.test_meeting_summary_does_not_hold_dictation_dispatch_lock) ... ok
+test_meeting_summary_uses_high_local_model_with_vault_export (test_server.ServerTests.test_meeting_summary_uses_high_local_model_with_vault_export) ... ok
+test_meeting_update_and_resummarize_dispatch (test_server.ServerTests.test_meeting_update_and_resummarize_dispatch) ... ok
+test_obsidian_vault_setting_requires_explicit_existing_directory (test_server.ServerTests.test_obsidian_vault_setting_requires_explicit_existing_directory) ... ok
+test_oversized_frame_is_rejected (test_server.ServerTests.test_oversized_frame_is_rejected) ... ok
+test_oversized_response_is_replaced_with_bounded_error (test_server.ServerTests.test_oversized_response_is_replaced_with_bounded_error) ... ok
+test_persistent_framing_errors_and_request_ids (test_server.ServerTests.test_persistent_framing_errors_and_request_ids) ... ok
+test_pill_settings_persist_and_validate (test_server.ServerTests.test_pill_settings_persist_and_validate) ... ok
+test_socket_is_private_and_unterminated_frame_is_rejected (test_server.ServerTests.test_socket_is_private_and_unterminated_frame_is_rejected) ... ok
+test_status_names_the_high_model_and_keep_warm_time (test_server.ServerTests.test_status_names_the_high_model_and_keep_warm_time) ... ok
+test_status_remains_responsive_during_model_work (test_server.ServerTests.test_status_remains_responsive_during_model_work) ... ok
+test_stream_insert_config_accepts_bool_and_rejects_other_types (test_server.ServerTests.test_stream_insert_config_accepts_bool_and_rejects_other_types) ... ok
+test_tidy_speech_setting_is_on_by_default_and_saved_as_a_boolean (test_server.ServerTests.test_tidy_speech_setting_is_on_by_default_and_saved_as_a_boolean) ... ok
+test_update_requests_skip_the_model_lock_and_wait_for_dictation (test_server.ServerTests.test_update_requests_skip_the_model_lock_and_wait_for_dictation) ... ok
+test_warm_surfaces_missing_model_message (test_server.ServerTests.test_warm_surfaces_missing_model_message) ... ok
+test_warm_uses_generic_message_for_other_failures (test_server.ServerTests.test_warm_uses_generic_message_for_other_failures) ... ok
+test_no_speech_means_one_pause (test_streaming.FindPausesTests.test_no_speech_means_one_pause) ... ok
+test_short_gaps_are_ignored_and_long_gaps_found (test_streaming.FindPausesTests.test_short_gaps_are_ignored_and_long_gaps_found) ... ok
+test_backend_without_prompt_support_still_streams (test_streaming.PauseSplitTranscriberTests.test_backend_without_prompt_support_still_streams) ... ok
+test_chunk_error_falls_back_to_full_recording (test_streaming.PauseSplitTranscriberTests.test_chunk_error_falls_back_to_full_recording) ... ok
+test_committed_text_is_passed_as_context_not_vocab (test_streaming.PauseSplitTranscriberTests.test_committed_text_is_passed_as_context_not_vocab) ... ok
+test_continuous_speech_without_pauses_is_one_release_call (test_streaming.PauseSplitTranscriberTests.test_continuous_speech_without_pauses_is_one_release_call) ... ok
+test_cuts_fall_in_silence_and_audio_is_covered_exactly_once (test_streaming.PauseSplitTranscriberTests.test_cuts_fall_in_silence_and_audio_is_covered_exactly_once) ... ok
+test_empty_recording_makes_no_calls (test_streaming.PauseSplitTranscriberTests.test_empty_recording_makes_no_calls) ... ok
+test_fallback_failure_keeps_audio_and_reports_error (test_streaming.PauseSplitTranscriberTests.test_fallback_failure_keeps_audio_and_reports_error) ... ok
+test_release_transcribes_only_the_tail_after_the_last_cut (test_streaming.PauseSplitTranscriberTests.test_release_transcribes_only_the_tail_after_the_last_cut) ... ok
+test_short_final_tail_recovers_the_previous_chunk_instead_of_gating_it (test_streaming.PauseSplitTranscriberTests.test_short_final_tail_recovers_the_previous_chunk_instead_of_gating_it) ... ok
+test_silent_short_tail_is_not_merged (test_streaming.PauseSplitTranscriberTests.test_silent_short_tail_is_not_merged) ... ok
+test_empty_snapshot_is_safe (test_streaming.RecorderSnapshotTests.test_empty_snapshot_is_safe) ... ok
+test_snapshot_can_run_while_callback_appends (test_streaming.RecorderSnapshotTests.test_snapshot_can_run_while_callback_appends) ... ok
+test_snapshot_is_complete_and_does_not_expose_chunk_list (test_streaming.RecorderSnapshotTests.test_snapshot_is_complete_and_does_not_expose_chunk_list) ... ok
+test_close_drains_pending_work_without_race (test_streaming.StreamingTranscriberTests.test_close_drains_pending_work_without_race) ... ok
+test_close_timeout_is_bounded_and_can_be_completed_later (test_streaming.StreamingTranscriberTests.test_close_timeout_is_bounded_and_can_be_completed_later) ... ok
+test_empty_audio_does_not_call_model_or_hallucinate (test_streaming.StreamingTranscriberTests.test_empty_audio_does_not_call_model_or_hallucinate) ... ok
+test_final_error_never_returns_an_older_partial_prefix (test_streaming.StreamingTranscriberTests.test_final_error_never_returns_an_older_partial_prefix) ... ok
+test_latest_pending_prefix_is_bounded_and_final_prefix_is_complete (test_streaming.StreamingTranscriberTests.test_latest_pending_prefix_is_bounded_and_final_prefix_is_complete) ... ok
+test_model_error_keeps_complete_audio_for_recovery (test_streaming.StreamingTranscriberTests.test_model_error_keeps_complete_audio_for_recovery) ... ok
+test_empty_audio_returns_without_importing_mlx (test_streaming.SttLoadingTests.test_empty_audio_returns_without_importing_mlx) ... ok
+test_model_resolution_requests_local_files_only (test_streaming.SttLoadingTests.test_model_resolution_requests_local_files_only) ... ok
+test_transcriber_defaults_to_cached_only_model_resolution (test_streaming.SttLoadingTests.test_transcriber_defaults_to_cached_only_model_resolution) ... ok
+test_default_backend_is_parakeet_when_installed (test_stt.BackendSwitchTests.test_default_backend_is_parakeet_when_installed) ... ok
+test_default_falls_back_to_whisper_without_parakeet (test_stt.BackendSwitchTests.test_default_falls_back_to_whisper_without_parakeet) ... ok
+test_parakeet_backend_resolves_cached_model_and_transcribes (test_stt.BackendSwitchTests.test_parakeet_backend_resolves_cached_model_and_transcribes) ... ok
+test_parakeet_decodes_long_audio_in_overlapping_windows (test_stt.BackendSwitchTests.test_parakeet_decodes_long_audio_in_overlapping_windows) ... ok
+test_parakeet_keeps_a_long_voice_note (test_stt.BackendSwitchTests.test_parakeet_keeps_a_long_voice_note) ... ok
+test_parakeet_keeps_the_silence_gate_without_importing_the_package (test_stt.BackendSwitchTests.test_parakeet_keeps_the_silence_gate_without_importing_the_package) ... ok
+test_parakeet_missing_package_is_a_clear_error (test_stt.BackendSwitchTests.test_parakeet_missing_package_is_a_clear_error) ... ok
+test_parakeet_repetition_loop_is_not_inserted (test_stt.BackendSwitchTests.test_parakeet_repetition_loop_is_not_inserted) ... ok
+test_short_parakeet_audio_is_one_pass (test_stt.BackendSwitchTests.test_short_parakeet_audio_is_one_pass) ... ok
+test_unknown_backend_is_rejected (test_stt.BackendSwitchTests.test_unknown_backend_is_rejected) ... ok
+test_whisper_backend_when_asked (test_stt.BackendSwitchTests.test_whisper_backend_when_asked) ... ok
+test_context_goes_before_vocab_and_is_not_part_of_echo_check (test_stt.InitialPromptTests.test_context_goes_before_vocab_and_is_not_part_of_echo_check) ... ok
+test_warm_on_one_thread_and_transcribe_on_others (test_stt.ParakeetThreadTests.test_warm_on_one_thread_and_transcribe_on_others) ... ok
+test_a_list_with_shared_openings_is_not_a_loop (test_stt.RepetitionGuardTests.test_a_list_with_shared_openings_is_not_a_loop) ... ok
+test_a_long_phrase_repeated_back_to_back_is_a_loop (test_stt.RepetitionGuardTests.test_a_long_phrase_repeated_back_to_back_is_a_loop) ... ok
+test_long_ordinary_speech_is_not_a_loop (test_stt.RepetitionGuardTests.test_long_ordinary_speech_is_not_a_loop) ... ok
+test_loops_are_still_caught_at_any_length (test_stt.RepetitionGuardTests.test_loops_are_still_caught_at_any_length) ... ok
+test_all_segments_dropped_returns_no_speech (test_stt.SegmentFilterTests.test_all_segments_dropped_returns_no_speech) ... ok
+test_high_no_speech_and_compression_segments_are_dropped (test_stt.SegmentFilterTests.test_high_no_speech_and_compression_segments_are_dropped) ... ok
+test_compression_failure_is_recovered_at_higher_temperature (test_stt.SegmentRetryTests.test_compression_failure_is_recovered_at_higher_temperature) ... ok
+test_no_speech_segments_are_not_retried (test_stt.SegmentRetryTests.test_no_speech_segments_are_not_retried) ... ok
+test_retry_that_passes_compression_but_repeats_text_is_rejected (test_stt.SegmentRetryTests.test_retry_that_passes_compression_but_repeats_text_is_rejected) ... ok
+test_second_temperature_then_halves_are_tried_before_dropping (test_stt.SegmentRetryTests.test_second_temperature_then_halves_are_tried_before_dropping) ... ok
+test_segment_is_dropped_only_when_every_retry_still_loops (test_stt.SegmentRetryTests.test_segment_is_dropped_only_when_every_retry_still_loops) ... ok
+test_leaves_text_alone_without_the_term (test_stt.SoundAlikeTests.test_leaves_text_alone_without_the_term) ... ok
+test_ordinary_words_are_not_rewritten (test_stt.SoundAlikeTests.test_ordinary_words_are_not_rewritten) ... ok
+test_parakeet_output_gets_the_fix (test_stt.SoundAlikeTests.test_parakeet_output_gets_the_fix) ... ok
+test_restores_known_mishearing_when_term_is_in_vocab (test_stt.SoundAlikeTests.test_restores_known_mishearing_when_term_is_in_vocab) ... ok
+test_blip_shorter_than_minimum_duration_returns_empty_without_calling_whisper (test_stt.SpeechGateTests.test_blip_shorter_than_minimum_duration_returns_empty_without_calling_whisper) ... ok
+test_faint_room_noise_returns_empty_without_calling_whisper (test_stt.SpeechGateTests.test_faint_room_noise_returns_empty_without_calling_whisper) ... ok
+test_loud_enough_and_long_enough_audio_passes_the_gate (test_stt.SpeechGateTests.test_loud_enough_and_long_enough_audio_passes_the_gate) ... ok
+test_pure_silence_returns_empty_without_calling_whisper (test_stt.SpeechGateTests.test_pure_silence_returns_empty_without_calling_whisper) ... ok
+test_genuine_speech_mentioning_one_vocab_term_is_not_flagged (test_stt.VocabEchoTests.test_genuine_speech_mentioning_one_vocab_term_is_not_flagged) ... ok
+test_transcribe_string_api_returns_empty_on_echo (test_stt.VocabEchoTests.test_transcribe_string_api_returns_empty_on_echo) ... ok
+test_vocabulary_echo_is_treated_as_no_speech (test_stt.VocabEchoTests.test_vocabulary_echo_is_treated_as_no_speech) ... ok
+test_a_file_the_update_would_overwrite_blocks_it (test_updater.UpdaterTests.test_a_file_the_update_would_overwrite_blocks_it) ... ok
+test_a_new_engine_that_does_not_load_is_rolled_back (test_updater.UpdaterTests.test_a_new_engine_that_does_not_load_is_rolled_back) ... ok
+test_a_run_that_no_longer_holds_the_lock_reads_as_failed (test_updater.UpdaterTests.test_a_run_that_no_longer_holds_the_lock_reads_as_failed) ... ok
+test_a_tracked_file_that_becomes_a_folder_is_not_a_collision (test_updater.UpdaterTests.test_a_tracked_file_that_becomes_a_folder_is_not_a_collision) ... ok
+test_a_tracked_symlink_or_case_change_that_becomes_a_folder_is_not_a_collision (test_updater.UpdaterTests.test_a_tracked_symlink_or_case_change_that_becomes_a_folder_is_not_a_collision) ... ok
+test_ahead_only_is_blocked_not_up_to_date (test_updater.UpdaterTests.test_ahead_only_is_blocked_not_up_to_date) ... ok
+test_an_ignored_file_where_the_update_needs_a_folder_blocks_it (test_updater.UpdaterTests.test_an_ignored_file_where_the_update_needs_a_folder_blocks_it) ... ok
+test_app_change_without_xcode_is_blocked (test_updater.UpdaterTests.test_app_change_without_xcode_is_blocked) ... ok
+test_app_update_keeps_the_old_app_and_go_back_restores_it (test_updater.UpdaterTests.test_app_update_keeps_the_old_app_and_go_back_restores_it) ... ok
+test_apply_installs_only_the_commit_that_was_checked (test_updater.UpdaterTests.test_apply_installs_only_the_commit_that_was_checked) ... ok
+test_check_blocks_local_work (test_updater.UpdaterTests.test_check_blocks_local_work) ... ok
+test_check_ignores_a_custom_fetch_refspec (test_updater.UpdaterTests.test_check_ignores_a_custom_fetch_refspec) ... ok
+test_check_lists_new_changes_and_what_they_touch (test_updater.UpdaterTests.test_check_lists_new_changes_and_what_they_touch) ... ok
+test_detached_run_finishes_on_its_own (test_updater.UpdaterTests.test_detached_run_finishes_on_its_own)
+The engine's path: it takes the lock, hands it to a separate process, ... ok
+test_engine_only_update_fast_forwards_and_leaves_the_restart_to_the_app (test_updater.UpdaterTests.test_engine_only_update_fast_forwards_and_leaves_the_restart_to_the_app) ... ok
+test_failed_build_moves_the_checkout_back_and_keeps_the_app (test_updater.UpdaterTests.test_failed_build_moves_the_checkout_back_and_keeps_the_app) ... ok
+test_failed_package_install_restores_the_exact_old_packages (test_updater.UpdaterTests.test_failed_package_install_restores_the_exact_old_packages) ... ok
+test_go_back_refuses_once_the_checkout_has_moved_on (test_updater.UpdaterTests.test_go_back_refuses_once_the_checkout_has_moved_on) ... ok
+test_go_back_refuses_when_the_earlier_app_is_missing (test_updater.UpdaterTests.test_go_back_refuses_when_the_earlier_app_is_missing) ... ok
+test_go_back_restores_the_packages_from_before_the_update (test_updater.UpdaterTests.test_go_back_restores_the_packages_from_before_the_update) ... ok
+test_moving_a_file_out_of_the_engine_counts_as_an_engine_change (test_updater.UpdaterTests.test_moving_a_file_out_of_the_engine_counts_as_an_engine_change) ... ok
+test_only_a_github_origin_is_updated_from (test_updater.UpdaterTests.test_only_a_github_origin_is_updated_from) ... ok
+test_only_one_run_at_a_time (test_updater.UpdaterTests.test_only_one_run_at_a_time) ... ok
+test_only_the_installed_app_may_be_replaced (test_updater.UpdaterTests.test_only_the_installed_app_may_be_replaced) ... ok
+test_rollback_never_moves_a_branch_the_user_switched_to (test_updater.UpdaterTests.test_rollback_never_moves_a_branch_the_user_switched_to) ... ok
+test_the_engine_is_stale_until_it_restarts_whoever_moved_the_checkout (test_updater.UpdaterTests.test_the_engine_is_stale_until_it_restarts_whoever_moved_the_checkout) ... ok
+
+----------------------------------------------------------------------
+Ran 338 tests in 39.640s
+
+OK
+pr26 $ clear
+pr26 $ # CI ran scripts/verify.sh, Python and Swift, on the same head:
+pr26 $ gh pr checks 26
+]11;?\Working...
+All checks were successful
+0 cancelled, 0 failing, 1 successful, 0 skipped, and 0 pending checks
+
+   NAME                               DESCRIPTION  ELAPSED  URL                             
+✓  CI/Swift and Python verificati...               2m51s    https://github.com/bstanford2...
+pr26 $ gh run view 45275598104 --log | cut -f3- | cut -c30- | grep -E "^== |^Ran |All tests' passed|Verification passed"
+== Python synthetic tests ==
+Ran 338 tests in 82.962s
+== Swift tests (includes debug compilation) ==
+Test Suite 'All tests' passed at 2026-11-23 22:04:37.309.
+Verification passed. Real app, audio, and model acceptance remain local; see docs/VERIFICATION.md.
+pr26 $ exit
