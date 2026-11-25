@@ -92,7 +92,11 @@ final class InsertionController {
     /// so the modifier state change has settled. See
     /// `clearStuckFnFlagIfNeeded`.
     private static let fnClearSettleDelay: TimeInterval = 0.03
-    /// Give the target time to consume each event, including modifier changes.
+    /// Pause between strokes (one character, or one Unicode chunk). A
+    /// stroke's own events, including its Shift or Option press and release,
+    /// go out back to back. This is the rhythm that ran through Jump Desktop
+    /// in daily use from 2026-10-11 to 2026-10-24. Pausing between every
+    /// event instead made Jump typing 2.6 times slower per character (#18).
     private static let keystrokeInterval: Duration = .milliseconds(3)
 
     private static func allowsTypingFallback(for error: AXError) -> Bool {
@@ -506,8 +510,10 @@ final class InsertionController {
         }, post: { $0.post(tap: .cghidEventTap) })
     }
 
-    /// A group is one complete stroke, including its modifier releases. Finish
-    /// that stroke before stopping, so cancellation cannot leave Shift held.
+    /// A group is one complete stroke, including its modifier releases. Its
+    /// events post back to back with no suspension point between them, so a
+    /// cancellation or focus change can only stop delivery between strokes
+    /// and can never leave Shift or Option held. `interval` separates strokes.
     @MainActor func postKeyGroups<Event>(
         _ groups: [[Event]], interval: Duration, isCurrent: () -> Bool,
         post: (Event) -> Void,
@@ -519,20 +525,19 @@ final class InsertionController {
         defer { deliveryInFlight = false }
         var posted = false
         for (groupIndex, group) in groups.enumerated() {
+            if groupIndex > 0 { await pause(interval) }
             guard !Task.isCancelled else { return .failed(posted ? .partialInsertion : .cancelled) }
             guard isCurrent() else { return .failed(posted ? .partialInsertion : .appChanged) }
-            for (eventIndex, event) in group.enumerated() {
+            for event in group {
                 post(event)
                 posted = true
-                if groupIndex < groups.count - 1 || eventIndex < group.count - 1 {
-                    await pause(interval)
-                }
             }
         }
         return .inserted(.type)
     }
 
-    /// A cancellation must not collapse the key-up/modifier-release gaps.
+    /// Suspends for `delay` without blocking the main actor. The stroke loop
+    /// checks for cancellation right after each wait.
     nonisolated static func waitForKeyEvent(_ delay: Duration) async {
         let parts = delay.components
         let seconds = Double(parts.seconds) + Double(parts.attoseconds) / 1e18
